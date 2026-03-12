@@ -1,0 +1,87 @@
+package risk
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
+	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
+)
+
+// Engine enforces position sizing and loss controls before execution.
+type Engine struct {
+	config    config.TradingConfig
+	portfolio *portfolio.Manager
+	runtime   *runtime.State
+}
+
+// NewEngine creates a new risk engine.
+func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Engine {
+	return &Engine{config: cfg, portfolio: portfolioManager, runtime: runtimeState}
+}
+
+// Start receives trade signals and applies risk checks.
+func (r *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out chan<- domain.OrderRequest) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case signal := <-in:
+			request, approved, reason := r.Evaluate(signal)
+			if !approved {
+				r.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s %s: %s", signal.Side, signal.Symbol, reason))
+				if reason == "daily-loss-limit" {
+					r.runtime.EmergencyStop()
+				}
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case out <- request:
+			}
+		}
+	}
+}
+
+// Evaluate validates a signal and returns an execution request when allowed.
+func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool, string) {
+	if signal.Quantity <= 0 {
+		return domain.OrderRequest{}, false, "invalid-quantity"
+	}
+	if signal.Side == "sell" {
+		position, exists := r.portfolio.Position(signal.Symbol)
+		if !exists || position.Quantity == 0 {
+			return domain.OrderRequest{}, false, "no-position"
+		}
+		quantity := signal.Quantity
+		if quantity > position.Quantity {
+			quantity = position.Quantity
+		}
+		limitPrice := signal.Price - r.config.LimitOrderSlippageDollars
+		return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: time.Now().UTC()}, true, "approved"
+	}
+
+	if !r.runtime.CanOpenNewPositions() {
+		return domain.OrderRequest{}, false, "trading-paused"
+	}
+	if r.portfolio.TradesToday() >= r.config.MaxTradesPerDay {
+		return domain.OrderRequest{}, false, "max-trades"
+	}
+	if r.portfolio.OpenPositionCount() >= r.config.MaxOpenPositions {
+		return domain.OrderRequest{}, false, "max-open-positions"
+	}
+	if r.portfolio.RealizedPnL()+r.portfolio.UnrealizedPnL() <= -(r.config.StartingCapital * r.config.DailyLossLimitPct) {
+		return domain.OrderRequest{}, false, "daily-loss-limit"
+	}
+	exposureAfter := r.portfolio.Exposure() + (float64(signal.Quantity) * signal.Price)
+	maxExposure := r.config.StartingCapital * r.config.MaxExposurePct
+	if exposureAfter > maxExposure {
+		return domain.OrderRequest{}, false, "max-exposure"
+	}
+	limitPrice := signal.Price + r.config.LimitOrderSlippageDollars
+	return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: signal.Quantity, Reason: signal.Reason, Timestamp: time.Now().UTC()}, true, "approved"
+}
