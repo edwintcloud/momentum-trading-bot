@@ -211,6 +211,32 @@ func main() {
 		}
 	}()
 
+	// Periodically reconcile local positions against Alpaca to drop any that
+	// were closed outside the bot (manual closes, fill-poll timeouts, etc.).
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				reconcileCtx, reconcileCancel := context.WithTimeout(ctx, 15*time.Second)
+				brokerPositions, reconcileErr := alpacaClient.ListOpenPositions(reconcileCtx)
+				reconcileCancel()
+				if reconcileErr != nil {
+					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("position reconciliation failed: %v", reconcileErr))
+					continue
+				}
+				openSymbols := make(map[string]struct{}, len(brokerPositions))
+				for _, p := range brokerPositions {
+					openSymbols[strings.ToUpper(p.Symbol)] = struct{}{}
+				}
+				portfolioManager.ReconcileWithBroker(openSymbols)
+			}
+		}
+	}()
+
 	// Run until context is canceled
 	<-ctx.Done()
 

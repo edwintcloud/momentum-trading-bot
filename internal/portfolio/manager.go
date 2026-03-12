@@ -149,6 +149,21 @@ func (m *Manager) MarkPrice(symbol string, price float64) {
 	m.positions[symbol] = position
 }
 
+// ReconcileWithBroker removes any local position whose symbol is absent from
+// the broker's current open-position set. Call periodically so the dashboard
+// stays in sync when positions are closed outside the bot (e.g. manually in
+// Alpaca, or because an order's fill-poll timed out).
+func (m *Manager) ReconcileWithBroker(openSymbols map[string]struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for symbol := range m.positions {
+		if _, open := openSymbols[symbol]; !open {
+			delete(m.positions, symbol)
+			m.runtime.RecordLog("warn", "portfolio", "removed stale position "+symbol+": no longer open at broker")
+		}
+	}
+}
+
 // GetPositions returns sorted open positions.
 func (m *Manager) GetPositions() []domain.Position {
 	m.mu.RLock()
