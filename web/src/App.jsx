@@ -128,7 +128,7 @@ export function App() {
           <p className="eyebrow">Momentum Trading Bot</p>
           <h1>Operator Console</h1>
           <p className="hero-copy">
-            Real-time simulated low-float breakout trading with live candidates, active positions, PnL,
+            Real-time breakout trading with live candidates, active positions, PnL,
             structured logs, and hard trading controls.
           </p>
         </div>
