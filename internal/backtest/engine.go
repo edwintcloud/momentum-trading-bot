@@ -51,16 +51,17 @@ type InputBar struct {
 
 // Result summarizes a completed backtest.
 type Result struct {
-	ModelName       string
-	StartingCapital float64
-	EndingEquity    float64
-	NetPnL          float64
-	MaxDrawdownPct  float64
-	Trades          int
-	Wins            int
-	Losses          int
-	WinRate         float64
-	ClosedTrades    []domain.ClosedTrade
+	ModelName            string
+	ModelTrainingWarning string
+	StartingCapital      float64
+	EndingEquity         float64
+	NetPnL               float64
+	MaxDrawdownPct       float64
+	Trades               int
+	Wins                 int
+	Losses               int
+	WinRate              float64
+	ClosedTrades         []domain.ClosedTrade
 }
 
 type bar struct {
@@ -113,13 +114,16 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
 
 	model := strategy.DefaultEntryModel()
+	trainingWarning := ""
 	if !runCfg.TrainStart.IsZero() && !runCfg.TrainEnd.IsZero() {
 		trained, trainErr := trainModel(records, symbolIndices, runCfg)
 		if trainErr != nil {
-			return Result{}, trainErr
+			trainingWarning = trainErr.Error()
 		}
-		model = trained
-		if runCfg.ModelOutputPath != "" {
+		if trainErr == nil {
+			model = trained
+		}
+		if trainErr == nil && runCfg.ModelOutputPath != "" {
 			if err := strategy.SaveLinearModel(runCfg.ModelOutputPath, model); err != nil {
 				return Result{}, err
 			}
@@ -184,16 +188,17 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	return Result{
-		ModelName:       model.Name,
-		StartingCapital: cfg.StartingCapital,
-		EndingEquity:    round2(endingEquity),
-		NetPnL:          round2(netPnL),
-		MaxDrawdownPct:  round2(maxDrawdownPct(equityCurve, cfg.StartingCapital)),
-		Trades:          len(closedTrades),
-		Wins:            wins,
-		Losses:          len(closedTrades) - wins,
-		WinRate:         round2(winRate),
-		ClosedTrades:    closedTrades,
+		ModelName:            model.Name,
+		ModelTrainingWarning: trainingWarning,
+		StartingCapital:      cfg.StartingCapital,
+		EndingEquity:         round2(endingEquity),
+		NetPnL:               round2(netPnL),
+		MaxDrawdownPct:       round2(maxDrawdownPct(equityCurve, cfg.StartingCapital)),
+		Trades:               len(closedTrades),
+		Wins:                 wins,
+		Losses:               len(closedTrades) - wins,
+		WinRate:              round2(winRate),
+		ClosedTrades:         closedTrades,
 	}, nil
 }
 

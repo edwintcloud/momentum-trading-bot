@@ -68,3 +68,22 @@ func TestRunExecutesHistoricalReplayFromInputBars(t *testing.T) {
 		t.Fatalf("expected at least one replayed trade, got %+v", result)
 	}
 }
+
+func TestRunFallsBackWhenTrainingSamplesAreUnavailable(t *testing.T) {
+	result, err := Run(context.Background(), config.DefaultTradingConfig(), RunConfig{
+		Bars: []InputBar{
+			{Timestamp: time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC), Symbol: "TEST", Open: 5, High: 5.01, Low: 4.99, Close: 5, Volume: 1000},
+			{Timestamp: time.Date(2026, 3, 10, 14, 1, 0, 0, time.UTC), Symbol: "TEST", Open: 5, High: 5.01, Low: 4.99, Close: 5, Volume: 1000},
+		},
+		Start:      time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
+		End:        time.Date(2026, 3, 10, 14, 1, 0, 0, time.UTC),
+		TrainStart: time.Date(2026, 3, 9, 14, 0, 0, 0, time.UTC),
+		TrainEnd:   time.Date(2026, 3, 9, 14, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("expected fallback to seeded model, got %v", err)
+	}
+	if result.ModelTrainingWarning == "" {
+		t.Fatalf("expected training warning when samples are unavailable, got %+v", result)
+	}
+}

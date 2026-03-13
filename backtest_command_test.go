@@ -19,8 +19,8 @@ func TestInferBacktestWindowsDefaultsTrainingWindowBeforeStart(t *testing.T) {
 	if !trainEnd.Equal(start.Add(-time.Minute)) {
 		t.Fatalf("expected training to end one minute before backtest start, got %v", trainEnd)
 	}
-	if !trainStart.Equal(trainEnd.Add(-end.Sub(start))) {
-		t.Fatalf("expected matching lookback duration, got %v", trainStart)
+	if !trainStart.Equal(trainEnd.Add(-(5 * 24 * time.Hour))) {
+		t.Fatalf("expected minimum five-day training lookback, got %v", trainStart)
 	}
 }
 

@@ -69,6 +69,13 @@ type RESTBar struct {
 	Timestamp time.Time `json:"t"`
 }
 
+// HistoricalBarsPage is a single paginated response from Alpaca's historical bars API.
+type HistoricalBarsPage struct {
+	Bars          map[string][]RESTBar
+	NextPageToken string
+	Headers       http.Header
+}
+
 // Snapshot contains the subset of snapshot fields required by the scanner.
 type Snapshot struct {
 	MinuteBar    *RESTBar `json:"minuteBar"`
@@ -359,36 +366,61 @@ func (c *Client) GetHistoricalBars(ctx context.Context, symbols []string, start,
 	allBars := make(map[string][]RESTBar, len(normalized))
 	pageToken := ""
 	for {
-		endpoint := fmt.Sprintf(
-			"%s/v2/stocks/bars?symbols=%s&timeframe=%s&start=%s&end=%s&adjustment=raw&feed=%s&sort=asc&limit=10000",
-			c.cfg.MarketDataBaseURL,
-			url.QueryEscape(strings.Join(normalized, ",")),
-			url.QueryEscape(timeframe),
-			url.QueryEscape(start.UTC().Format(time.RFC3339)),
-			url.QueryEscape(end.UTC().Format(time.RFC3339)),
-			url.QueryEscape(c.cfg.DataFeed),
-		)
-		if pageToken != "" {
-			endpoint += "&page_token=" + url.QueryEscape(pageToken)
-		}
-
-		var payload struct {
-			Bars          map[string][]RESTBar `json:"bars"`
-			NextPageToken string               `json:"next_page_token"`
-		}
-		if err := c.getJSON(ctx, endpoint, &payload); err != nil {
+		page, err := c.GetHistoricalBarsPage(ctx, normalized, start, end, timeframe, pageToken)
+		if err != nil {
 			return nil, err
 		}
-		for symbol, bars := range payload.Bars {
+		for symbol, bars := range page.Bars {
 			allBars[strings.ToUpper(symbol)] = append(allBars[strings.ToUpper(symbol)], bars...)
 		}
-		if payload.NextPageToken == "" {
+		if page.NextPageToken == "" {
 			break
 		}
-		pageToken = payload.NextPageToken
+		pageToken = page.NextPageToken
 	}
 
 	return allBars, nil
+}
+
+// GetHistoricalBarsPage fetches a single paginated page of historical bars.
+func (c *Client) GetHistoricalBarsPage(ctx context.Context, symbols []string, start, end time.Time, timeframe, pageToken string) (HistoricalBarsPage, error) {
+	normalized := normalizeSymbols(symbols)
+	if len(normalized) == 0 {
+		return HistoricalBarsPage{Bars: map[string][]RESTBar{}}, nil
+	}
+	if timeframe == "" {
+		timeframe = "1Min"
+	}
+	endpoint := fmt.Sprintf(
+		"%s/v2/stocks/bars?symbols=%s&timeframe=%s&start=%s&end=%s&adjustment=raw&feed=%s&sort=asc&limit=10000",
+		c.cfg.MarketDataBaseURL,
+		url.QueryEscape(strings.Join(normalized, ",")),
+		url.QueryEscape(timeframe),
+		url.QueryEscape(start.UTC().Format(time.RFC3339)),
+		url.QueryEscape(end.UTC().Format(time.RFC3339)),
+		url.QueryEscape(c.cfg.DataFeed),
+	)
+	if pageToken != "" {
+		endpoint += "&page_token=" + url.QueryEscape(pageToken)
+	}
+
+	var payload struct {
+		Bars          map[string][]RESTBar `json:"bars"`
+		NextPageToken string               `json:"next_page_token"`
+	}
+	headers, err := c.getJSONWithHeaders(ctx, endpoint, &payload)
+	page := HistoricalBarsPage{
+		Bars:          payload.Bars,
+		NextPageToken: payload.NextPageToken,
+		Headers:       headers,
+	}
+	if page.Bars == nil {
+		page.Bars = map[string][]RESTBar{}
+	}
+	if err != nil {
+		return page, err
+	}
+	return page, nil
 }
 
 // ListActiveEquitySymbols returns Alpaca's current tradable US equity symbol universe.

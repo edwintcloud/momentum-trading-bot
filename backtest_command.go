@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -50,7 +49,7 @@ func runBacktest(args []string) error {
 	}
 
 	if *dataPath == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		setupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
 		alpacaCfg, err := config.LoadBacktestAlpacaConfig(nil)
@@ -60,25 +59,33 @@ func runBacktest(args []string) error {
 		client := alpaca.NewClient(alpacaCfg)
 
 		historicalRateLimit := 0
-		if capabilities, capErr := client.DetectMarketDataCapabilities(ctx); capErr == nil {
+		if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
 			historicalRateLimit = capabilities.HistoricalRateLimitPerMin
 			if alpacaCfg.AutoSelectDataFeed {
 				client.SetDataFeed(capabilities.DetectedFeed)
 			}
 			log.Printf("Backtest using Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
+		} else {
+			log.Printf("Backtest capability detection failed, using defaults: %v", capErr)
 		}
-		if account, accountErr := client.GetAccount(ctx); accountErr == nil {
+		if account, accountErr := client.GetAccount(setupCtx); accountErr == nil {
 			if equity, _, ok := brokerAccountValues(account); ok {
 				cfg = config.TuneTradingConfig(cfg, equity, historicalRateLimit)
 			}
+		} else {
+			log.Printf("Backtest account tuning skipped: %v", accountErr)
 		}
 
-		symbols, err := resolveBacktestSymbols(ctx, client)
+		symbols, err := resolveBacktestSymbols(setupCtx, client)
 		if err != nil {
 			return err
 		}
 		fetchStart, fetchEnd := backtestFetchWindow(start, end, trainStart, trainEnd)
-		inputBars, err := fetchBarsFromAlpaca(ctx, client, symbols, fetchStart, fetchEnd)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), fetchStart, fetchEnd, historicalRateLimit)
+		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer fetchCancel()
+		inputBars, err := fetchBarsFromAlpaca(fetchCtx, client, symbols, fetchStart, fetchEnd, historicalRateLimit)
 		if err != nil {
 			return err
 		}
@@ -89,6 +96,9 @@ func runBacktest(args []string) error {
 	result, err := backtest.Run(context.Background(), cfg, runCfg)
 	if err != nil {
 		return err
+	}
+	if result.ModelTrainingWarning != "" {
+		log.Printf("Backtest entry-model training skipped: %s. Using model=%s", result.ModelTrainingWarning, result.ModelName)
 	}
 
 	log.Printf(
@@ -119,6 +129,10 @@ func inferBacktestWindows(start, end time.Time, requireStart bool) (time.Time, t
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("end time must be after start time")
 	}
 	duration := end.Sub(start)
+	minTrainingDuration := 5 * 24 * time.Hour
+	if duration < minTrainingDuration {
+		duration = minTrainingDuration
+	}
 	trainEnd := start.Add(-time.Minute)
 	trainStart := trainEnd.Add(-duration)
 	return start, end, trainStart, trainEnd, nil
@@ -130,46 +144,6 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]strin
 		return nil, err
 	}
 	return symbols, nil
-}
-
-func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []string, start, end time.Time) ([]backtest.InputBar, error) {
-	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols available for historical fetch")
-	}
-
-	const batchSize = 100
-	inputBars := make([]backtest.InputBar, 0)
-	for batchStart := 0; batchStart < len(symbols); batchStart += batchSize {
-		batchEnd := batchStart + batchSize
-		if batchEnd > len(symbols) {
-			batchEnd = len(symbols)
-		}
-		barMap, err := client.GetHistoricalBars(ctx, symbols[batchStart:batchEnd], start, end, "1Min")
-		if err != nil {
-			return nil, err
-		}
-		for symbol, bars := range barMap {
-			for _, item := range bars {
-				inputBars = append(inputBars, backtest.InputBar{
-					Timestamp: item.Timestamp.UTC(),
-					Symbol:    symbol,
-					Open:      item.Open,
-					High:      item.High,
-					Low:       item.Low,
-					Close:     item.Close,
-					Volume:    item.Volume,
-				})
-			}
-		}
-	}
-
-	sort.Slice(inputBars, func(i, j int) bool {
-		if inputBars[i].Timestamp.Equal(inputBars[j].Timestamp) {
-			return inputBars[i].Symbol < inputBars[j].Symbol
-		}
-		return inputBars[i].Timestamp.Before(inputBars[j].Timestamp)
-	})
-	return inputBars, nil
 }
 
 func backtestFetchWindow(start, end, trainStart, trainEnd time.Time) (time.Time, time.Time) {
