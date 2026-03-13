@@ -12,6 +12,8 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
 
+var tradingDayLocation = mustLoadLocation("America/New_York")
+
 // Manager tracks open positions, PnL, and trade history.
 type Manager struct {
 	mu              sync.RWMutex
@@ -23,8 +25,10 @@ type Manager struct {
 	startingCapital float64
 	brokerEquity    float64
 	dayPnL          float64
+	dayRealizedPnL  float64
 	realizedPnL     float64
 	tradesToday     int
+	currentTradeDay string
 }
 
 // NewManager creates a new portfolio manager.
@@ -79,6 +83,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	}
 
 	now := report.FilledAt.UTC()
+	m.rollTradingDayLocked(now)
 	position, exists := m.positions[report.Symbol]
 	if report.Side == "buy" {
 		if exists {
@@ -118,6 +123,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	}
 	pnl := (report.Price - position.AvgPrice) * float64(closeQty)
 	m.realizedPnL += pnl
+	m.dayRealizedPnL += pnl
 	m.tradesToday++
 	closed := domain.ClosedTrade{
 		Symbol:     report.Symbol,
@@ -149,8 +155,14 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 
 // MarkPrice updates the latest price for an open position.
 func (m *Manager) MarkPrice(symbol string, price float64) {
+	m.MarkPriceAt(symbol, price, time.Now().UTC())
+}
+
+// MarkPriceAt updates the latest price for an open position using the provided timestamp.
+func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.rollTradingDayLocked(at.UTC())
 
 	position, exists := m.positions[symbol]
 	if !exists {
@@ -160,7 +172,7 @@ func (m *Manager) MarkPrice(symbol string, price float64) {
 	position.HighestPrice = math.Max(position.HighestPrice, price)
 	position.MarketValue = float64(position.Quantity) * price
 	position.UnrealizedPnL = (price - position.AvgPrice) * float64(position.Quantity)
-	position.UpdatedAt = time.Now().UTC()
+	position.UpdatedAt = at.UTC()
 	m.positions[symbol] = position
 }
 
@@ -300,7 +312,7 @@ func (m *Manager) DayPnL() float64 {
 	for _, position := range m.positions {
 		unrealized += position.UnrealizedPnL
 	}
-	return round2(m.realizedPnL + unrealized)
+	return round2(m.dayRealizedPnL + unrealized)
 }
 
 // EffectiveCapital returns broker equity when available, otherwise configured
@@ -362,7 +374,7 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		LastUpdate:       m.runtime.LastUpdate(),
 		StartingCapital:  m.startingCapital,
 		BrokerEquity:     m.brokerEquity,
-		DayPnL:           m.dayPnL,
+		DayPnL:           round2(m.dayRealizedPnL + unrealized),
 		RealizedPnL:      round2(m.realizedPnL),
 		UnrealizedPnL:    round2(unrealized),
 		NetPnL:           round2(m.realizedPnL + unrealized),
@@ -373,9 +385,37 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		MaxOpenPositions: m.config.MaxOpenPositions,
 		MaxTradesPerDay:  m.config.MaxTradesPerDay,
 	}
+	if m.brokerEquity > 0 {
+		status.DayPnL = round2(m.dayPnL)
+	}
 	return status
 }
 
 func round2(value float64) float64 {
 	return math.Round(value*100) / 100
+}
+
+func (m *Manager) rollTradingDayLocked(now time.Time) {
+	day := now.In(tradingDayLocation).Format("2006-01-02")
+	if m.currentTradeDay == "" {
+		m.currentTradeDay = day
+		return
+	}
+	if m.currentTradeDay == day {
+		return
+	}
+	m.currentTradeDay = day
+	m.tradesToday = 0
+	m.dayRealizedPnL = 0
+	if m.brokerEquity == 0 {
+		m.dayPnL = 0
+	}
+}
+
+func mustLoadLocation(name string) *time.Location {
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err)
+	}
+	return location
 }

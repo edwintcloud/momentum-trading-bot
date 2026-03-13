@@ -28,6 +28,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "backtest") {
+		if err := runBacktest(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	log.Println("Starting Momentum Trading Bot")
 	appConfig, err := config.Load()
 	if err != nil {
@@ -52,16 +59,16 @@ func main() {
 	}
 	runtimeState.SetDependencyStatus("database", true, "postgres reachable")
 	runtimeState.SetRecorder(recorder)
-	portfolioManager := portfolio.NewManager(appConfig.Trading, runtimeState)
-	portfolioManager.SetRecorder(recorder)
 	alpacaClient := alpaca.NewClient(appConfig.Alpaca)
 	if err := alpacaClient.Ping(startupCtx); err != nil {
 		log.Fatalf("alpaca health check failed: %v", err)
 	}
+	historicalRateLimit := 0
 	capabilities, err := alpacaClient.DetectMarketDataCapabilities(startupCtx)
 	if err != nil {
 		runtimeState.RecordLog("warn", "market", fmt.Sprintf("market-data capability probe failed: %v", err))
 	} else {
+		historicalRateLimit = capabilities.HistoricalRateLimitPerMin
 		if appConfig.Alpaca.AutoSelectDataFeed {
 			appConfig.Alpaca.DataFeed = capabilities.DetectedFeed
 			alpacaClient.SetDataFeed(capabilities.DetectedFeed)
@@ -73,9 +80,31 @@ func main() {
 			runtimeState.RecordLog("info", "market", fmt.Sprintf("detected Alpaca %s plan: feed=%s historical_limit=%d/min websocket_symbols=30", capabilities.PlanName, alpacaClient.DataFeed(), capabilities.HistoricalRateLimitPerMin))
 		}
 	}
+	account, err := alpacaClient.GetAccount(startupCtx)
+	if err != nil {
+		log.Fatalf("alpaca account fetch failed: %v", err)
+	}
+	if equity, _, ok := brokerAccountValues(account); ok {
+		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, equity, historicalRateLimit)
+	} else if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
+		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, equity, historicalRateLimit)
+	} else {
+		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, appConfig.Trading.StartingCapital, historicalRateLimit)
+	}
+	runtimeState.RecordLog("info", "risk", fmt.Sprintf(
+		"broker-tuned config risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f",
+		appConfig.Trading.RiskPerTradePct*100,
+		appConfig.Trading.DailyLossLimitPct*100,
+		appConfig.Trading.MaxOpenPositions,
+		appConfig.Trading.MaxExposurePct*100,
+		appConfig.Trading.MinGapPercent,
+		appConfig.Trading.MinRelativeVolume,
+	))
+	portfolioManager := portfolio.NewManager(appConfig.Trading, runtimeState)
+	portfolioManager.SetRecorder(recorder)
 	runtimeState.SetDependencyStatus("alpaca_trading", true, liveModeLabel(appConfig.Alpaca.Paper))
 	runtimeState.RecordLog("info", "system", "live alpaca mode enabled")
-	seedFromBroker(ctx, alpacaClient, portfolioManager, runtimeState)
+	seedFromBroker(ctx, alpacaClient, portfolioManager, runtimeState, account)
 	startBrokerAccountSync(ctx, alpacaClient, portfolioManager, runtimeState)
 
 	// Graceful shutdown on SIGINT/SIGTERM
@@ -267,17 +296,12 @@ func recommendedHydrationBudget(limitPerMinute int) int {
 	return budget
 }
 
-func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
-	accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	account, err := client.GetAccount(accountCtx)
-	if err == nil {
-		if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
-			portfolioManager.SetStartingCapital(math.Round(equity*100) / 100)
-		}
-		if equity, lastEquity, ok := brokerAccountValues(account); ok {
-			portfolioManager.SyncBrokerAccount(equity, lastEquity)
-		}
+func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State, account alpaca.Account) {
+	if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
+		portfolioManager.SetStartingCapital(math.Round(equity*100) / 100)
+	}
+	if equity, lastEquity, ok := brokerAccountValues(account); ok {
+		portfolioManager.SyncBrokerAccount(equity, lastEquity)
 	}
 
 	positionsCtx, positionsCancel := context.WithTimeout(ctx, 15*time.Second)

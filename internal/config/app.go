@@ -11,7 +11,6 @@ import (
 
 // AppConfig holds runtime configuration loaded from environment variables.
 type AppConfig struct {
-	AppEnv                     string
 	HTTPAddr                   string
 	DatabaseURL                string
 	SnapshotPersistIntervalSec int
@@ -38,66 +37,32 @@ type AlpacaConfig struct {
 	OrderPollIntervalSec int
 }
 
+// LoadBacktestAlpacaConfig loads only the Alpaca settings needed for historical
+// backtests, without requiring database or app runtime configuration.
+func LoadBacktestAlpacaConfig(symbolOverrides []string) (AlpacaConfig, error) {
+	_ = godotenv.Load()
+	return loadAlpacaConfig(symbolOverrides)
+}
+
 // Load reads configuration from the process environment and .env when present.
 func Load() (AppConfig, error) {
 	_ = godotenv.Load()
 
 	trading := DefaultTradingConfig()
-	trading.StartingCapital = getEnvFloat("STARTING_CAPITAL", trading.StartingCapital)
-	trading.RiskPerTradePct = getEnvFloat("RISK_PER_TRADE_PCT", trading.RiskPerTradePct)
-	trading.DailyLossLimitPct = getEnvFloat("DAILY_LOSS_LIMIT_PCT", trading.DailyLossLimitPct)
-	trading.MaxTradesPerDay = getEnvInt("MAX_TRADES_PER_DAY", trading.MaxTradesPerDay)
-	trading.MaxOpenPositions = getEnvInt("MAX_OPEN_POSITIONS", trading.MaxOpenPositions)
-	trading.MaxExposurePct = getEnvFloat("MAX_EXPOSURE_PCT", trading.MaxExposurePct)
-	trading.StopLossPct = getEnvFloat("STOP_LOSS_PCT", trading.StopLossPct)
-	trading.ProfitTargetPct = getEnvFloat("PROFIT_TARGET_PCT", trading.ProfitTargetPct)
-	trading.TrailingStopPct = getEnvFloat("TRAILING_STOP_PCT", trading.TrailingStopPct)
-	trading.EntryCooldownSec = getEnvInt("ENTRY_COOLDOWN_SEC", trading.EntryCooldownSec)
-	trading.ExitCooldownSec = getEnvInt("EXIT_COOLDOWN_SEC", trading.ExitCooldownSec)
-	trading.ScannerWorkers = getEnvInt("SCANNER_WORKERS", trading.ScannerWorkers)
-	trading.MinPrice = getEnvFloat("SCANNER_MIN_PRICE", trading.MinPrice)
-	trading.MinGapPercent = getEnvFloat("SCANNER_MIN_GAP_PCT", trading.MinGapPercent)
-	trading.MinRelativeVolume = getEnvFloat("SCANNER_MIN_RELATIVE_VOLUME", trading.MinRelativeVolume)
-	trading.MinPremarketVolume = int64(getEnvInt("SCANNER_MIN_PREMARKET_VOLUME", int(trading.MinPremarketVolume)))
-	trading.HydrationRequestsPerMin = getEnvInt("MARKET_DATA_HYDRATION_REQUESTS_PER_MIN", trading.HydrationRequestsPerMin)
-	trading.HydrationRetrySec = getEnvInt("MARKET_DATA_HYDRATION_RETRY_SEC", trading.HydrationRetrySec)
-	trading.HydrationQueueSize = getEnvInt("MARKET_DATA_HYDRATION_QUEUE_SIZE", trading.HydrationQueueSize)
-	trading.LimitOrderSlippageDollars = getEnvFloat("LIMIT_ORDER_SLIPPAGE_DOLLARS", trading.LimitOrderSlippageDollars)
-
-	paper := getEnvBool("ALPACA_PAPER", true)
-	rawDataFeed := strings.TrimSpace(os.Getenv("ALPACA_DATA_FEED"))
-	tradingBaseURL := getEnvString("ALPACA_TRADING_BASE_URL", "")
-	if tradingBaseURL == "" {
-		if paper {
-			tradingBaseURL = "https://paper-api.alpaca.markets"
-		} else {
-			tradingBaseURL = "https://api.alpaca.markets"
-		}
+	trading.EntryModelPath = getEnvString("ENTRY_MODEL_PATH", trading.EntryModelPath)
+	alpacaCfg, err := loadAlpacaConfig(nil)
+	if err != nil {
+		return AppConfig{}, err
 	}
 
 	cfg := AppConfig{
-		AppEnv:                     getEnvString("APP_ENV", "production"),
 		HTTPAddr:                   getEnvString("HTTP_ADDR", ":8080"),
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		SnapshotPersistIntervalSec: getEnvInt("SNAPSHOT_PERSIST_INTERVAL_SEC", 10),
-		StartupTimeoutSec:          getEnvInt("STARTUP_TIMEOUT_SEC", 30),
-		ShutdownTimeoutSec:         getEnvInt("SHUTDOWN_TIMEOUT_SEC", 10),
+		SnapshotPersistIntervalSec: 10,
+		StartupTimeoutSec:          30,
+		ShutdownTimeoutSec:         10,
 		Trading:                    trading,
-		Alpaca: AlpacaConfig{
-			APIKey:               strings.TrimSpace(os.Getenv("ALPACA_API_KEY")),
-			APISecret:            strings.TrimSpace(os.Getenv("ALPACA_API_SECRET")),
-			Paper:                paper,
-			LiveTradingEnabled:   getEnvBool("ALPACA_LIVE_TRADING_ENABLED", false),
-			DataFeed:             defaultDataFeed(rawDataFeed),
-			AutoSelectDataFeed:   rawDataFeed == "" || strings.EqualFold(rawDataFeed, "auto"),
-			TradingBaseURL:       strings.TrimRight(tradingBaseURL, "/"),
-			MarketDataBaseURL:    strings.TrimRight(getEnvString("ALPACA_MARKET_DATA_BASE_URL", "https://data.alpaca.markets"), "/"),
-			MarketDataStreamURL:  strings.TrimRight(getEnvString("ALPACA_MARKET_DATA_STREAM_URL", "wss://stream.data.alpaca.markets"), "/"),
-			SubscribeAllBars:     getEnvBool("ALPACA_STREAM_ALL", true),
-			Symbols:              parseCSVEnv("ALPACA_SYMBOLS"),
-			OrderFillTimeoutSec:  getEnvInt("ALPACA_ORDER_FILL_TIMEOUT_SEC", 20),
-			OrderPollIntervalSec: getEnvInt("ALPACA_ORDER_POLL_INTERVAL_SEC", 1),
-		},
+		Alpaca:                     alpacaCfg,
 	}
 
 	if cfg.Alpaca.APIKey == "" {
@@ -109,32 +74,59 @@ func Load() (AppConfig, error) {
 	if cfg.DatabaseURL == "" {
 		return AppConfig{}, fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.StartupTimeoutSec < 5 {
-		return AppConfig{}, fmt.Errorf("STARTUP_TIMEOUT_SEC must be at least 5")
-	}
-	if cfg.ShutdownTimeoutSec < 3 {
-		return AppConfig{}, fmt.Errorf("SHUTDOWN_TIMEOUT_SEC must be at least 3")
-	}
-	if cfg.SnapshotPersistIntervalSec < 1 {
-		return AppConfig{}, fmt.Errorf("SNAPSHOT_PERSIST_INTERVAL_SEC must be at least 1")
-	}
 	if cfg.Alpaca.OrderFillTimeoutSec < 5 {
-		return AppConfig{}, fmt.Errorf("ALPACA_ORDER_FILL_TIMEOUT_SEC must be at least 5")
+		return AppConfig{}, fmt.Errorf("default order fill timeout must be at least 5 seconds")
 	}
 	if cfg.Alpaca.OrderPollIntervalSec < 1 {
-		return AppConfig{}, fmt.Errorf("ALPACA_ORDER_POLL_INTERVAL_SEC must be at least 1")
+		return AppConfig{}, fmt.Errorf("default order poll interval must be at least 1 second")
 	}
 	if cfg.Trading.HydrationRequestsPerMin < 1 {
-		return AppConfig{}, fmt.Errorf("MARKET_DATA_HYDRATION_REQUESTS_PER_MIN must be at least 1")
+		return AppConfig{}, fmt.Errorf("default hydration budget must be at least 1 request per minute")
 	}
 	if cfg.Trading.HydrationRetrySec < 5 {
-		return AppConfig{}, fmt.Errorf("MARKET_DATA_HYDRATION_RETRY_SEC must be at least 5")
+		return AppConfig{}, fmt.Errorf("default hydration retry must be at least 5 seconds")
 	}
 	if cfg.Trading.HydrationQueueSize < 32 {
-		return AppConfig{}, fmt.Errorf("MARKET_DATA_HYDRATION_QUEUE_SIZE must be at least 32")
+		return AppConfig{}, fmt.Errorf("default hydration queue size must be at least 32")
 	}
 	if !cfg.Alpaca.Paper && !cfg.Alpaca.LiveTradingEnabled {
 		return AppConfig{}, fmt.Errorf("live trading requires ALPACA_LIVE_TRADING_ENABLED=true")
+	}
+	return cfg, nil
+}
+
+func loadAlpacaConfig(symbolOverrides []string) (AlpacaConfig, error) {
+	paper := getEnvBool("ALPACA_PAPER", true)
+	tradingBaseURL := "https://api.alpaca.markets"
+	if paper {
+		tradingBaseURL = "https://paper-api.alpaca.markets"
+	}
+
+	symbols := parseCSVEnv("ALPACA_SYMBOLS")
+	if len(symbolOverrides) > 0 {
+		symbols = normalizeSymbols(symbolOverrides)
+	}
+
+	cfg := AlpacaConfig{
+		APIKey:               strings.TrimSpace(os.Getenv("ALPACA_API_KEY")),
+		APISecret:            strings.TrimSpace(os.Getenv("ALPACA_API_SECRET")),
+		Paper:                paper,
+		LiveTradingEnabled:   getEnvBool("ALPACA_LIVE_TRADING_ENABLED", false),
+		DataFeed:             "iex",
+		AutoSelectDataFeed:   true,
+		TradingBaseURL:       strings.TrimRight(tradingBaseURL, "/"),
+		MarketDataBaseURL:    "https://data.alpaca.markets",
+		MarketDataStreamURL:  "wss://stream.data.alpaca.markets",
+		SubscribeAllBars:     len(symbols) == 0,
+		Symbols:              symbols,
+		OrderFillTimeoutSec:  20,
+		OrderPollIntervalSec: 1,
+	}
+	if cfg.APIKey == "" {
+		return AlpacaConfig{}, fmt.Errorf("ALPACA_API_KEY is required")
+	}
+	if cfg.APISecret == "" {
+		return AlpacaConfig{}, fmt.Errorf("ALPACA_API_SECRET is required")
 	}
 	return cfg, nil
 }
@@ -145,30 +137,6 @@ func getEnvString(key, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func getEnvInt(key string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func getEnvFloat(key string, fallback float64) float64 {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }
 
 func getEnvBool(key string, fallback bool) bool {
@@ -184,24 +152,22 @@ func getEnvBool(key string, fallback bool) bool {
 }
 
 func parseCSVEnv(key string) []string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.ToUpper(strings.TrimSpace(part))
-		if trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
+	return normalizeSymbols(strings.Split(strings.TrimSpace(os.Getenv(key)), ","))
 }
 
-func defaultDataFeed(value string) string {
-	if strings.EqualFold(value, "") || strings.EqualFold(value, "auto") {
-		return "iex"
+func normalizeSymbols(parts []string) []string {
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		trimmed := strings.ToUpper(strings.TrimSpace(part))
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
 	}
-	return strings.ToLower(strings.TrimSpace(value))
+	return out
 }

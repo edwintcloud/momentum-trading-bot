@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,10 +30,10 @@ type Client struct {
 
 // MarketDataCapabilities captures plan-dependent market-data behavior detected at runtime.
 type MarketDataCapabilities struct {
-	DetectedFeed               string
-	HistoricalRateLimitPerMin  int
-	UnlimitedWebsocketSymbols  bool
-	PlanName                   string
+	DetectedFeed              string
+	HistoricalRateLimitPerMin int
+	UnlimitedWebsocketSymbols bool
+	PlanName                  string
 }
 
 // Account is the subset of account fields used by the trading bot.
@@ -49,6 +50,13 @@ type BrokerPosition struct {
 	Qty           string `json:"qty"`
 	AvgEntryPrice string `json:"avg_entry_price"`
 	CurrentPrice  string `json:"current_price"`
+}
+
+type asset struct {
+	Symbol     string `json:"symbol"`
+	Tradable   bool   `json:"tradable"`
+	AssetClass string `json:"class"`
+	Status     string `json:"status"`
 }
 
 // RESTBar is a REST representation of an Alpaca stock bar.
@@ -336,6 +344,70 @@ func (c *Client) GetPremarketVolumes(ctx context.Context, symbols []string, day 
 		volumes[strings.ToUpper(symbol)] = total
 	}
 	return volumes, nil
+}
+
+// GetHistoricalBars fetches historical bars for multiple symbols over a window.
+func (c *Client) GetHistoricalBars(ctx context.Context, symbols []string, start, end time.Time, timeframe string) (map[string][]RESTBar, error) {
+	normalized := normalizeSymbols(symbols)
+	if len(normalized) == 0 {
+		return map[string][]RESTBar{}, nil
+	}
+	if timeframe == "" {
+		timeframe = "1Min"
+	}
+
+	allBars := make(map[string][]RESTBar, len(normalized))
+	pageToken := ""
+	for {
+		endpoint := fmt.Sprintf(
+			"%s/v2/stocks/bars?symbols=%s&timeframe=%s&start=%s&end=%s&adjustment=raw&feed=%s&sort=asc&limit=10000",
+			c.cfg.MarketDataBaseURL,
+			url.QueryEscape(strings.Join(normalized, ",")),
+			url.QueryEscape(timeframe),
+			url.QueryEscape(start.UTC().Format(time.RFC3339)),
+			url.QueryEscape(end.UTC().Format(time.RFC3339)),
+			url.QueryEscape(c.cfg.DataFeed),
+		)
+		if pageToken != "" {
+			endpoint += "&page_token=" + url.QueryEscape(pageToken)
+		}
+
+		var payload struct {
+			Bars          map[string][]RESTBar `json:"bars"`
+			NextPageToken string               `json:"next_page_token"`
+		}
+		if err := c.getJSON(ctx, endpoint, &payload); err != nil {
+			return nil, err
+		}
+		for symbol, bars := range payload.Bars {
+			allBars[strings.ToUpper(symbol)] = append(allBars[strings.ToUpper(symbol)], bars...)
+		}
+		if payload.NextPageToken == "" {
+			break
+		}
+		pageToken = payload.NextPageToken
+	}
+
+	return allBars, nil
+}
+
+// ListActiveEquitySymbols returns Alpaca's current tradable US equity symbol universe.
+func (c *Client) ListActiveEquitySymbols(ctx context.Context) ([]string, error) {
+	endpoint := c.cfg.TradingBaseURL + "/v2/assets?status=active&asset_class=us_equity"
+	var assets []asset
+	if err := c.getJSON(ctx, endpoint, &assets); err != nil {
+		return nil, err
+	}
+
+	symbols := make([]string, 0, len(assets))
+	for _, item := range assets {
+		if !item.Tradable {
+			continue
+		}
+		symbols = append(symbols, strings.ToUpper(strings.TrimSpace(item.Symbol)))
+	}
+	sort.Strings(symbols)
+	return symbols, nil
 }
 
 // NewsCatalyst holds a headline and its source URL.

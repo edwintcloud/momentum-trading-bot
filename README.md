@@ -10,14 +10,15 @@ Implemented backend flow:
 
 - market data stream
 - scanner filters for low-float momentum names
-- breakout strategy entries
-- stop-loss, profit-target, and trailing-stop exits
+- feature-enriched breakout entries with linear-model timing gate
+- stop-loss and trailing-stop exits
 - risk checks before execution
 - Alpaca order submission and fill polling
 - PostgreSQL event persistence
 - broker position bootstrap on startup
 - position and PnL tracking
 - operator controls and live dashboard updates
+- CSV-driven historical backtesting
 
 ## Prerequisites
 
@@ -33,6 +34,7 @@ Create a local `.env` file from `.env.example` and fill in at least:
 - `ALPACA_API_KEY`
 - `ALPACA_API_SECRET`
 - `DATABASE_URL`
+- `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` if you are using `docker compose`
 
 Mode selection:
 
@@ -41,19 +43,21 @@ Mode selection:
 
 The live-trading arm flag is intentional. The service refuses to start in live mode unless it is explicitly enabled.
 
-Market-data hydration controls:
+Optional overrides:
 
-- `MARKET_DATA_HYDRATION_REQUESTS_PER_MIN` defaults to `120`
-- `MARKET_DATA_HYDRATION_RETRY_SEC` defaults to `300`
-- `MARKET_DATA_HYDRATION_QUEUE_SIZE` defaults to `512`
+- `ALPACA_SYMBOLS=AAPL,TSLA` limits the stream to a watchlist; leaving it empty subscribes broadly
+- `ENTRY_MODEL_PATH=/path/to/model.json` loads a trained JSON entry model instead of the seeded default
+- `HTTP_ADDR=:8080` changes the bind address
 
-These are intentionally conservative. Alpaca documents `200 / min` historical market-data calls on the basic Trading API plan, and this bot uses a lower default to leave headroom for other API activity and avoid `429 Too Many Requests` responses.
+Everything else is now inferred automatically. On startup the bot probes Alpaca, detects the market-data plan/feed, reads broker equity, and tunes risk/scanner settings toward conservative momentum trading defaults.
 
-Feed and plan detection:
+What the bot auto-tunes from Alpaca:
 
-- `ALPACA_DATA_FEED=auto` lets the bot probe Alpaca on startup
-- Basic plans stay on `iex` and use a lower hydration budget
-- AlgoTrader Plus upgrades to `sip` automatically and increases the hydration budget based on the detected `X-RateLimit-Limit` header
+- data feed and historical hydration budget
+- starting capital and broker-backed day PnL
+- per-trade risk, daily loss limit, max open positions, and max exposure
+- scanner thresholds for price, gap, relative volume, and premarket volume
+- trailing-stop activation and entry-timing thresholds
 
 ## Run Locally
 
@@ -64,10 +68,56 @@ cd web
 npm install
 npm run build
 cd ..
-go run ./...
+go run .
 ```
 
 The backend and embedded dashboard are served from http://localhost:8080.
+
+## Run A Backtest
+
+Backtests replay historical minute bars through the same scanner, strategy, risk, and portfolio components used by live mode.
+
+Default behavior:
+
+- Alpaca is the default historical data source
+- `-start` is the only required argument
+- `-end` defaults to the current time
+- the entry model trains on the immediately preceding window of equal length before the backtest start
+- the symbol universe defaults to Alpaca's active tradable US equities, which approximates the live wildcard scanner
+
+Example:
+
+```sh
+go run . backtest -start 2026-03-10
+```
+
+Explicit end time:
+
+```sh
+go run . backtest -start 2026-03-10 -end 2026-03-31
+```
+
+Optional CSV fallback:
+
+```sh
+go run . backtest -data .\\data\\bars.csv -start 2026-03-10 -end 2026-03-31
+```
+
+Required CSV columns:
+
+- `timestamp`
+- `symbol`
+- `open`
+- `high`
+- `low`
+- `close`
+- `volume`
+
+Optional CSV columns:
+
+- `prev_close`
+- `catalyst`
+- `catalyst_url`
 
 ## Run With Docker Compose
 
@@ -176,7 +226,7 @@ The dashboard consumes `/api/dashboard` for the initial snapshot and `/ws` for l
 
 - Live market data is consumed from Alpaca stock WebSockets using bars, updated bars, and trading-status events.
 - Snapshot and premarket-volume hydration are rate-limited through a single queue so the bot stays under Alpaca market-data limits during wildcard subscriptions.
-- Orders are submitted to Alpaca with market orders and then polled until filled, rejected, canceled, expired, or timed out.
+- Orders are submitted to Alpaca with buffered limit prices and then polled until filled, rejected, canceled, expired, or timed out.
 - PostgreSQL persists logs, scanner candidates, execution reports, closed trades, and periodic dashboard snapshots.
 - Startup now fails fast if PostgreSQL is unreachable, Alpaca credentials are invalid, or live trading is selected without the explicit arming flag.
-- If you run with `ALPACA_STREAM_ALL=true`, wildcard streaming can still produce more candidate symbols than the hydration queue can enrich on a basic plan. For tighter scanner feedback, prefer an explicit `ALPACA_SYMBOLS` list.
+- If you leave `ALPACA_SYMBOLS` empty, wildcard streaming can still produce more candidate symbols than a basic market-data plan can hydrate. For tighter scanner feedback, prefer an explicit `ALPACA_SYMBOLS` list.

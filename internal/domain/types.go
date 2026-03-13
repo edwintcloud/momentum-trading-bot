@@ -29,16 +29,24 @@ type Tick struct {
 
 // Candidate is a stock that passed the scanner filters.
 type Candidate struct {
-	Symbol          string    `json:"symbol"`
-	Price           float64   `json:"price"`
-	GapPercent      float64   `json:"gapPercent"`
-	RelativeVolume  float64   `json:"relativeVolume"`
-	PreMarketVolume int64     `json:"premarketVolume"`
-	HighOfDay       float64   `json:"highOfDay"`
-	Score           float64   `json:"score"`
-	Catalyst        string    `json:"catalyst"`
-	CatalystURL     string    `json:"catalystUrl"`
-	Timestamp       time.Time `json:"timestamp"`
+	Symbol               string    `json:"symbol"`
+	Price                float64   `json:"price"`
+	Open                 float64   `json:"open"`
+	GapPercent           float64   `json:"gapPercent"`
+	RelativeVolume       float64   `json:"relativeVolume"`
+	PreMarketVolume      int64     `json:"premarketVolume"`
+	Volume               int64     `json:"volume"`
+	HighOfDay            float64   `json:"highOfDay"`
+	PriceVsOpenPct       float64   `json:"priceVsOpenPct"`
+	DistanceFromHighPct  float64   `json:"distanceFromHighPct"`
+	OneMinuteReturnPct   float64   `json:"oneMinuteReturnPct"`
+	ThreeMinuteReturnPct float64   `json:"threeMinuteReturnPct"`
+	VolumeRate           float64   `json:"volumeRate"`
+	MinutesSinceOpen     float64   `json:"minutesSinceOpen"`
+	Score                float64   `json:"score"`
+	Catalyst             string    `json:"catalyst"`
+	CatalystURL          string    `json:"catalystUrl"`
+	Timestamp            time.Time `json:"timestamp"`
 }
 
 // TradeSignal is emitted by the strategy for both entries and exits.

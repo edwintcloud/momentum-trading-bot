@@ -98,3 +98,26 @@ func TestStatusSnapshotIncludesBrokerDayPnL(t *testing.T) {
 		t.Fatalf("expected day pnl -6190.13, got %.2f", status.DayPnL)
 	}
 }
+
+func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	firstDay := time.Date(2026, time.March, 10, 15, 30, 0, 0, time.UTC)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "buy",
+		Price:    5,
+		Quantity: 100,
+		FilledAt: firstDay,
+	})
+	if manager.TradesToday() != 1 {
+		t.Fatalf("expected one trade on first day, got %d", manager.TradesToday())
+	}
+
+	manager.MarkPriceAt("SOUN", 5.2, firstDay.Add(20*time.Hour))
+	if manager.TradesToday() != 0 {
+		t.Fatalf("expected trade counter reset on next trading day, got %d", manager.TradesToday())
+	}
+}
