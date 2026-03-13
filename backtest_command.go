@@ -116,13 +116,16 @@ func runBacktest(args []string) error {
 	logBacktestDiagnostics(result.Diagnostics)
 
 	log.Printf(
-		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% net_pnl=%.2f ending_equity=%.2f max_drawdown=%.2f%% model=%s",
+		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%% model=%s",
 		result.Trades,
 		result.Wins,
 		result.Losses,
 		result.WinRate,
+		result.RealizedPnL,
+		result.UnrealizedPnL,
 		result.NetPnL,
 		result.EndingEquity,
+		result.OpenPositionsAtEnd,
 		result.MaxDrawdownPct,
 		result.ModelName,
 	)

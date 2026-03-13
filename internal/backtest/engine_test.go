@@ -87,3 +87,34 @@ func TestRunFallsBackWhenTrainingSamplesAreUnavailable(t *testing.T) {
 		t.Fatalf("expected training warning when samples are unavailable, got %+v", result)
 	}
 }
+
+func TestRunMarksOpenPositionsToMarketAtBacktestEnd(t *testing.T) {
+	result, err := Run(context.Background(), config.DefaultTradingConfig(), RunConfig{
+		Bars: []InputBar{
+			{Timestamp: time.Date(2026, 3, 9, 9, 30, 0, 0, time.UTC), Symbol: "APVO", Open: 10.00, High: 10.10, Low: 9.95, Close: 10.05, Volume: 50_000, PrevClose: 9.80},
+			{Timestamp: time.Date(2026, 3, 9, 9, 31, 0, 0, time.UTC), Symbol: "APVO", Open: 10.05, High: 10.10, Low: 10.00, Close: 10.02, Volume: 50_000, PrevClose: 9.80},
+			{Timestamp: time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC), Symbol: "APVO", Open: 11.10, High: 11.25, Low: 11.05, Close: 11.20, Volume: 200_000, PrevClose: 10.01},
+			{Timestamp: time.Date(2026, 3, 10, 8, 1, 0, 0, time.UTC), Symbol: "APVO", Open: 11.20, High: 11.35, Low: 11.18, Close: 11.30, Volume: 210_000, PrevClose: 10.01},
+			{Timestamp: time.Date(2026, 3, 10, 8, 2, 0, 0, time.UTC), Symbol: "APVO", Open: 11.30, High: 11.45, Low: 11.28, Close: 11.40, Volume: 220_000, PrevClose: 10.01},
+			{Timestamp: time.Date(2026, 3, 10, 9, 30, 0, 0, time.UTC), Symbol: "APVO", Open: 11.40, High: 11.55, Low: 11.35, Close: 11.50, Volume: 230_000, PrevClose: 10.01},
+			{Timestamp: time.Date(2026, 3, 10, 9, 31, 0, 0, time.UTC), Symbol: "APVO", Open: 11.50, High: 11.85, Low: 11.48, Close: 11.80, Volume: 240_000, PrevClose: 10.01},
+			{Timestamp: time.Date(2026, 3, 10, 9, 32, 0, 0, time.UTC), Symbol: "APVO", Open: 11.80, High: 12.05, Low: 11.75, Close: 12.00, Volume: 250_000, PrevClose: 10.01},
+		},
+		End: time.Date(2026, 3, 10, 9, 32, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("expected mark-to-market backtest to complete, got %v", err)
+	}
+	if result.Trades != 0 {
+		t.Fatalf("expected no closed trades before backtest cutoff, got %+v", result)
+	}
+	if result.OpenPositionsAtEnd == 0 {
+		t.Fatalf("expected open positions to remain open at backtest end, got %+v", result)
+	}
+	if result.UnrealizedPnL <= 0 {
+		t.Fatalf("expected unrealized profit to be carried into ending equity, got %+v", result)
+	}
+	if result.NetPnL != result.UnrealizedPnL {
+		t.Fatalf("expected net pnl to reflect mark-to-market when nothing is closed, got %+v", result)
+	}
+}

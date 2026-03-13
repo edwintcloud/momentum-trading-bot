@@ -54,6 +54,8 @@ type Result struct {
 	ModelName            string
 	ModelTrainingWarning string
 	StartingCapital      float64
+	RealizedPnL          float64
+	UnrealizedPnL        float64
 	EndingEquity         float64
 	NetPnL               float64
 	MaxDrawdownPct       float64
@@ -61,6 +63,7 @@ type Result struct {
 	Wins                 int
 	Losses               int
 	WinRate              float64
+	OpenPositionsAtEnd   int
 	Diagnostics          Diagnostics
 	ClosedTrades         []domain.ClosedTrade
 }
@@ -226,13 +229,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		equityCurve = append(equityCurve, book.EffectiveCapital()+book.RealizedPnL()+book.UnrealizedPnL()-cfg.StartingCapital)
 	}
 
-	lastTick := records[len(records)-1].tick
-	for _, order := range book.PendingCloseAll("backtest-end") {
-		order.Timestamp = lastTick.Timestamp
-		applyPaperFill(book, order, lastTick.Timestamp)
-	}
-
 	closedTrades := book.GetClosedTrades()
+	openPositionsAtEnd := book.OpenPositionCount()
 	wins := 0
 	for _, trade := range closedTrades {
 		if trade.PnL > 0 {
@@ -240,7 +238,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		}
 	}
 
-	netPnL := book.RealizedPnL()
+	realizedPnL := book.RealizedPnL()
+	unrealizedPnL := book.UnrealizedPnL()
+	netPnL := realizedPnL + unrealizedPnL
 	endingEquity := cfg.StartingCapital + netPnL
 	winRate := 0.0
 	if len(closedTrades) > 0 {
@@ -251,6 +251,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		ModelName:            model.Name,
 		ModelTrainingWarning: trainingWarning,
 		StartingCapital:      cfg.StartingCapital,
+		RealizedPnL:          round2(realizedPnL),
+		UnrealizedPnL:        round2(unrealizedPnL),
 		EndingEquity:         round2(endingEquity),
 		NetPnL:               round2(netPnL),
 		MaxDrawdownPct:       round2(maxDrawdownPct(equityCurve, cfg.StartingCapital)),
@@ -258,6 +260,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		Wins:                 wins,
 		Losses:               len(closedTrades) - wins,
 		WinRate:              round2(winRate),
+		OpenPositionsAtEnd:   openPositionsAtEnd,
 		Diagnostics:          diagnostics,
 		ClosedTrades:         closedTrades,
 	}, nil
