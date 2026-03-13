@@ -80,24 +80,35 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 
 // EvaluateTick applies the scanner filters and feature extraction to a tick.
 func (s *Scanner) EvaluateTick(tick domain.Tick) (domain.Candidate, bool) {
-	return s.evaluateTick(tick)
+	candidate, ok, _ := s.evaluateTickDetailed(tick)
+	return candidate, ok
+}
+
+// EvaluateTickDetailed applies the scanner filters and returns the block reason when rejected.
+func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
+	return s.evaluateTickDetailed(tick)
 }
 
 func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
+	candidate, ok, _ := s.evaluateTickDetailed(tick)
+	return candidate, ok
+}
+
+func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
 	if tick.Price <= s.config.MinPrice {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "min-price"
 	}
 	if tick.GapPercent <= s.config.MinGapPercent {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "min-gap"
 	}
 	if tick.RelativeVolume <= s.config.MinRelativeVolume {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "min-relative-volume"
 	}
 	if tick.PreMarketVolume <= s.config.MinPremarketVolume {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "min-premarket-volume"
 	}
 	if !tick.VolumeSpike {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "volume-spike"
 	}
 
 	oneMinuteReturn, threeMinuteReturn, volumeRate := s.updateSymbolState(tick)
@@ -129,7 +140,7 @@ func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
 		Catalyst:             tick.Catalyst,
 		CatalystURL:          tick.CatalystURL,
 		Timestamp:            tick.Timestamp,
-	}, true
+	}, true, "candidate"
 }
 
 func (s *Scanner) updateSymbolState(tick domain.Tick) (float64, float64, float64) {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,6 +86,7 @@ func runBacktest(args []string) error {
 		} else {
 			log.Printf("Backtest account tuning skipped: %v", accountErr)
 		}
+		logBacktestConfig(cfg)
 
 		symbols, err := resolveBacktestSymbols(setupCtx, client)
 		if err != nil {
@@ -111,6 +113,7 @@ func runBacktest(args []string) error {
 	if result.ModelTrainingWarning != "" {
 		log.Printf("Backtest entry-model training skipped: %s. Using model=%s", result.ModelTrainingWarning, result.ModelName)
 	}
+	logBacktestDiagnostics(result.Diagnostics)
 
 	log.Printf(
 		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% net_pnl=%.2f ending_equity=%.2f max_drawdown=%.2f%% model=%s",
@@ -262,4 +265,76 @@ func formatLogTime(value time.Time) string {
 		return "n/a"
 	}
 	return value.In(marketTimeLocation()).Format(time.RFC3339)
+}
+
+func logBacktestConfig(cfg config.TradingConfig) {
+	log.Printf(
+		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d model_threshold=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trailing_stop=%.2f trailing_activation=%.2f",
+		cfg.MinPrice,
+		cfg.MinGapPercent,
+		cfg.MinRelativeVolume,
+		cfg.MinPremarketVolume,
+		cfg.EntryModelMinPredictedReturnPct,
+		cfg.RiskPerTradePct,
+		cfg.MaxTradesPerDay,
+		cfg.MaxOpenPositions,
+		cfg.MaxExposurePct,
+		cfg.StopLossPct,
+		cfg.TrailingStopPct,
+		cfg.TrailingStopActivationPct,
+	)
+}
+
+func logBacktestDiagnostics(diag backtest.Diagnostics) {
+	log.Printf(
+		"Backtest funnel bars_loaded=%d bars_in_window=%d train_candidates=%d train_samples=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
+		diag.BarsLoaded,
+		diag.BarsInWindow,
+		diag.TrainingCandidates,
+		diag.TrainingSamples,
+		diag.EntryCandidates,
+		diag.EntrySignals,
+		diag.EntryRiskApproved,
+		diag.ExitChecks,
+		diag.ExitSignals,
+		diag.ExitRiskApproved,
+	)
+	logReasonCounts("scanner rejects", diag.ScannerRejects, diag.BarsInWindow)
+	logReasonCounts("strategy entry rejects", diag.EntryRejects, diag.EntryCandidates)
+	logReasonCounts("risk entry rejects", diag.EntryRiskRejects, diag.EntrySignals)
+	logReasonCounts("strategy exit rejects", diag.ExitRejects, diag.ExitChecks)
+	logReasonCounts("risk exit rejects", diag.ExitRiskRejects, diag.ExitSignals)
+}
+
+func logReasonCounts(label string, counts map[string]int, total int) {
+	if len(counts) == 0 {
+		return
+	}
+	type reasonCount struct {
+		reason string
+		count  int
+	}
+	reasons := make([]reasonCount, 0, len(counts))
+	for reason, count := range counts {
+		reasons = append(reasons, reasonCount{reason: reason, count: count})
+	}
+	sort.Slice(reasons, func(i, j int) bool {
+		if reasons[i].count == reasons[j].count {
+			return reasons[i].reason < reasons[j].reason
+		}
+		return reasons[i].count > reasons[j].count
+	})
+	limit := len(reasons)
+	if limit > 5 {
+		limit = 5
+	}
+	parts := make([]string, 0, limit)
+	for _, item := range reasons[:limit] {
+		share := 0.0
+		if total > 0 {
+			share = (float64(item.count) / float64(total)) * 100
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d(%.2f%%)", item.reason, item.count, share))
+	}
+	log.Printf("Backtest %s %s", label, strings.Join(parts, " "))
 }

@@ -86,32 +86,50 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 
 // EvaluateCandidate applies the entry rules to a scanner candidate.
 func (s *Strategy) EvaluateCandidate(candidate domain.Candidate) (domain.TradeSignal, bool) {
-	return s.evaluateCandidate(candidate)
+	signal, ok, _ := s.evaluateCandidateDetailed(candidate)
+	return signal, ok
+}
+
+// EvaluateCandidateDetailed applies the entry rules and returns the block reason when rejected.
+func (s *Strategy) EvaluateCandidateDetailed(candidate domain.Candidate) (domain.TradeSignal, bool, string) {
+	return s.evaluateCandidateDetailed(candidate)
 }
 
 // EvaluateExit applies the managed exit rules to a market tick.
 func (s *Strategy) EvaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
-	return s.evaluateExit(tick)
+	signal, ok, _ := s.evaluateExitDetailed(tick)
+	return signal, ok
+}
+
+// EvaluateExitDetailed applies the exit rules and returns the decision reason.
+func (s *Strategy) EvaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, bool, string) {
+	return s.evaluateExitDetailed(tick)
 }
 
 func (s *Strategy) evaluateCandidate(candidate domain.Candidate) (domain.TradeSignal, bool) {
+	signal, ok, _ := s.evaluateCandidateDetailed(candidate)
+	return signal, ok
+}
+
+func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain.TradeSignal, bool, string) {
+	decisionAt := decisionTime(candidate.Timestamp)
 	if !s.runtime.CanOpenNewPositions() {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "trading-paused"
 	}
 	if s.portfolio.HasPosition(candidate.Symbol) {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "has-position"
 	}
 	if lastEntry, exists := s.lastEntryAt[candidate.Symbol]; exists {
-		if time.Since(lastEntry) < time.Duration(s.config.EntryCooldownSec)*time.Second {
-			return domain.TradeSignal{}, false
+		if decisionAt.Sub(lastEntry) < time.Duration(s.config.EntryCooldownSec)*time.Second {
+			return domain.TradeSignal{}, false, "entry-cooldown"
 		}
 	}
 	if candidate.Price < candidate.HighOfDay*0.995 {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "below-breakout-zone"
 	}
 	predictedReturn := s.entryModel.Predict(candidate)
 	if s.config.EntryModelEnabled && predictedReturn < s.config.EntryModelMinPredictedReturnPct {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "model-threshold"
 	}
 
 	quantity := int64(0)
@@ -123,7 +141,7 @@ func (s *Strategy) evaluateCandidate(candidate domain.Candidate) (domain.TradeSi
 	if quantity < 1 {
 		quantity = 1
 	}
-	s.lastEntryAt[candidate.Symbol] = time.Now().UTC()
+	s.lastEntryAt[candidate.Symbol] = decisionAt
 
 	return domain.TradeSignal{
 		Symbol:     candidate.Symbol,
@@ -132,18 +150,24 @@ func (s *Strategy) evaluateCandidate(candidate domain.Candidate) (domain.TradeSi
 		Quantity:   quantity,
 		Reason:     "ml-breakout-entry",
 		Confidence: predictedReturn,
-		Timestamp:  time.Now().UTC(),
-	}, true
+		Timestamp:  decisionAt,
+	}, true, "entry-signal"
 }
 
 func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
+	signal, ok, _ := s.evaluateExitDetailed(tick)
+	return signal, ok
+}
+
+func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, bool, string) {
+	decisionAt := decisionTime(tick.Timestamp)
 	position, exists := s.portfolio.Position(tick.Symbol)
 	if !exists {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "no-position"
 	}
 	if lastExit, seen := s.lastExitAt[tick.Symbol]; seen {
-		if time.Since(lastExit) < time.Duration(s.config.ExitCooldownSec)*time.Second {
-			return domain.TradeSignal{}, false
+		if decisionAt.Sub(lastExit) < time.Duration(s.config.ExitCooldownSec)*time.Second {
+			return domain.TradeSignal{}, false, "exit-cooldown"
 		}
 	}
 
@@ -158,10 +182,10 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	case position.HighestPrice >= trailingActivationPrice && tick.Price <= trailingStop:
 		reason = "trailing-stop"
 	default:
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "hold"
 	}
 
-	s.lastExitAt[tick.Symbol] = time.Now().UTC()
+	s.lastExitAt[tick.Symbol] = decisionAt
 	return domain.TradeSignal{
 		Symbol:     tick.Symbol,
 		Side:       "sell",
@@ -169,6 +193,13 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		Quantity:   position.Quantity,
 		Reason:     reason,
 		Confidence: 1,
-		Timestamp:  time.Now().UTC(),
-	}, true
+		Timestamp:  decisionAt,
+	}, true, reason
+}
+
+func decisionTime(timestamp time.Time) time.Time {
+	if timestamp.IsZero() {
+		return time.Now().UTC()
+	}
+	return timestamp.UTC()
 }

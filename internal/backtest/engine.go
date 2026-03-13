@@ -61,7 +61,27 @@ type Result struct {
 	Wins                 int
 	Losses               int
 	WinRate              float64
+	Diagnostics          Diagnostics
 	ClosedTrades         []domain.ClosedTrade
+}
+
+// Diagnostics summarizes how bars moved through the backtest decision funnel.
+type Diagnostics struct {
+	BarsLoaded         int
+	BarsInWindow       int
+	EntryCandidates    int
+	EntrySignals       int
+	EntryRiskApproved  int
+	ExitChecks         int
+	ExitSignals        int
+	ExitRiskApproved   int
+	TrainingCandidates int
+	TrainingSamples    int
+	ScannerRejects     map[string]int
+	EntryRejects       map[string]int
+	EntryRiskRejects   map[string]int
+	ExitRejects        map[string]int
+	ExitRiskRejects    map[string]int
 }
 
 type bar struct {
@@ -96,6 +116,11 @@ type symbolState struct {
 	lastClose     float64
 }
 
+type trainingStats struct {
+	candidateBars int
+	samples       int
+}
+
 // Run executes a CSV-driven backtest using the live strategy/risk/portfolio components.
 func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Result, error) {
 	if runCfg.LabelLookaheadBars <= 0 {
@@ -112,11 +137,21 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 
 	runtimeState := runtime.NewState()
 	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
+	diagnostics := Diagnostics{
+		BarsLoaded:       len(records),
+		ScannerRejects:   make(map[string]int),
+		EntryRejects:     make(map[string]int),
+		EntryRiskRejects: make(map[string]int),
+		ExitRejects:      make(map[string]int),
+		ExitRiskRejects:  make(map[string]int),
+	}
 
 	model := strategy.DefaultEntryModel()
 	trainingWarning := ""
 	if !runCfg.TrainStart.IsZero() && !runCfg.TrainEnd.IsZero() {
-		trained, trainErr := trainModel(records, symbolIndices, runCfg)
+		trained, stats, trainErr := trainModel(records, symbolIndices, runCfg)
+		diagnostics.TrainingCandidates = stats.candidateBars
+		diagnostics.TrainingSamples = stats.samples
 		if trainErr != nil {
 			trainingWarning = trainErr.Error()
 		}
@@ -146,21 +181,46 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		if !withinWindow(rec.bar.Timestamp, runCfg.Start, runCfg.End) {
 			continue
 		}
+		diagnostics.BarsInWindow++
 
 		book.MarkPriceAt(rec.tick.Symbol, rec.tick.Price, rec.tick.Timestamp)
-		if exitSignal, ok := strat.EvaluateExit(rec.tick); ok {
-			if order, approved, _ := riskEngine.Evaluate(exitSignal); approved {
+		hadPosition := book.HasPosition(rec.tick.Symbol)
+		exitSignal, exitOK, exitReason := strat.EvaluateExitDetailed(rec.tick)
+		if hadPosition {
+			diagnostics.ExitChecks++
+		}
+		if exitOK {
+			diagnostics.ExitSignals++
+			if order, approved, riskReason := riskEngine.Evaluate(exitSignal); approved {
+				diagnostics.ExitRiskApproved++
 				applyPaperFill(book, order, rec.tick.Timestamp)
+			} else {
+				incrementReason(diagnostics.ExitRiskRejects, riskReason)
 			}
+		} else if hadPosition {
+			incrementReason(diagnostics.ExitRejects, exitReason)
 		}
 
-		candidate, ok := scan.EvaluateTick(rec.tick)
+		candidate, ok, scanReason := scan.EvaluateTickDetailed(rec.tick)
 		if ok {
-			if signal, shouldEnter := strat.EvaluateCandidate(candidate); shouldEnter {
-				if order, approved, _ := riskEngine.Evaluate(signal); approved {
+			diagnostics.EntryCandidates++
+			if signal, shouldEnter, entryReason := strat.EvaluateCandidateDetailed(candidate); shouldEnter {
+				diagnostics.EntrySignals++
+				if order, approved, riskReason := riskEngine.Evaluate(signal); approved {
+					diagnostics.EntryRiskApproved++
 					applyPaperFill(book, order, rec.tick.Timestamp)
+				} else {
+					incrementReason(diagnostics.EntryRiskRejects, riskReason)
+					if riskReason == "daily-loss-limit" {
+						runtimeState.RecordLog("warn", "risk", "blocked buy "+signal.Symbol+": "+riskReason)
+						runtimeState.EmergencyStop()
+					}
 				}
+			} else {
+				incrementReason(diagnostics.EntryRejects, entryReason)
 			}
+		} else {
+			incrementReason(diagnostics.ScannerRejects, scanReason)
 		}
 
 		equityCurve = append(equityCurve, book.EffectiveCapital()+book.RealizedPnL()+book.UnrealizedPnL()-cfg.StartingCapital)
@@ -198,6 +258,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		Wins:                 wins,
 		Losses:               len(closedTrades) - wins,
 		WinRate:              round2(winRate),
+		Diagnostics:          diagnostics,
 		ClosedTrades:         closedTrades,
 	}, nil
 }
@@ -353,8 +414,9 @@ func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []
 	return records, symbolIndices
 }
 
-func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConfig) (strategy.LinearModel, error) {
+func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConfig) (strategy.LinearModel, trainingStats, error) {
 	samples := make([]strategy.TrainingSample, 0)
+	stats := trainingStats{}
 	for symbol, indices := range symbolIndices {
 		_ = symbol
 		for pos, idx := range indices {
@@ -362,6 +424,7 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 			if !rec.hasCandidate || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.TrainEnd) {
 				continue
 			}
+			stats.candidateBars++
 			maxHigh := rec.bar.Close
 			for lookahead := 1; lookahead <= runCfg.LabelLookaheadBars && pos+lookahead < len(indices); lookahead++ {
 				future := records[indices[pos+lookahead]]
@@ -372,20 +435,22 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 					maxHigh = future.bar.High
 				}
 			}
-			if maxHigh <= rec.bar.Close {
-				continue
+			forwardReturn := 0.0
+			if maxHigh > rec.bar.Close {
+				forwardReturn = ((maxHigh - rec.bar.Close) / rec.bar.Close) * 100
 			}
-			forwardReturn := ((maxHigh - rec.bar.Close) / rec.bar.Close) * 100
 			samples = append(samples, strategy.TrainingSample{
 				Candidate:        rec.candidate,
 				ForwardReturnPct: forwardReturn,
 			})
+			stats.samples++
 		}
 	}
 	if len(samples) == 0 {
-		return strategy.LinearModel{}, fmt.Errorf("no training samples produced from the requested train window")
+		return strategy.LinearModel{}, stats, fmt.Errorf("no training samples produced from the requested train window")
 	}
-	return strategy.TrainLinearModel(samples)
+	model, err := strategy.TrainLinearModel(samples)
+	return model, stats, err
 }
 
 func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
@@ -576,4 +641,11 @@ func mustLoadLocation(name string) *time.Location {
 		panic(err)
 	}
 	return location
+}
+
+func incrementReason(counts map[string]int, reason string) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	counts[reason]++
 }
