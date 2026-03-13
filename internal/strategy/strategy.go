@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
@@ -36,9 +37,12 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case candidate := <-candidates:
-			signal, ok := s.evaluateCandidate(candidate)
+		case candidate, ok := <-candidates:
 			if !ok {
+				return fmt.Errorf("strategy candidates channel closed")
+			}
+			signal, shouldEmit := s.evaluateCandidate(candidate)
+			if !shouldEmit {
 				continue
 			}
 			select {
@@ -46,9 +50,12 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 				return ctx.Err()
 			case out <- signal:
 			}
-		case tick := <-ticks:
-			signal, ok := s.evaluateExit(tick)
+		case tick, ok := <-ticks:
 			if !ok {
+				return fmt.Errorf("strategy ticks channel closed")
+			}
+			signal, shouldEmit := s.evaluateExit(tick)
+			if !shouldEmit {
 				continue
 			}
 			select {
@@ -77,7 +84,7 @@ func (s *Strategy) evaluateCandidate(candidate domain.Candidate) (domain.TradeSi
 	}
 
 	quantity := int64(0)
-	riskAmount := s.config.StartingCapital * s.config.RiskPerTradePct
+	riskAmount := s.portfolio.EffectiveCapital() * s.config.RiskPerTradePct
 	stopDistance := candidate.Price * s.config.StopLossPct
 	if stopDistance > 0 {
 		quantity = int64(riskAmount / stopDistance)

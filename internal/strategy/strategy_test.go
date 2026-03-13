@@ -62,3 +62,27 @@ func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 		t.Fatalf("unexpected exit signal: %+v", signal)
 	}
 }
+
+func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(50000, 50500)
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	signal, ok := strat.evaluateCandidate(domain.Candidate{
+		Symbol:         "HUMA",
+		Price:          10.00,
+		HighOfDay:      10.05,
+		GapPercent:     21,
+		RelativeVolume: 6.4,
+		Score:          22,
+		Timestamp:      time.Now().UTC(),
+	})
+	if !ok {
+		t.Fatal("expected strategy to emit entry signal")
+	}
+	if signal.Quantity != 1000 {
+		t.Fatalf("expected quantity 1000 using broker equity sizing, got %d", signal.Quantity)
+	}
+}

@@ -38,6 +38,7 @@ type MarketDataCapabilities struct {
 // Account is the subset of account fields used by the trading bot.
 type Account struct {
 	Equity         string `json:"equity"`
+	LastEquity     string `json:"last_equity"`
 	PortfolioValue string `json:"portfolio_value"`
 	Cash           string `json:"cash"`
 }

@@ -76,6 +76,7 @@ func main() {
 	runtimeState.SetDependencyStatus("alpaca_trading", true, liveModeLabel(appConfig.Alpaca.Paper))
 	runtimeState.RecordLog("info", "system", "live alpaca mode enabled")
 	seedFromBroker(ctx, alpacaClient, portfolioManager, runtimeState)
+	startBrokerAccountSync(ctx, alpacaClient, portfolioManager, runtimeState)
 
 	// Graceful shutdown on SIGINT/SIGTERM
 	sig := make(chan os.Signal, 1)
@@ -117,7 +118,10 @@ func main() {
 			select {
 			case <-ctx.Done():
 				return
-			case tick := <-marketUpdates:
+			case tick, ok := <-marketUpdates:
+				if !ok {
+					return
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -271,6 +275,9 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 		if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
 			portfolioManager.SetStartingCapital(math.Round(equity*100) / 100)
 		}
+		if equity, lastEquity, ok := brokerAccountValues(account); ok {
+			portfolioManager.SyncBrokerAccount(equity, lastEquity)
+		}
 	}
 
 	positionsCtx, positionsCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -300,6 +307,39 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 			UpdatedAt:     now,
 		})
 	}
+}
+
+func startBrokerAccountSync(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				account, err := client.GetAccount(accountCtx)
+				cancel()
+				if err != nil {
+					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker account sync failed: %v", err))
+					continue
+				}
+				if equity, lastEquity, ok := brokerAccountValues(account); ok {
+					portfolioManager.SyncBrokerAccount(equity, lastEquity)
+				}
+			}
+		}
+	}()
+}
+
+func brokerAccountValues(account alpaca.Account) (float64, float64, bool) {
+	equity, equityErr := strconv.ParseFloat(account.Equity, 64)
+	lastEquity, lastEquityErr := strconv.ParseFloat(account.LastEquity, 64)
+	if equityErr != nil || lastEquityErr != nil || equity <= 0 || lastEquity <= 0 {
+		return 0, 0, false
+	}
+	return equity, lastEquity, true
 }
 
 func stringsBeforeDecimal(value string) string {

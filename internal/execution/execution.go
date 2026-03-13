@@ -31,7 +31,10 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, portf
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case order := <-in:
+		case order, ok := <-in:
+			if !ok {
+				return fmt.Errorf("execution input channel closed")
+			}
 			err := e.fill(ctx, order, portfolioManager)
 			if err != nil {
 				e.runtime.RecordLog("error", "execution", err.Error())

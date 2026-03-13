@@ -61,3 +61,47 @@ func TestRiskAllowsExitEvenWhenPaused(t *testing.T) {
 		t.Fatalf("unexpected request: %+v", request)
 	}
 }
+
+func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(93809.87, 100000)
+	engine := NewEngine(cfg, book, runtimeState)
+
+	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "EONR",
+		Side:      "buy",
+		Price:     3.25,
+		Quantity:  100,
+		Timestamp: time.Now().UTC(),
+	})
+	if approved {
+		t.Fatal("expected broker day loss to block new entries")
+	}
+	if reason != "daily-loss-limit" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(50000, 50000)
+	engine := NewEngine(cfg, book, runtimeState)
+
+	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "EONR",
+		Side:      "buy",
+		Price:     10,
+		Quantity:  2000,
+		Timestamp: time.Now().UTC(),
+	})
+	if approved {
+		t.Fatal("expected max exposure block using broker effective capital")
+	}
+	if reason != "max-exposure" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}

@@ -114,6 +114,8 @@ type StatusSnapshot struct {
 	EmergencyStop    bool      `json:"emergencyStop"`
 	LastUpdate       time.Time `json:"lastUpdate"`
 	StartingCapital  float64   `json:"startingCapital"`
+	BrokerEquity     float64   `json:"brokerEquity"`
+	DayPnL           float64   `json:"dayPnL"`
 	RealizedPnL      float64   `json:"realizedPnL"`
 	UnrealizedPnL    float64   `json:"unrealizedPnL"`
 	NetPnL           float64   `json:"netPnL"`

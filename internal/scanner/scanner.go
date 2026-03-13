@@ -36,9 +36,13 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 				select {
 				case <-ctx.Done():
 					return
-				case tick := <-in:
-					candidate, ok := s.evaluateTick(tick)
+				case tick, ok := <-in:
 					if !ok {
+						s.runtime.RecordLog("warn", "scanner", "input channel closed")
+						return
+					}
+					candidate, shouldEmit := s.evaluateTick(tick)
+					if !shouldEmit {
 						continue
 					}
 					s.runtime.RecordCandidate(candidate)

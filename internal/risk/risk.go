@@ -29,7 +29,10 @@ func (r *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case signal := <-in:
+		case signal, ok := <-in:
+			if !ok {
+				return fmt.Errorf("risk input channel closed")
+			}
 			request, approved, reason := r.Evaluate(signal)
 			if !approved {
 				r.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s %s: %s", signal.Side, signal.Symbol, reason))
@@ -74,11 +77,12 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if r.portfolio.OpenPositionCount() >= r.config.MaxOpenPositions {
 		return domain.OrderRequest{}, false, "max-open-positions"
 	}
-	if r.portfolio.RealizedPnL()+r.portfolio.UnrealizedPnL() <= -(r.config.StartingCapital * r.config.DailyLossLimitPct) {
+	effectiveCapital := r.portfolio.EffectiveCapital()
+	if r.portfolio.DayPnL() <= -(effectiveCapital * r.config.DailyLossLimitPct) {
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 	exposureAfter := r.portfolio.Exposure() + (float64(signal.Quantity) * signal.Price)
-	maxExposure := r.config.StartingCapital * r.config.MaxExposurePct
+	maxExposure := effectiveCapital * r.config.MaxExposurePct
 	if exposureAfter > maxExposure {
 		return domain.OrderRequest{}, false, "max-exposure"
 	}

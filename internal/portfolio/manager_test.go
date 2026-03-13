@@ -82,3 +82,19 @@ func TestPortfolioSyncPositionQuantityReconcilesStaleShareCount(t *testing.T) {
 		t.Fatal("expected position removal when broker quantity reaches zero")
 	}
 }
+
+func TestStatusSnapshotIncludesBrokerDayPnL(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+
+	manager.SyncBrokerAccount(93809.87, 100000)
+	status := manager.StatusSnapshot()
+
+	if status.BrokerEquity != 93809.87 {
+		t.Fatalf("expected broker equity 93809.87, got %.2f", status.BrokerEquity)
+	}
+	if status.DayPnL != -6190.13 {
+		t.Fatalf("expected day pnl -6190.13, got %.2f", status.DayPnL)
+	}
+}

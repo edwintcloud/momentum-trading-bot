@@ -6,6 +6,8 @@ const emptySnapshot = {
     paused: false,
     emergencyStop: false,
     startingCapital: 0,
+    brokerEquity: 0,
+    dayPnL: 0,
     realizedPnL: 0,
     unrealizedPnL: 0,
     netPnL: 0,
@@ -144,7 +146,7 @@ export function App() {
 
       <section className="stats-grid">
         <StatCard label="System" value={snapshot.status.emergencyStop ? 'Stopped' : snapshot.status.paused ? 'Paused' : 'Running'} tone={statusTone} />
-        <StatCard label="Net PnL" value={money.format(snapshot.status.netPnL)} tone={snapshot.status.netPnL >= 0 ? 'good' : 'danger'} />
+        <StatCard label="Today's PnL" value={money.format(snapshot.status.dayPnL)} tone={snapshot.status.dayPnL >= 0 ? 'good' : 'danger'} />
         <StatCard label="Exposure" value={money.format(snapshot.status.exposure)} />
         <StatCard label="Open Positions" value={number.format(snapshot.status.openPositions)} />
         <StatCard label="Trades Today" value={number.format(snapshot.status.tradesToday)} />
@@ -162,12 +164,20 @@ export function App() {
             <strong>{money.format(snapshot.status.startingCapital)}</strong>
           </div>
           <div>
+            <span>Broker Equity</span>
+            <strong>{money.format(snapshot.status.brokerEquity)}</strong>
+          </div>
+          <div>
             <span>Realized PnL</span>
             <strong>{money.format(snapshot.status.realizedPnL)}</strong>
           </div>
           <div>
             <span>Unrealized PnL</span>
             <strong>{money.format(snapshot.status.unrealizedPnL)}</strong>
+          </div>
+          <div>
+            <span>Local Net PnL</span>
+            <strong>{money.format(snapshot.status.netPnL)}</strong>
           </div>
           <div>
             <span>Position Limit</span>

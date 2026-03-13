@@ -84,7 +84,10 @@ func (r *Recorder) loop(ctx context.Context) {
 		case <-ctx.Done():
 			r.drain()
 			return
-		case event := <-r.events:
+		case event, ok := <-r.events:
+			if !ok {
+				return
+			}
 			_ = r.persist(context.Background(), event)
 		}
 	}

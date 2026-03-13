@@ -21,6 +21,8 @@ type Manager struct {
 	positions       map[string]domain.Position
 	closedTrades    []domain.ClosedTrade
 	startingCapital float64
+	brokerEquity    float64
+	dayPnL          float64
 	realizedPnL     float64
 	tradesToday     int
 }
@@ -47,6 +49,18 @@ func (m *Manager) SetStartingCapital(amount float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startingCapital = amount
+}
+
+// SyncBrokerAccount updates broker-backed equity and daily PnL shown on the dashboard.
+func (m *Manager) SyncBrokerAccount(equity float64, lastEquity float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if equity > 0 {
+		m.brokerEquity = round2(equity)
+	}
+	if lastEquity > 0 && equity > 0 {
+		m.dayPnL = round2(equity - lastEquity)
+	}
 }
 
 // SeedPosition initializes a broker-backed position on startup.
@@ -274,6 +288,32 @@ func (m *Manager) RealizedPnL() float64 {
 	return round2(m.realizedPnL)
 }
 
+// DayPnL returns the broker-backed day PnL when available, otherwise falls
+// back to the local bot ledger.
+func (m *Manager) DayPnL() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.brokerEquity > 0 {
+		return round2(m.dayPnL)
+	}
+	var unrealized float64
+	for _, position := range m.positions {
+		unrealized += position.UnrealizedPnL
+	}
+	return round2(m.realizedPnL + unrealized)
+}
+
+// EffectiveCapital returns broker equity when available, otherwise configured
+// starting capital.
+func (m *Manager) EffectiveCapital() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.brokerEquity > 0 {
+		return round2(m.brokerEquity)
+	}
+	return round2(m.startingCapital)
+}
+
 // TradesToday returns the count of fills processed today.
 func (m *Manager) TradesToday() int {
 	m.mu.RLock()
@@ -321,13 +361,15 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		EmergencyStop:    m.runtime.IsEmergencyStopped(),
 		LastUpdate:       m.runtime.LastUpdate(),
 		StartingCapital:  m.startingCapital,
+		BrokerEquity:     m.brokerEquity,
+		DayPnL:           m.dayPnL,
 		RealizedPnL:      round2(m.realizedPnL),
 		UnrealizedPnL:    round2(unrealized),
 		NetPnL:           round2(m.realizedPnL + unrealized),
 		Exposure:         round2(exposure),
 		OpenPositions:    len(m.positions),
 		TradesToday:      m.tradesToday,
-		DailyLossLimit:   round2(m.startingCapital * m.config.DailyLossLimitPct),
+		DailyLossLimit:   round2(m.EffectiveCapital() * m.config.DailyLossLimitPct),
 		MaxOpenPositions: m.config.MaxOpenPositions,
 		MaxTradesPerDay:  m.config.MaxTradesPerDay,
 	}
