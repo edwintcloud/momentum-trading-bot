@@ -91,15 +91,44 @@ func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
 	book.SyncBrokerAccount(50000, 50000)
 	engine := NewEngine(cfg, book, runtimeState)
 
-	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+	request, approved, reason := engine.Evaluate(domain.TradeSignal{
 		Symbol:    "EONR",
 		Side:      "buy",
 		Price:     10,
 		Quantity:  2000,
 		Timestamp: time.Now().UTC(),
 	})
+	if !approved {
+		t.Fatalf("expected quantity to be trimmed to fit max exposure, got %s", reason)
+	}
+	if request.Quantity != 1500 {
+		t.Fatalf("expected trimmed quantity of 1500, got %d", request.Quantity)
+	}
+}
+
+func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(50_000, 50_000)
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "EONR",
+		Side:     "buy",
+		Price:    10,
+		Quantity: 1500,
+		FilledAt: time.Now().UTC().Add(-time.Minute),
+	})
+	engine := NewEngine(cfg, book, runtimeState)
+
+	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "APVO",
+		Side:      "buy",
+		Price:     10,
+		Quantity:  1,
+		Timestamp: time.Now().UTC(),
+	})
 	if approved {
-		t.Fatal("expected max exposure block using broker effective capital")
+		t.Fatal("expected max exposure block when no exposure remains")
 	}
 	if reason != "max-exposure" {
 		t.Fatalf("unexpected block reason: %s", reason)

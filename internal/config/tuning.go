@@ -17,21 +17,18 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 		cfg.DailyLossLimitPct = 0.015
 		cfg.MaxTradesPerDay = 4
 		cfg.MaxOpenPositions = 2
-		cfg.MaxExposurePct = 0.15
 		cfg.MinPrice = 2.0
 	case equity < 100_000:
 		cfg.RiskPerTradePct = 0.0075
 		cfg.DailyLossLimitPct = 0.020
 		cfg.MaxTradesPerDay = 6
 		cfg.MaxOpenPositions = 3
-		cfg.MaxExposurePct = 0.22
 		cfg.MinPrice = 1.50
 	default:
 		cfg.RiskPerTradePct = 0.010
 		cfg.DailyLossLimitPct = 0.025
 		cfg.MaxTradesPerDay = 8
 		cfg.MaxOpenPositions = 4
-		cfg.MaxExposurePct = 0.28
 		cfg.MinPrice = 1.00
 	}
 
@@ -47,6 +44,7 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.MinPremarketVolume = 350_000
 	cfg.ScannerWorkers = 4
 	cfg.LimitOrderSlippageDollars = 0.05
+	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 
 	if historicalRateLimitPerMin > 0 {
 		budget := int(float64(historicalRateLimitPerMin) * 0.60)
@@ -64,4 +62,23 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 
 func round2(value float64) float64 {
 	return math.Round(value*100) / 100
+}
+
+func inferMaxExposurePct(cfg TradingConfig) float64 {
+	if cfg.StopLossPct <= 0 {
+		return 0.30
+	}
+	perPositionExposure := cfg.RiskPerTradePct / cfg.StopLossPct
+	targetFullRiskPositions := 2
+	if cfg.MaxOpenPositions > 0 && cfg.MaxOpenPositions < targetFullRiskPositions {
+		targetFullRiskPositions = cfg.MaxOpenPositions
+	}
+	exposure := (perPositionExposure * float64(targetFullRiskPositions)) + 0.05
+	if exposure < 0.25 {
+		exposure = 0.25
+	}
+	if exposure > 0.60 {
+		exposure = 0.60
+	}
+	return round2(exposure)
 }

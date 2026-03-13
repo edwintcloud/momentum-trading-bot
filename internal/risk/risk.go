@@ -52,6 +52,10 @@ func (r *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 
 // Evaluate validates a signal and returns an execution request when allowed.
 func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool, string) {
+	orderTime := signal.Timestamp
+	if orderTime.IsZero() {
+		orderTime = time.Now().UTC()
+	}
 	if signal.Quantity <= 0 {
 		return domain.OrderRequest{}, false, "invalid-quantity"
 	}
@@ -65,7 +69,7 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			quantity = position.Quantity
 		}
 		limitPrice := signal.Price - r.config.LimitOrderSlippageDollars
-		return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: time.Now().UTC()}, true, "approved"
+		return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: orderTime}, true, "approved"
 	}
 
 	if !r.runtime.CanOpenNewPositions() {
@@ -81,11 +85,19 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if r.portfolio.DayPnL() <= -(effectiveCapital * r.config.DailyLossLimitPct) {
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
-	exposureAfter := r.portfolio.Exposure() + (float64(signal.Quantity) * signal.Price)
 	maxExposure := effectiveCapital * r.config.MaxExposurePct
-	if exposureAfter > maxExposure {
+	availableExposure := maxExposure - r.portfolio.Exposure()
+	if availableExposure <= 0 {
+		return domain.OrderRequest{}, false, "max-exposure"
+	}
+	quantity := signal.Quantity
+	maxQuantityByExposure := int64(availableExposure / signal.Price)
+	if maxQuantityByExposure < quantity {
+		quantity = maxQuantityByExposure
+	}
+	if quantity < 1 {
 		return domain.OrderRequest{}, false, "max-exposure"
 	}
 	limitPrice := signal.Price + r.config.LimitOrderSlippageDollars
-	return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: signal.Quantity, Reason: signal.Reason, Timestamp: time.Now().UTC()}, true, "approved"
+	return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: orderTime}, true, "approved"
 }
