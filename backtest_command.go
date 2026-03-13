@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 )
+
+var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 func runBacktest(args []string) error {
 	flags := flag.NewFlagSet("backtest", flag.ContinueOnError)
@@ -25,18 +28,25 @@ func runBacktest(args []string) error {
 		return err
 	}
 
-	start, err := parseCLIBacktestTime(*startRaw)
+	start, startDateOnly, err := parseCLIBacktestTime(*startRaw)
 	if err != nil {
 		return err
 	}
-	end, err := parseCLIBacktestTime(*endRaw)
+	end, endDateOnly, err := parseCLIBacktestTime(*endRaw)
 	if err != nil {
 		return err
 	}
-	start, end, trainStart, trainEnd, err := inferBacktestWindows(start, end, *dataPath == "")
+	start, end, trainStart, trainEnd, err := inferBacktestWindows(start, end, startDateOnly, endDateOnly, *dataPath == "")
 	if err != nil {
 		return err
 	}
+	log.Printf(
+		"Backtest window start=%s end=%s train_start=%s train_end=%s",
+		formatLogTime(start),
+		formatLogTime(end),
+		formatLogTime(trainStart),
+		formatLogTime(trainEnd),
+	)
 
 	cfg := config.DefaultTradingConfig()
 	runCfg := backtest.RunConfig{
@@ -83,6 +93,7 @@ func runBacktest(args []string) error {
 		fetchStart, fetchEnd := backtestFetchWindow(start, end, trainStart, trainEnd)
 		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), fetchStart, fetchEnd, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
+		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(fetchStart), formatLogTime(fetchEnd))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
 		inputBars, err := fetchBarsFromAlpaca(fetchCtx, client, symbols, fetchStart, fetchEnd, historicalRateLimit)
@@ -115,15 +126,23 @@ func runBacktest(args []string) error {
 	return nil
 }
 
-func inferBacktestWindows(start, end time.Time, requireStart bool) (time.Time, time.Time, time.Time, time.Time, error) {
+func inferBacktestWindows(start, end time.Time, startDateOnly, endDateOnly, requireStart bool) (time.Time, time.Time, time.Time, time.Time, error) {
+	now := time.Now().UTC()
 	if end.IsZero() {
-		end = time.Now().UTC()
+		end = now
 	}
 	if requireStart && start.IsZero() {
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("start time is required when loading historical data from Alpaca")
 	}
 	if start.IsZero() {
 		return time.Time{}, end, time.Time{}, time.Time{}, nil
+	}
+	if endDateOnly {
+		if sameMarketDay(end, now) {
+			end = now
+		} else {
+			end = endOfMarketDay(end)
+		}
 	}
 	if !end.After(start) {
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("end time must be after start time")
@@ -189,21 +208,58 @@ func uniqueInputSymbols(input []backtest.InputBar) int {
 	return len(seen)
 }
 
-func parseCLIBacktestTime(value string) (time.Time, error) {
+func parseCLIBacktestTime(value string) (time.Time, bool, error) {
 	if value == "" {
-		return time.Time{}, nil
+		return time.Time{}, false, nil
+	}
+	if dateOnlyPattern.MatchString(strings.TrimSpace(value)) {
+		parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), marketTimeLocation())
+		if err != nil {
+			return time.Time{}, true, fmt.Errorf("unsupported date format %q", value)
+		}
+		return parsed.UTC(), true, nil
 	}
 	layouts := []string{
 		time.RFC3339,
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04",
-		"2006-01-02",
 	}
 	for _, layout := range layouts {
-		parsed, err := time.Parse(layout, value)
+		parsed, err := time.ParseInLocation(layout, value, marketTimeLocation())
 		if err == nil {
-			return parsed.UTC(), nil
+			return parsed.UTC(), false, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("unsupported date format %q", value)
+	return time.Time{}, false, fmt.Errorf("unsupported date format %q", value)
+}
+
+func marketTimeLocation() *time.Location {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.UTC
+	}
+	return location
+}
+
+func startOfMarketDay(value time.Time) time.Time {
+	local := value.In(marketTimeLocation())
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, marketTimeLocation()).UTC()
+}
+
+func endOfMarketDay(value time.Time) time.Time {
+	local := value.In(marketTimeLocation())
+	return time.Date(local.Year(), local.Month(), local.Day(), 23, 59, 59, 0, marketTimeLocation()).UTC()
+}
+
+func sameMarketDay(a, b time.Time) bool {
+	al := a.In(marketTimeLocation())
+	bl := b.In(marketTimeLocation())
+	return al.Year() == bl.Year() && al.Month() == bl.Month() && al.Day() == bl.Day()
+}
+
+func formatLogTime(value time.Time) string {
+	if value.IsZero() {
+		return "n/a"
+	}
+	return value.In(marketTimeLocation()).Format(time.RFC3339)
 }
