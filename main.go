@@ -228,11 +228,15 @@ func main() {
 					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("position reconciliation failed: %v", reconcileErr))
 					continue
 				}
-				openSymbols := make(map[string]struct{}, len(brokerPositions))
+				brokerQuantities := make(map[string]int64, len(brokerPositions))
 				for _, p := range brokerPositions {
-					openSymbols[strings.ToUpper(p.Symbol)] = struct{}{}
+					quantity, qtyErr := strconv.ParseInt(stringsBeforeDecimal(p.Qty), 10, 64)
+					if qtyErr != nil {
+						continue
+					}
+					brokerQuantities[strings.ToUpper(p.Symbol)] = quantity
 				}
-				portfolioManager.ReconcileWithBroker(openSymbols)
+				portfolioManager.ReconcileWithBroker(brokerQuantities)
 			}
 		}
 	}()

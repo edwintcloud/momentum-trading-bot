@@ -1,6 +1,7 @@
 package portfolio
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -149,19 +150,52 @@ func (m *Manager) MarkPrice(symbol string, price float64) {
 	m.positions[symbol] = position
 }
 
-// ReconcileWithBroker removes any local position whose symbol is absent from
-// the broker's current open-position set. Call periodically so the dashboard
-// stays in sync when positions are closed outside the bot (e.g. manually in
-// Alpaca, or because an order's fill-poll timed out).
-func (m *Manager) ReconcileWithBroker(openSymbols map[string]struct{}) {
+// ReconcileWithBroker aligns local positions with the broker's current open
+// quantities so the dashboard stays in sync when fills complete outside the
+// bot's poll window or positions are modified externally.
+func (m *Manager) ReconcileWithBroker(brokerQuantities map[string]int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for symbol := range m.positions {
-		if _, open := openSymbols[symbol]; !open {
+		brokerQty, open := brokerQuantities[symbol]
+		if !open || brokerQty <= 0 {
 			delete(m.positions, symbol)
 			m.runtime.RecordLog("warn", "portfolio", "removed stale position "+symbol+": no longer open at broker")
+			continue
 		}
+		m.syncPositionQuantityLocked(symbol, brokerQty)
 	}
+}
+
+// SyncPositionQuantity updates a local position to match the broker's current
+// share count for a symbol.
+func (m *Manager) SyncPositionQuantity(symbol string, quantity int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncPositionQuantityLocked(symbol, quantity)
+	if quantity <= 0 {
+		delete(m.positions, symbol)
+	}
+}
+
+func (m *Manager) syncPositionQuantityLocked(symbol string, quantity int64) {
+	position, exists := m.positions[symbol]
+	if !exists {
+		return
+	}
+	if quantity <= 0 {
+		return
+	}
+	if position.Quantity == quantity {
+		return
+	}
+	previous := position.Quantity
+	position.Quantity = quantity
+	position.MarketValue = float64(position.Quantity) * position.LastPrice
+	position.UnrealizedPnL = (position.LastPrice - position.AvgPrice) * float64(position.Quantity)
+	position.UpdatedAt = time.Now().UTC()
+	m.positions[symbol] = position
+	m.runtime.RecordLog("warn", "portfolio", fmt.Sprintf("reconciled %s quantity from %d to %d based on broker position", symbol, previous, quantity))
 }
 
 // GetPositions returns sorted open positions.

@@ -1,5 +1,7 @@
 # Momentum Trading Bot
 
+Disclaimer: This code was written with AI and is a work in progress. Use only with paper-trading or you will lose money.
+
 A modular momentum-trading system built in Go with a React operator dashboard.
 
 The current implementation runs against live Alpaca infrastructure and persists trading telemetry to PostgreSQL.

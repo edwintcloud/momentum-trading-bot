@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,6 +85,75 @@ type Order struct {
 	Qty            string `json:"qty"`
 	FilledQty      string `json:"filled_qty"`
 	FilledAvgPrice string `json:"filled_avg_price"`
+}
+
+// APIError preserves structured Alpaca HTTP error details for callers that
+// need to react to specific rejection payloads.
+type APIError struct {
+	StatusCode    int    `json:"-"`
+	Status        string `json:"-"`
+	Body          string `json:"-"`
+	Code          int    `json:"code"`
+	Message       string `json:"message"`
+	Available     string `json:"available"`
+	ExistingQty   string `json:"existing_qty"`
+	HeldForOrders string `json:"held_for_orders"`
+	Symbol        string `json:"symbol"`
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	body := strings.TrimSpace(e.Body)
+	if body == "" {
+		payload, err := json.Marshal(e)
+		if err == nil {
+			body = string(payload)
+		}
+	}
+	if body == "" {
+		return fmt.Sprintf("alpaca request failed: %s", e.Status)
+	}
+	return fmt.Sprintf("alpaca request failed: %s: %s", e.Status, body)
+}
+
+// AvailableQuantityFromError returns the broker-reported available share count
+// when Alpaca rejects a sell because the requested quantity is too large.
+func AvailableQuantityFromError(err error) (int64, bool) {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
+	if apiErr.Available == "" {
+		return 0, false
+	}
+	quantity, parseErr := parseWholeShares(apiErr.Available)
+	if parseErr != nil {
+		return 0, false
+	}
+	return quantity, true
+}
+
+// ParseShareQuantity converts Alpaca quantity strings like "170" or "170.0000"
+// into whole-share counts used by the bot.
+func ParseShareQuantity(value string) (int64, error) {
+	return parseWholeShares(value)
+}
+
+// IsInsufficientQuantityError reports whether Alpaca rejected an order because
+// the requested sell size exceeded the currently available broker quantity.
+func IsInsufficientQuantityError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Code == 40310000 {
+			return true
+		}
+		message := strings.ToLower(apiErr.Message)
+		return strings.Contains(message, "insufficient qty available for order")
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "insufficient qty available for order") || strings.Contains(message, "40310000")
 }
 
 // StreamMessage is a normalized market-data stream event.
@@ -175,6 +245,22 @@ func (c *Client) ListOpenPositions(ctx context.Context) ([]BrokerPosition, error
 	var positions []BrokerPosition
 	err := c.getJSON(ctx, c.cfg.TradingBaseURL+"/v2/positions", &positions)
 	return positions, err
+}
+
+// GetPosition fetches a single open position by symbol. Returns (position, true, nil)
+// when found, (BrokerPosition{}, false, nil) when no position is held, or an error
+// for unexpected failures.
+func (c *Client) GetPosition(ctx context.Context, symbol string) (BrokerPosition, bool, error) {
+	var pos BrokerPosition
+	err := c.getJSON(ctx, c.cfg.TradingBaseURL+"/v2/positions/"+url.PathEscape(strings.ToUpper(symbol)), &pos)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return BrokerPosition{}, false, nil
+		}
+		return BrokerPosition{}, false, err
+	}
+	return pos, true, nil
 }
 
 // GetSnapshot fetches the latest snapshot for a symbol.
@@ -727,10 +813,24 @@ func normalizeSymbols(symbols []string) []string {
 	return out
 }
 
+func parseWholeShares(value string) (int64, error) {
+	whole := strings.TrimSpace(value)
+	if index := strings.IndexByte(whole, '.'); index >= 0 {
+		whole = whole[:index]
+	}
+	if whole == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(whole, 10, 64)
+}
+
 func decodeResponse(response *http.Response, target any) error {
 	if response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("alpaca request failed: %s: %s", response.Status, strings.TrimSpace(string(body)))
+		trimmed := strings.TrimSpace(string(body))
+		apiErr := &APIError{StatusCode: response.StatusCode, Status: response.Status, Body: trimmed}
+		_ = json.Unmarshal(body, apiErr)
+		return apiErr
 	}
 	return json.NewDecoder(response.Body).Decode(target)
 }
