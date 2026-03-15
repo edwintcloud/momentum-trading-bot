@@ -18,6 +18,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 var easternLocation = mustLoadLocation("America/New_York")
@@ -484,6 +485,9 @@ func (c *Client) GetNews(ctx context.Context, symbols []string, limit int) (map[
 // SubmitOrder creates a limit order with extended_hours enabled so it executes
 // during pre-market, regular, and post-market sessions.
 func (c *Client) SubmitOrder(ctx context.Context, request domain.OrderRequest) (Order, error) {
+	if !markethours.IsTradableSessionAt(request.Timestamp) {
+		return Order{}, fmt.Errorf("order rejected outside tradable session for %s at %s", request.Symbol, request.Timestamp.UTC().Format(time.RFC3339))
+	}
 	payload := map[string]any{
 		"symbol":         request.Symbol,
 		"qty":            strconv.FormatInt(request.Quantity, 10),

@@ -17,12 +17,15 @@ type State struct {
 	mu            sync.RWMutex
 	paused        bool
 	emergencyStop bool
+	dailyLossDay  string
 	lastUpdate    time.Time
 	candidates    []domain.Candidate
 	logs          []domain.LogEntry
 	recorder      domain.EventRecorder
 	dependencies  map[string]DependencyStatus
 }
+
+var tradingDayLocation = mustLoadLocation("America/New_York")
 
 // DependencyStatus tracks readiness for critical runtime dependencies.
 type DependencyStatus struct {
@@ -55,12 +58,13 @@ func (s *State) Pause() {
 func (s *State) Resume() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshDailyLossStopLocked(time.Now().UTC())
 	if s.emergencyStop {
 		return false
 	}
 	s.paused = false
 	s.lastUpdate = time.Now().UTC()
-	return true
+	return s.dailyLossDay == ""
 }
 
 // EmergencyStop halts new entries until the process is restarted.
@@ -72,18 +76,46 @@ func (s *State) EmergencyStop() {
 	s.lastUpdate = time.Now().UTC()
 }
 
+// TriggerDailyLossStop halts new entries for the rest of the active trading day.
+func (s *State) TriggerDailyLossStop(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dailyLossDay = tradingDay(at)
+	s.lastUpdate = time.Now().UTC()
+}
+
 // CanOpenNewPositions reports whether the system may open fresh positions.
 func (s *State) CanOpenNewPositions() bool {
+	return s.EntryBlockReasonAt(time.Now().UTC()) == ""
+}
+
+// EntryBlockReasonAt returns the current gate reason for new entries at the provided time.
+func (s *State) EntryBlockReasonAt(at time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshDailyLossStopLocked(at)
+	if s.emergencyStop {
+		return "emergency-stop"
+	}
+	if s.paused {
+		return "trading-paused"
+	}
+	if s.dailyLossDay != "" {
+		return "daily-loss-limit-day"
+	}
+	return ""
+}
+
+// IsDailyLossStopped reports whether the daily loss stop is currently active.
+func (s *State) IsDailyLossStopped() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return !s.paused && !s.emergencyStop
+	return s.dailyLossDay != ""
 }
 
 // IsPaused reports the current pause state.
 func (s *State) IsPaused() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.paused
+	return s.EntryBlockReasonAt(time.Now().UTC()) != ""
 }
 
 // IsEmergencyStopped reports whether an emergency stop is active.
@@ -202,4 +234,29 @@ func (s *State) Logs() []domain.LogEntry {
 	out := make([]domain.LogEntry, len(s.logs))
 	copy(out, s.logs)
 	return out
+}
+
+func (s *State) refreshDailyLossStopLocked(at time.Time) {
+	if s.dailyLossDay == "" {
+		return
+	}
+	if tradingDay(at) == s.dailyLossDay {
+		return
+	}
+	s.dailyLossDay = ""
+}
+
+func tradingDay(at time.Time) string {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	return at.In(tradingDayLocation).Format("2006-01-02")
+}
+
+func mustLoadLocation(name string) *time.Location {
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err)
+	}
+	return location
 }

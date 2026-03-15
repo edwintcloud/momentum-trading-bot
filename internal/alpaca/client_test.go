@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 )
 
 func TestAvailableQuantityFromError(t *testing.T) {
@@ -98,6 +99,35 @@ func TestListActiveEquitySymbolsFiltersTradableAssets(t *testing.T) {
 	}
 	if len(symbols) != 2 || symbols[0] != "AAPL" || symbols[1] != "MSFT" {
 		t.Fatalf("unexpected tradable symbols: %+v", symbols)
+	}
+}
+
+func TestSubmitOrderRejectsOutsideTradableSession(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ord-1","symbol":"AAPL","side":"buy","status":"accepted","qty":"10","filled_qty":"0","filled_avg_price":"0"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AlpacaConfig{
+		APIKey:         "key",
+		APISecret:      "secret",
+		TradingBaseURL: server.URL,
+	})
+	_, err := client.SubmitOrder(context.Background(), domain.OrderRequest{
+		Symbol:    "AAPL",
+		Side:      "buy",
+		Price:     100,
+		Quantity:  10,
+		Timestamp: time.Date(2026, 3, 13, 6, 30, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("expected outside-session submit to be rejected")
+	}
+	if requests != 0 {
+		t.Fatalf("expected no HTTP request for outside-session submit, got %d", requests)
 	}
 }
 

@@ -216,7 +216,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					incrementReason(diagnostics.EntryRiskRejects, riskReason)
 					if riskReason == "daily-loss-limit" {
 						runtimeState.RecordLog("warn", "risk", "blocked buy "+signal.Symbol+": "+riskReason)
-						runtimeState.EmergencyStop()
+						runtimeState.TriggerDailyLossStop(signal.Timestamp)
 					}
 				}
 			} else {

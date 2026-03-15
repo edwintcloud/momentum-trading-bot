@@ -7,6 +7,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
@@ -113,8 +114,11 @@ func (s *Strategy) evaluateCandidate(candidate domain.Candidate) (domain.TradeSi
 
 func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain.TradeSignal, bool, string) {
 	decisionAt := decisionTime(candidate.Timestamp)
-	if !s.runtime.CanOpenNewPositions() {
-		return domain.TradeSignal{}, false, "trading-paused"
+	if !markethours.IsTradableSessionAt(decisionAt) {
+		return domain.TradeSignal{}, false, "outside-session"
+	}
+	if blockReason := s.runtime.EntryBlockReasonAt(decisionAt); blockReason != "" {
+		return domain.TradeSignal{}, false, blockReason
 	}
 	if s.portfolio.HasPosition(candidate.Symbol) {
 		return domain.TradeSignal{}, false, "has-position"
@@ -161,6 +165,9 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 
 func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, bool, string) {
 	decisionAt := decisionTime(tick.Timestamp)
+	if !markethours.IsTradableSessionAt(decisionAt) {
+		return domain.TradeSignal{}, false, "outside-session"
+	}
 	position, exists := s.portfolio.Position(tick.Symbol)
 	if !exists {
 		return domain.TradeSignal{}, false, "no-position"

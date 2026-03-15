@@ -10,19 +10,24 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
 
+func inSessionSignalTime() time.Time {
+	return time.Date(2026, 3, 13, 14, 0, 0, 0, time.UTC)
+}
+
 func TestRiskBlocksTradingWhenPaused(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
 	runtimeState.Pause()
 	book := portfolio.NewManager(cfg, runtimeState)
 	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
 
 	_, approved, reason := engine.Evaluate(domain.TradeSignal{
 		Symbol:    "APVO",
 		Side:      "buy",
 		Price:     4,
 		Quantity:  100,
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if approved {
 		t.Fatal("expected paused trading to block new orders")
@@ -37,12 +42,13 @@ func TestRiskAllowsExitEvenWhenPaused(t *testing.T) {
 	runtimeState := runtime.NewState()
 	runtimeState.Pause()
 	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionSignalTime()
 	book.ApplyExecution(domain.ExecutionReport{
 		Symbol:   "APVO",
 		Side:     "buy",
 		Price:    4,
 		Quantity: 100,
-		FilledAt: time.Now().UTC().Add(-time.Minute),
+		FilledAt: at.Add(-time.Minute),
 	})
 	engine := NewEngine(cfg, book, runtimeState)
 
@@ -52,7 +58,7 @@ func TestRiskAllowsExitEvenWhenPaused(t *testing.T) {
 		Price:     3.9,
 		Quantity:  100,
 		Reason:    "operator-close-all",
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if !approved {
 		t.Fatalf("expected sell order to be approved, got %s", reason)
@@ -68,13 +74,14 @@ func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(93809.87, 100000)
 	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
 
 	_, approved, reason := engine.Evaluate(domain.TradeSignal{
 		Symbol:    "EONR",
 		Side:      "buy",
 		Price:     3.25,
 		Quantity:  100,
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if approved {
 		t.Fatal("expected broker day loss to block new entries")
@@ -90,13 +97,14 @@ func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50000)
 	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
 
 	request, approved, reason := engine.Evaluate(domain.TradeSignal{
 		Symbol:    "EONR",
 		Side:      "buy",
 		Price:     10,
 		Quantity:  2000,
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if !approved {
 		t.Fatalf("expected quantity to be trimmed to fit max exposure, got %s", reason)
@@ -111,12 +119,13 @@ func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50_000, 50_000)
+	at := inSessionSignalTime()
 	book.ApplyExecution(domain.ExecutionReport{
 		Symbol:   "EONR",
 		Side:     "buy",
 		Price:    10,
 		Quantity: 1500,
-		FilledAt: time.Now().UTC().Add(-time.Minute),
+		FilledAt: at.Add(-time.Minute),
 	})
 	engine := NewEngine(cfg, book, runtimeState)
 
@@ -125,12 +134,33 @@ func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
 		Side:      "buy",
 		Price:     10,
 		Quantity:  1,
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if approved {
 		t.Fatal("expected max exposure block when no exposure remains")
 	}
 	if reason != "max-exposure" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestRiskBlocksOrdersOutsideTradableSession(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	engine := NewEngine(cfg, book, runtimeState)
+
+	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "APVO",
+		Side:      "buy",
+		Price:     4,
+		Quantity:  100,
+		Timestamp: time.Date(2026, 3, 13, 6, 30, 0, 0, time.UTC),
+	})
+	if approved {
+		t.Fatal("expected outside-session order to be blocked")
+	}
+	if reason != "outside-session" {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }

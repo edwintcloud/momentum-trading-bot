@@ -10,11 +10,16 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
 
+func inSessionTime() time.Time {
+	return time.Date(2026, 3, 13, 14, 0, 0, 0, time.UTC)
+}
+
 func TestStrategyCreatesEntrySignal(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
 
 	signal, ok := strat.evaluateCandidate(domain.Candidate{
 		Symbol:               "HUMA",
@@ -30,7 +35,7 @@ func TestStrategyCreatesEntrySignal(t *testing.T) {
 		VolumeRate:           1.9,
 		MinutesSinceOpen:     18,
 		Score:                22,
-		Timestamp:            time.Now().UTC(),
+		Timestamp:            at,
 	})
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
@@ -47,12 +52,13 @@ func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionTime()
 	book.ApplyExecution(domain.ExecutionReport{
 		Symbol:   "RKLB",
 		Side:     "buy",
 		Price:    10,
 		Quantity: 100,
-		FilledAt: time.Now().UTC().Add(-time.Minute),
+		FilledAt: at.Add(-time.Minute),
 	})
 	strat := NewStrategy(cfg, book, runtimeState)
 
@@ -60,7 +66,7 @@ func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 		Symbol:    "RKLB",
 		Price:     9.40,
 		HighOfDay: 10.50,
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if !ok {
 		t.Fatal("expected stop-loss exit")
@@ -76,6 +82,7 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50500)
 	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
 
 	signal, ok := strat.evaluateCandidate(domain.Candidate{
 		Symbol:               "HUMA",
@@ -91,7 +98,7 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 		VolumeRate:           2.1,
 		MinutesSinceOpen:     12,
 		Score:                22,
-		Timestamp:            time.Now().UTC(),
+		Timestamp:            at,
 	})
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
@@ -105,21 +112,22 @@ func TestStrategyUsesTrailingStopInsteadOfImmediateProfitTarget(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionTime()
 	book.ApplyExecution(domain.ExecutionReport{
 		Symbol:   "RKLB",
 		Side:     "buy",
 		Price:    10,
 		Quantity: 100,
-		FilledAt: time.Now().UTC().Add(-3 * time.Minute),
+		FilledAt: at.Add(-3 * time.Minute),
 	})
-	book.MarkPriceAt("RKLB", 11.50, time.Now().UTC().Add(-2*time.Minute))
+	book.MarkPriceAt("RKLB", 11.50, at.Add(-2*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	if signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
 		Price:     11.20,
 		HighOfDay: 11.50,
-		Timestamp: time.Now().UTC().Add(-time.Minute),
+		Timestamp: at.Add(-time.Minute),
 	}); ok {
 		t.Fatalf("expected no immediate take-profit exit, got %+v", signal)
 	}
@@ -128,12 +136,42 @@ func TestStrategyUsesTrailingStopInsteadOfImmediateProfitTarget(t *testing.T) {
 		Symbol:    "RKLB",
 		Price:     10.70,
 		HighOfDay: 11.50,
-		Timestamp: time.Now().UTC(),
+		Timestamp: at,
 	})
 	if !ok {
 		t.Fatal("expected trailing-stop exit after pullback from the high")
 	}
 	if signal.Reason != "trailing-stop" {
 		t.Fatalf("expected trailing-stop reason, got %+v", signal)
+	}
+}
+
+func TestStrategyBlocksEntriesOutsideTradableSession(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "HUMA",
+		Price:                4.20,
+		Open:                 4.00,
+		HighOfDay:            4.21,
+		GapPercent:           21,
+		RelativeVolume:       6.4,
+		PriceVsOpenPct:       5.0,
+		DistanceFromHighPct:  0.24,
+		OneMinuteReturnPct:   0.8,
+		ThreeMinuteReturnPct: 1.7,
+		VolumeRate:           1.9,
+		MinutesSinceOpen:     18,
+		Score:                22,
+		Timestamp:            time.Date(2026, 3, 13, 6, 30, 0, 0, time.UTC),
+	})
+	if ok {
+		t.Fatal("expected outside-session candidate to be blocked")
+	}
+	if reason != "outside-session" {
+		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
@@ -37,7 +38,7 @@ func (r *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 			if !approved {
 				r.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s %s: %s", signal.Side, signal.Symbol, reason))
 				if reason == "daily-loss-limit" {
-					r.runtime.EmergencyStop()
+					r.runtime.TriggerDailyLossStop(signal.Timestamp)
 				}
 				continue
 			}
@@ -56,6 +57,9 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if orderTime.IsZero() {
 		orderTime = time.Now().UTC()
 	}
+	if !markethours.IsTradableSessionAt(orderTime) {
+		return domain.OrderRequest{}, false, "outside-session"
+	}
 	if signal.Quantity <= 0 {
 		return domain.OrderRequest{}, false, "invalid-quantity"
 	}
@@ -72,8 +76,8 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: orderTime}, true, "approved"
 	}
 
-	if !r.runtime.CanOpenNewPositions() {
-		return domain.OrderRequest{}, false, "trading-paused"
+	if blockReason := r.runtime.EntryBlockReasonAt(orderTime); blockReason != "" {
+		return domain.OrderRequest{}, false, blockReason
 	}
 	if r.portfolio.TradesToday() >= r.config.MaxTradesPerDay {
 		return domain.OrderRequest{}, false, "max-trades"
