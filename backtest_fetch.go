@@ -1,13 +1,19 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,9 +25,12 @@ import (
 )
 
 const (
-	historicalBatchSize  = 100
-	historicalMaxRetries = 5
+	historicalBatchSize    = 100
+	historicalMaxRetries   = 5
+	historicalCacheVersion = "v1"
 )
+
+var historicalCacheRoot = filepath.Join(".cache", "backtest", "historical-bars")
 
 type historicalFetchJob struct {
 	index   int
@@ -33,6 +42,17 @@ type historicalFetchJob struct {
 type historicalFetchResult struct {
 	bars     []backtest.InputBar
 	pageHits int
+	cacheHit bool
+}
+
+type historicalCacheEntry struct {
+	Version string
+	Feed    string
+	Start   time.Time
+	End     time.Time
+	Symbols []string
+	SavedAt time.Time
+	Bars    []backtest.InputBar
 }
 
 type requestLimiter struct {
@@ -95,6 +115,10 @@ func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []s
 
 	workerCount := historicalWorkerCount(historicalRateLimit)
 	limiter := newRequestLimiter(historicalRateLimit)
+	feed := client.DataFeed()
+	if strings.TrimSpace(feed) == "" {
+		feed = "iex"
+	}
 	log.Printf("Historical fetch starting jobs=%d symbols=%d workers=%d window=%s..%s", len(jobs), len(symbols), workerCount, start.Format(time.RFC3339), end.Format(time.RFC3339))
 
 	jobCh := make(chan historicalFetchJob)
@@ -102,13 +126,15 @@ func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []s
 	errCh := make(chan error, 1)
 
 	var completedJobs atomic.Int64
+	var cacheHits atomic.Int64
+	var cacheMisses atomic.Int64
 	var workers sync.WaitGroup
 	for worker := 0; worker < workerCount; worker++ {
 		workers.Add(1)
 		go func(workerID int) {
 			defer workers.Done()
 			for job := range jobCh {
-				result, err := fetchHistoricalJob(ctx, client, limiter, job)
+				result, err := fetchHistoricalJob(ctx, client, limiter, job, feed)
 				if err != nil {
 					select {
 					case errCh <- err:
@@ -116,9 +142,18 @@ func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []s
 					}
 					return
 				}
+				if result.cacheHit {
+					cacheHits.Add(1)
+				} else {
+					cacheMisses.Add(1)
+				}
 				done := completedJobs.Add(1)
 				if done == 1 || done%25 == 0 || int(done) == len(jobs) {
-					log.Printf("Historical fetch progress jobs=%d/%d bars=%d pages=%d last_job=%d worker=%d", done, len(jobs), len(result.bars), result.pageHits, job.index, workerID)
+					source := "api"
+					if result.cacheHit {
+						source = "cache"
+					}
+					log.Printf("Historical fetch progress jobs=%d/%d bars=%d pages=%d last_job=%d worker=%d source=%s", done, len(jobs), len(result.bars), result.pageHits, job.index, workerID, source)
 				}
 				select {
 				case <-ctx.Done():
@@ -162,6 +197,7 @@ func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []s
 					}
 					return inputBars[i].Timestamp.Before(inputBars[j].Timestamp)
 				})
+				log.Printf("Historical cache summary hits=%d misses=%d dir=%s", cacheHits.Load(), cacheMisses.Load(), historicalCacheRoot)
 				return inputBars, nil
 			}
 			inputBars = append(inputBars, result.bars...)
@@ -169,7 +205,14 @@ func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []s
 	}
 }
 
-func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob) (historicalFetchResult, error) {
+func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
+	if cached, ok, err := loadHistoricalJobCache(job, feed); err == nil && ok {
+		cached.cacheHit = true
+		return cached, nil
+	} else if err != nil {
+		log.Printf("Historical cache read failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
+	}
+
 	pageToken := ""
 	result := historicalFetchResult{
 		bars: make([]backtest.InputBar, 0, 1024),
@@ -195,6 +238,9 @@ func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *req
 		}
 		applyRateLimitHeaders(limiter, page.Headers)
 		if page.NextPageToken == "" {
+			if err := saveHistoricalJobCache(job, feed, result); err != nil {
+				log.Printf("Historical cache write failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
+			}
 			return result, nil
 		}
 		pageToken = page.NextPageToken
@@ -414,4 +460,105 @@ func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 		timeout = 2 * time.Hour
 	}
 	return timeout
+}
+
+func historicalCachePath(job historicalFetchJob, feed string) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(historicalCacheVersion))
+	hasher.Write([]byte("|"))
+	hasher.Write([]byte(strings.ToLower(strings.TrimSpace(feed))))
+	hasher.Write([]byte("|"))
+	hasher.Write([]byte(job.start.UTC().Format(time.RFC3339Nano)))
+	hasher.Write([]byte("|"))
+	hasher.Write([]byte(job.end.UTC().Format(time.RFC3339Nano)))
+	for _, symbol := range job.symbols {
+		hasher.Write([]byte("|"))
+		hasher.Write([]byte(strings.ToUpper(strings.TrimSpace(symbol))))
+	}
+	key := hex.EncodeToString(hasher.Sum(nil))
+	return filepath.Join(historicalCacheRoot, historicalCacheVersion, key[:2], key+".gob.gz")
+}
+
+func loadHistoricalJobCache(job historicalFetchJob, feed string) (historicalFetchResult, bool, error) {
+	path := historicalCachePath(job, feed)
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return historicalFetchResult{}, false, nil
+		}
+		return historicalFetchResult{}, false, err
+	}
+	defer file.Close()
+
+	reader, err := gzip.NewReader(file)
+	if err != nil {
+		return historicalFetchResult{}, false, err
+	}
+	defer reader.Close()
+
+	var entry historicalCacheEntry
+	if err := gob.NewDecoder(reader).Decode(&entry); err != nil {
+		return historicalFetchResult{}, false, err
+	}
+	if entry.Version != historicalCacheVersion {
+		return historicalFetchResult{}, false, nil
+	}
+	return historicalFetchResult{bars: entry.Bars}, true, nil
+}
+
+func saveHistoricalJobCache(job historicalFetchJob, feed string, result historicalFetchResult) error {
+	path := historicalCachePath(job, feed)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	tempPath := fmt.Sprintf("%s.tmp-%d", path, time.Now().UnixNano())
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return err
+	}
+
+	success := false
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		if !success {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	writer := gzip.NewWriter(file)
+	entry := historicalCacheEntry{
+		Version: historicalCacheVersion,
+		Feed:    strings.ToLower(strings.TrimSpace(feed)),
+		Start:   job.start.UTC(),
+		End:     job.end.UTC(),
+		Symbols: append([]string(nil), job.symbols...),
+		SavedAt: time.Now().UTC(),
+		Bars:    append([]backtest.InputBar(nil), result.bars...),
+	}
+	if err := gob.NewEncoder(writer).Encode(entry); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr == nil {
+			if retryErr := os.Rename(tempPath, path); retryErr == nil {
+				success = true
+				return nil
+			}
+		}
+		return err
+	}
+	success = true
+	return nil
 }

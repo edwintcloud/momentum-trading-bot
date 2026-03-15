@@ -28,6 +28,7 @@ type Manager struct {
 	dayRealizedPnL  float64
 	realizedPnL     float64
 	tradesToday     int
+	entriesToday    int
 	currentTradeDay string
 }
 
@@ -110,6 +111,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			}
 		}
 		m.tradesToday++
+		m.entriesToday++
 		return
 	}
 
@@ -333,6 +335,13 @@ func (m *Manager) TradesToday() int {
 	return m.tradesToday
 }
 
+// EntriesToday returns the count of new long entries opened today.
+func (m *Manager) EntriesToday() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.entriesToday
+}
+
 // PendingCloseAll returns exit orders for all open positions.
 func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 	m.mu.RLock()
@@ -406,6 +415,7 @@ func (m *Manager) rollTradingDayLocked(now time.Time) {
 	}
 	m.currentTradeDay = day
 	m.tradesToday = 0
+	m.entriesToday = 0
 	m.dayRealizedPnL = 0
 	if m.brokerEquity == 0 {
 		m.dayPnL = 0

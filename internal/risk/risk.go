@@ -79,7 +79,7 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if blockReason := r.runtime.EntryBlockReasonAt(orderTime); blockReason != "" {
 		return domain.OrderRequest{}, false, blockReason
 	}
-	if r.portfolio.TradesToday() >= r.config.MaxTradesPerDay {
+	if r.portfolio.EntriesToday() >= r.config.MaxTradesPerDay {
 		return domain.OrderRequest{}, false, "max-trades"
 	}
 	if r.portfolio.OpenPositionCount() >= r.config.MaxOpenPositions {

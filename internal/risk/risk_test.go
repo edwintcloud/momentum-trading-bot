@@ -164,3 +164,49 @@ func TestRiskBlocksOrdersOutsideTradableSession(t *testing.T) {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
+
+func TestRiskMaxTradesCountsEntriesNotExits(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxTradesPerDay = 1
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
+
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "APVO",
+		Side:     "buy",
+		Price:    4,
+		Quantity: 100,
+		FilledAt: at.Add(-2 * time.Minute),
+	})
+
+	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "EONR",
+		Side:      "buy",
+		Price:     3.25,
+		Quantity:  100,
+		Timestamp: at,
+	})
+	if approved {
+		t.Fatal("expected second entry of the day to be blocked")
+	}
+	if reason != "max-trades" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+
+	request, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "APVO",
+		Side:      "sell",
+		Price:     4.1,
+		Quantity:  100,
+		Reason:    "test-exit",
+		Timestamp: at,
+	})
+	if !approved {
+		t.Fatalf("expected exit to remain allowed after entry cap, got %s", reason)
+	}
+	if request.Side != "sell" || request.Quantity != 100 {
+		t.Fatalf("unexpected exit request: %+v", request)
+	}
+}

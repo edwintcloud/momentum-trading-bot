@@ -115,9 +115,15 @@ func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
 	if manager.TradesToday() != 1 {
 		t.Fatalf("expected one trade on first day, got %d", manager.TradesToday())
 	}
+	if manager.EntriesToday() != 1 {
+		t.Fatalf("expected one entry on first day, got %d", manager.EntriesToday())
+	}
 
 	manager.MarkPriceAt("SOUN", 5.2, firstDay.Add(20*time.Hour))
 	if manager.TradesToday() != 0 {
 		t.Fatalf("expected trade counter reset on next trading day, got %d", manager.TradesToday())
+	}
+	if manager.EntriesToday() != 0 {
+		t.Fatalf("expected entry counter reset on next trading day, got %d", manager.EntriesToday())
 	}
 }
