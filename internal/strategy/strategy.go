@@ -17,6 +17,7 @@ type Strategy struct {
 	config       config.TradingConfig
 	portfolio    *portfolio.Manager
 	runtime      *runtime.State
+	seedModel    LinearModel
 	entryModel   LinearModel
 	lastEntryAt  map[string]time.Time
 	lastExitAt   map[string]time.Time
@@ -43,7 +44,8 @@ type symbolTradeState struct {
 
 // NewStrategy creates a strategy instance.
 func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Strategy {
-	entryModel := DefaultEntryModel()
+	seedModel := DefaultEntryModel()
+	entryModel := seedModel
 	if cfg.EntryModelPath != "" {
 		loaded, err := LoadLinearModel(cfg.EntryModelPath)
 		if err != nil {
@@ -57,6 +59,7 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		config:       cfg,
 		portfolio:    portfolioManager,
 		runtime:      runtimeState,
+		seedModel:    seedModel,
 		entryModel:   entryModel,
 		lastEntryAt:  make(map[string]time.Time),
 		lastExitAt:   make(map[string]time.Time),
@@ -142,7 +145,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	decisionAt := decisionTime(candidate.Timestamp)
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	allowedDistance := s.allowedDistanceFromHigh(candidate)
-	predictedReturn := s.entryModel.Predict(candidate)
+	predictedReturn := s.predictEntryReturn(candidate, strongSqueeze)
 	requiredReturn := s.requiredPredictedReturn(candidate)
 	if !markethours.IsTradableSessionAt(decisionAt) {
 		return CandidateDecision{Reason: "outside-session", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
@@ -368,6 +371,19 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		candidate.RelativeVolume >= s.config.MinRelativeVolume+1.5 &&
 		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.40 &&
 		candidate.VolumeRate >= s.config.MinVolumeRate+0.15
+}
+
+func (s *Strategy) predictEntryReturn(candidate domain.Candidate, strongSqueeze bool) float64 {
+	activePrediction := s.entryModel.Predict(candidate)
+	if s.entryModel.Name == s.seedModel.Name {
+		return activePrediction
+	}
+	seedPrediction := s.seedModel.Predict(candidate)
+	blended := (activePrediction * 0.70) + (seedPrediction * 0.30)
+	if strongSqueeze && seedPrediction > 0 && blended < 0 {
+		return 0
+	}
+	return blended
 }
 
 func (s *Strategy) symbolState(symbol string, at time.Time) symbolTradeState {

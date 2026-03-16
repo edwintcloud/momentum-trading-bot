@@ -137,6 +137,7 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 
 func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
+	cfg.EntryModelEnabled = false
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
