@@ -128,20 +128,8 @@ func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain
 			return domain.TradeSignal{}, false, "entry-cooldown"
 		}
 	}
-	if candidate.Score < s.config.MinEntryScore {
-		return domain.TradeSignal{}, false, "low-score"
-	}
-	if candidate.OneMinuteReturnPct < s.config.MinOneMinuteReturnPct {
-		return domain.TradeSignal{}, false, "weak-one-minute-return"
-	}
-	if candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
-		return domain.TradeSignal{}, false, "weak-three-minute-return"
-	}
-	if candidate.VolumeRate < s.config.MinVolumeRate {
-		return domain.TradeSignal{}, false, "weak-volume-rate"
-	}
-	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct {
-		return domain.TradeSignal{}, false, "too-extended-from-open"
+	if ok, reason := s.passesEntryQuality(candidate); !ok {
+		return domain.TradeSignal{}, false, reason
 	}
 	if candidate.Price < candidate.HighOfDay*0.995 {
 		return domain.TradeSignal{}, false, "below-breakout-zone"
@@ -247,13 +235,55 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	if candidate.MinutesSinceOpen > 90 {
 		threshold += 0.40
 	}
+	if candidate.Score >= s.config.MinEntryScore+4 {
+		threshold -= 0.30
+	}
+	if candidate.RelativeVolume >= s.config.MinRelativeVolume+2 {
+		threshold -= 0.15
+	}
 	if candidate.Score < s.config.MinEntryScore+2 {
 		threshold += 0.25
 	}
 	if candidate.VolumeRate < s.config.MinVolumeRate+0.25 {
 		threshold += 0.15
 	}
+	if candidate.OneMinuteReturnPct < 0 {
+		threshold += 0.20
+	}
+	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct-2 {
+		threshold += 0.20
+	}
+	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.70
+	if threshold < minThreshold {
+		threshold = minThreshold
+	}
 	return threshold
+}
+
+func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
+	if candidate.Score < s.config.MinEntryScore {
+		return false, "low-score"
+	}
+	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct && candidate.DistanceFromHighPct > 0.20 {
+		return false, "too-extended-from-open"
+	}
+	if candidate.OneMinuteReturnPct < -0.20 {
+		return false, "weak-one-minute-return"
+	}
+	if candidate.ThreeMinuteReturnPct < -0.10 {
+		return false, "weak-three-minute-return"
+	}
+	if candidate.OneMinuteReturnPct < s.config.MinOneMinuteReturnPct &&
+		candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct &&
+		candidate.VolumeRate < s.config.MinVolumeRate {
+		return false, "weak-follow-through"
+	}
+	if candidate.VolumeRate < s.config.MinVolumeRate &&
+		candidate.RelativeVolume < s.config.MinRelativeVolume+1 &&
+		candidate.Score < s.config.MinEntryScore+2 {
+		return false, "weak-volume-rate"
+	}
+	return true, ""
 }
 
 func sameTradingDay(a, b time.Time) bool {

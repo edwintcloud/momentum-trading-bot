@@ -48,6 +48,65 @@ func TestStrategyCreatesEntrySignal(t *testing.T) {
 	}
 }
 
+func TestStrategyAllowsPullbackAndGoWhenBroaderFollowThroughIsStrong(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "HUMA",
+		Price:                4.20,
+		Open:                 4.00,
+		HighOfDay:            4.21,
+		GapPercent:           21,
+		RelativeVolume:       7.2,
+		PriceVsOpenPct:       5.0,
+		DistanceFromHighPct:  0.24,
+		OneMinuteReturnPct:   0.03,
+		ThreeMinuteReturnPct: 1.10,
+		VolumeRate:           1.45,
+		MinutesSinceOpen:     18,
+		Score:                22,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatalf("expected pullback-and-go setup to pass, got %s", reason)
+	}
+}
+
+func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "HUMA",
+		Price:                4.20,
+		Open:                 4.00,
+		HighOfDay:            4.21,
+		GapPercent:           21,
+		RelativeVolume:       5.4,
+		PriceVsOpenPct:       5.0,
+		DistanceFromHighPct:  0.24,
+		OneMinuteReturnPct:   0.02,
+		ThreeMinuteReturnPct: 0.10,
+		VolumeRate:           0.95,
+		MinutesSinceOpen:     18,
+		Score:                18,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected weak follow-through setup to be blocked")
+	}
+	if reason != "weak-follow-through" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
