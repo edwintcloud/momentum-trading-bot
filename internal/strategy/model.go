@@ -145,6 +145,10 @@ func TrainLinearModel(samples []TrainingSample) (LinearModel, error) {
 }
 
 func featureValues(candidate domain.Candidate) map[string]float64 {
+	volumeLeaderPct := candidate.VolumeLeaderPct
+	if volumeLeaderPct <= 0 && candidate.Volume == 0 {
+		volumeLeaderPct = 1
+	}
 	return map[string]float64{
 		"gap_percent":             clamp(candidate.GapPercent, -10, 35),
 		"relative_volume":         clamp(candidate.RelativeVolume, 0, 20),
@@ -153,7 +157,7 @@ func featureValues(candidate domain.Candidate) map[string]float64 {
 		"one_minute_return_pct":   clamp(candidate.OneMinuteReturnPct, -3, 6),
 		"three_minute_return_pct": clamp(candidate.ThreeMinuteReturnPct, -5, 10),
 		"volume_rate":             clamp(candidate.VolumeRate, 0.5, 4),
-		"volume_leader_pct":       clamp(candidate.VolumeLeaderPct, 0, 1),
+		"volume_leader_pct":       clamp(volumeLeaderPct, 0, 1),
 		"minutes_since_open":      clamp(candidate.MinutesSinceOpen, 0, 390),
 	}
 }

@@ -572,7 +572,7 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 }
 
 func (s *Strategy) volumeLeaderPct(candidate domain.Candidate) float64 {
-	if candidate.VolumeLeaderPct <= 0 {
+	if candidate.VolumeLeaderPct <= 0 && candidate.Volume == 0 {
 		return 1
 	}
 	return candidate.VolumeLeaderPct

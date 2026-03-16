@@ -31,7 +31,7 @@ type Scanner struct {
 	mu             sync.Mutex
 	state          map[string]*symbolState
 	leaderDay      string
-	leaderVolume   int64
+	leaderMetric   float64
 	leaderSymbol   string
 }
 
@@ -130,7 +130,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		OneMinuteReturnPct:   round2(scoreOrZero(oneMinuteReturn)),
 		ThreeMinuteReturnPct: round2(scoreOrZero(threeMinuteReturn)),
 		VolumeRate:           round2(scoreOrZero(volumeRate)),
-		VolumeLeaderPct:      round2(scoreOrZero(volumeLeaderPct)),
+		VolumeLeaderPct:      clampFloat(scoreOrZero(volumeLeaderPct), 0, 1),
 		MinutesSinceOpen:     round2(minutesSinceOpen(tick.Timestamp)),
 		Score:                round2(scoreOrZero(score)),
 		Catalyst:             tick.Catalyst,
@@ -231,17 +231,23 @@ func (s *Scanner) updateVolumeLeadership(tick domain.Tick) float64 {
 	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
 	if s.leaderDay != dayKey {
 		s.leaderDay = dayKey
-		s.leaderVolume = 0
+		s.leaderMetric = 0
 		s.leaderSymbol = ""
 	}
-	if tick.Volume > s.leaderVolume {
-		s.leaderVolume = tick.Volume
+	leaderMetric := momentumLeaderMetric(tick)
+	if leaderMetric > s.leaderMetric {
+		s.leaderMetric = leaderMetric
 		s.leaderSymbol = tick.Symbol
 	}
-	if s.leaderVolume <= 0 {
+	if s.leaderMetric <= 0 {
 		return 1
 	}
-	return float64(tick.Volume) / float64(s.leaderVolume)
+	return leaderMetric / s.leaderMetric
+}
+
+func momentumLeaderMetric(tick domain.Tick) float64 {
+	relativeVolume := clampFloat(tick.RelativeVolume, 1, 25)
+	return tick.Price * float64(tick.Volume) * relativeVolume
 }
 
 func sampleReturn(samples []symbolSnapshot, current time.Time, lookback time.Duration) float64 {

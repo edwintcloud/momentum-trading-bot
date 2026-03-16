@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -193,8 +194,8 @@ func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 	if !ok {
 		t.Fatal("expected follower candidate to pass scanner")
 	}
-	if candidate.VolumeLeaderPct != 0.5 {
-		t.Fatalf("expected follower to carry 0.50 leader share, got %.2f", candidate.VolumeLeaderPct)
+	if math.Abs(candidate.VolumeLeaderPct-0.37) > 0.01 {
+		t.Fatalf("expected follower to carry 0.37 leader share, got %.2f", candidate.VolumeLeaderPct)
 	}
 }
 
