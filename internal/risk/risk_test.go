@@ -93,6 +93,7 @@ func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
 
 func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
+	cfg.LimitOrderSlippageDollars = 0.05
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50000)
@@ -109,8 +110,8 @@ func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
 	if !approved {
 		t.Fatalf("expected quantity to be trimmed to fit max exposure, got %s", reason)
 	}
-	if request.Quantity != 1500 {
-		t.Fatalf("expected trimmed quantity of 1500, got %d", request.Quantity)
+	if request.Quantity != 1494 {
+		t.Fatalf("expected trimmed quantity of 1494 using buffered entry price, got %d", request.Quantity)
 	}
 }
 
@@ -208,5 +209,82 @@ func TestRiskMaxTradesCountsEntriesNotExits(t *testing.T) {
 	}
 	if request.Side != "sell" || request.Quantity != 100 {
 		t.Fatalf("unexpected exit request: %+v", request)
+	}
+}
+
+func TestRiskUsesAdaptiveBufferForLowPricedBuy(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.LimitOrderSlippageDollars = 0.05
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
+
+	request, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "BIAF",
+		Side:      "buy",
+		Price:     1.88,
+		Quantity:  100,
+		Timestamp: at,
+	})
+	if !approved {
+		t.Fatalf("expected low-priced buy to be approved, got %s", reason)
+	}
+	if request.Price != 1.89 {
+		t.Fatalf("expected adaptive buy limit of 1.89, got %.2f", request.Price)
+	}
+}
+
+func TestRiskUsesAdaptiveBufferForLowPricedSell(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.LimitOrderSlippageDollars = 0.05
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionSignalTime()
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "BIAF",
+		Side:     "buy",
+		Price:    1.88,
+		Quantity: 100,
+		FilledAt: at.Add(-time.Minute),
+	})
+	engine := NewEngine(cfg, book, runtimeState)
+
+	request, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "BIAF",
+		Side:      "sell",
+		Price:     1.76,
+		Quantity:  100,
+		Reason:    "break-even-stop",
+		Timestamp: at,
+	})
+	if !approved {
+		t.Fatalf("expected low-priced sell to be approved, got %s", reason)
+	}
+	if request.Price != 1.75 {
+		t.Fatalf("expected adaptive sell limit of 1.75, got %.2f", request.Price)
+	}
+}
+
+func TestRiskCapsAdaptiveBufferForHigherPricedNames(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.LimitOrderSlippageDollars = 0.05
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
+
+	request, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:    "KBDU",
+		Side:      "buy",
+		Price:     27.04,
+		Quantity:  100,
+		Timestamp: at,
+	})
+	if !approved {
+		t.Fatalf("expected higher-priced buy to be approved, got %s", reason)
+	}
+	if request.Price != 27.09 {
+		t.Fatalf("expected capped buy limit of 27.09, got %.2f", request.Price)
 	}
 }

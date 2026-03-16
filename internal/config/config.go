@@ -35,8 +35,8 @@ type TradingConfig struct {
 	HydrationRequestsPerMin         int
 	HydrationRetrySec               int
 	HydrationQueueSize              int
-	// LimitOrderSlippageDollars is added to buy prices (and subtracted from sell
-	// prices) to give limit orders a flat dollar buffer that improves fill probability.
+	// LimitOrderSlippageDollars caps the adaptive limit-order buffer used to
+	// improve fill probability without over-penalizing low-priced names.
 	LimitOrderSlippageDollars float64
 }
 
