@@ -131,27 +131,7 @@ func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return domain.TradeSignal{}, false, reason
 	}
-	strongSqueeze := s.isStrongSqueeze(candidate)
-	breakoutDiscount := 0.0075
-	if candidate.RelativeVolume >= s.config.MinRelativeVolume+2 {
-		breakoutDiscount += 0.004
-	}
-	if candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.35 {
-		breakoutDiscount += 0.004
-	}
-	if candidate.VolumeRate >= s.config.MinVolumeRate+0.15 {
-		breakoutDiscount += 0.0025
-	}
-	if candidate.MinutesSinceOpen >= 90 {
-		breakoutDiscount += 0.003
-	}
-	if strongSqueeze {
-		breakoutDiscount += 0.004
-	}
-	if breakoutDiscount > 0.0225 {
-		breakoutDiscount = 0.0225
-	}
-	if candidate.Price < candidate.HighOfDay*(1-breakoutDiscount) {
+	if candidate.DistanceFromHighPct > s.allowedDistanceFromHigh(candidate) {
 		return domain.TradeSignal{}, false, "below-breakout-zone"
 	}
 	predictedReturn := s.entryModel.Predict(candidate)
@@ -253,11 +233,13 @@ func decisionTime(timestamp time.Time) time.Time {
 func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	threshold := s.config.EntryModelMinPredictedReturnPct
 	strongSqueeze := s.isStrongSqueeze(candidate)
-	if candidate.MinutesSinceOpen > 90 {
-		threshold += 0.40
+	if candidate.MinutesSinceOpen > 180 && !strongSqueeze {
+		threshold += 0.30
+	} else if candidate.MinutesSinceOpen > 90 && !strongSqueeze {
+		threshold += 0.15
 	}
 	if strongSqueeze {
-		threshold -= 0.35
+		threshold -= 0.80
 	}
 	if candidate.Score >= s.config.MinEntryScore+4 {
 		threshold -= 0.35
@@ -274,10 +256,21 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	if candidate.OneMinuteReturnPct < 0 {
 		threshold += 0.20
 	}
-	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct-2 {
+	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct-2 && !strongSqueeze {
 		threshold += 0.20
 	}
-	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.55
+	if candidate.DistanceFromHighPct <= 1.25 &&
+		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.25 &&
+		candidate.VolumeRate >= s.config.MinVolumeRate {
+		threshold -= 0.20
+	}
+	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.30
+	if strongSqueeze {
+		minThreshold = 0.0
+	}
+	if strongSqueeze && threshold < 0.15 {
+		threshold = 0.0
+	}
 	if threshold < minThreshold {
 		threshold = minThreshold
 	}
@@ -322,6 +315,32 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		candidate.RelativeVolume >= s.config.MinRelativeVolume+1.5 &&
 		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.40 &&
 		candidate.VolumeRate >= s.config.MinVolumeRate+0.15
+}
+
+func (s *Strategy) allowedDistanceFromHigh(candidate domain.Candidate) float64 {
+	allowance := 0.80
+	if candidate.RelativeVolume >= s.config.MinRelativeVolume+1 {
+		allowance += 0.35
+	}
+	if candidate.RelativeVolume >= s.config.MinRelativeVolume+3 {
+		allowance += 0.45
+	}
+	if candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.25 {
+		allowance += 0.45
+	}
+	if candidate.VolumeRate >= s.config.MinVolumeRate+0.10 {
+		allowance += 0.30
+	}
+	if candidate.MinutesSinceOpen >= 90 {
+		allowance += 0.35
+	}
+	if s.isStrongSqueeze(candidate) {
+		allowance += 0.60
+	}
+	if allowance > 3.25 {
+		allowance = 3.25
+	}
+	return allowance
 }
 
 func sameTradingDay(a, b time.Time) bool {

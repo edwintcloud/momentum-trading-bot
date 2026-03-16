@@ -163,6 +163,67 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	}
 }
 
+func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	strat.SetEntryModel(LinearModel{Name: "flat-test", Weights: map[string]float64{}})
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "SQUEEZE",
+		Price:                7.35,
+		Open:                 5.40,
+		HighOfDay:            7.48,
+		GapPercent:           2.0,
+		RelativeVolume:       9.0,
+		PriceVsOpenPct:       36.11,
+		DistanceFromHighPct:  1.77,
+		OneMinuteReturnPct:   0.22,
+		ThreeMinuteReturnPct: 1.10,
+		VolumeRate:           1.45,
+		MinutesSinceOpen:     150,
+		Score:                19.5,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatalf("expected strong squeeze to survive soft model gate, got %s", reason)
+	}
+}
+
+func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	strat.SetEntryModel(LinearModel{Name: "flat-test", Weights: map[string]float64{}})
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "WEAK",
+		Price:                4.20,
+		Open:                 4.00,
+		HighOfDay:            4.21,
+		GapPercent:           14,
+		RelativeVolume:       5.8,
+		PriceVsOpenPct:       5.0,
+		DistanceFromHighPct:  0.24,
+		OneMinuteReturnPct:   0.12,
+		ThreeMinuteReturnPct: 0.52,
+		VolumeRate:           1.05,
+		MinutesSinceOpen:     45,
+		Score:                14,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected marginal setup to remain blocked by model gate")
+	}
+	if reason != "model-threshold" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
