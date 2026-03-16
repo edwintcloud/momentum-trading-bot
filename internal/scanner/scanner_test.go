@@ -20,7 +20,7 @@ func TestScannerFiltersMomentumCandidates(t *testing.T) {
 		Open:            3.85,
 		HighOfDay:       4.01,
 		GapPercent:      17.8,
-		RelativeVolume:  5.9,
+		RelativeVolume:  15.9,
 		PreMarketVolume: 780_000,
 		Volume:          100_000,
 		VolumeSpike:     true,
@@ -32,7 +32,7 @@ func TestScannerFiltersMomentumCandidates(t *testing.T) {
 		Open:            3.85,
 		HighOfDay:       4.16,
 		GapPercent:      18.4,
-		RelativeVolume:  6.3,
+		RelativeVolume:  16.3,
 		PreMarketVolume: 800_000,
 		Volume:          260_000,
 		VolumeSpike:     true,
@@ -64,7 +64,7 @@ func TestScannerUsesEarlierRejectedTicksForMomentumContext(t *testing.T) {
 		Open:            11.10,
 		HighOfDay:       11.30,
 		GapPercent:      12.3,
-		RelativeVolume:  6.0,
+		RelativeVolume:  16.0,
 		PreMarketVolume: 200_000,
 		Volume:          200_000,
 		VolumeSpike:     true,
@@ -80,7 +80,7 @@ func TestScannerUsesEarlierRejectedTicksForMomentumContext(t *testing.T) {
 		Open:            11.10,
 		HighOfDay:       11.48,
 		GapPercent:      14.5,
-		RelativeVolume:  6.4,
+		RelativeVolume:  16.4,
 		PreMarketVolume: 450_000,
 		Volume:          450_000,
 		VolumeSpike:     true,
@@ -96,7 +96,7 @@ func TestScannerUsesEarlierRejectedTicksForMomentumContext(t *testing.T) {
 		Open:            11.10,
 		HighOfDay:       11.72,
 		GapPercent:      16.9,
-		RelativeVolume:  7.1,
+		RelativeVolume:  17.1,
 		PreMarketVolume: 850_000,
 		Volume:          850_000,
 		VolumeSpike:     true,
@@ -127,7 +127,7 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 		Open:            4.90,
 		HighOfDay:       5.50,
 		GapPercent:      1.0,
-		RelativeVolume:  5.6,
+		RelativeVolume:  15.6,
 		PreMarketVolume: 0,
 		Volume:          150_000,
 		VolumeSpike:     true,
@@ -142,7 +142,7 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 		Open:            4.90,
 		HighOfDay:       5.25,
 		GapPercent:      1.0,
-		RelativeVolume:  6.0,
+		RelativeVolume:  16.0,
 		PreMarketVolume: 0,
 		Volume:          250_000,
 		VolumeSpike:     true,
@@ -157,7 +157,7 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 		Open:            4.90,
 		HighOfDay:       5.35,
 		GapPercent:      1.0,
-		RelativeVolume:  6.0,
+		RelativeVolume:  16.0,
 		PreMarketVolume: 0,
 		Volume:          400_000,
 		VolumeSpike:     true,
@@ -172,7 +172,7 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 		Open:            4.90,
 		HighOfDay:       5.35,
 		GapPercent:      1.4,
-		RelativeVolume:  6.6,
+		RelativeVolume:  16.6,
 		PreMarketVolume: 0,
 		Volume:          500_000,
 		VolumeSpike:     true,
@@ -187,7 +187,7 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 		Open:            4.90,
 		HighOfDay:       5.60,
 		GapPercent:      1.8,
-		RelativeVolume:  7.2,
+		RelativeVolume:  17.2,
 		PreMarketVolume: 0,
 		Volume:          820_000,
 		VolumeSpike:     true,
@@ -212,7 +212,7 @@ func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 		Open:            5.80,
 		HighOfDay:       6.12,
 		GapPercent:      11.0,
-		RelativeVolume:  8.0,
+		RelativeVolume:  18.0,
 		PreMarketVolume: 900_000,
 		Volume:          1_000_000,
 		VolumeSpike:     true,
@@ -224,7 +224,7 @@ func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 		Open:            4.30,
 		HighOfDay:       4.82,
 		GapPercent:      10.5,
-		RelativeVolume:  7.5,
+		RelativeVolume:  17.5,
 		PreMarketVolume: 850_000,
 		Volume:          500_000,
 		VolumeSpike:     true,
@@ -233,8 +233,8 @@ func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 	if !ok {
 		t.Fatal("expected follower candidate to pass scanner")
 	}
-	if math.Abs(candidate.VolumeLeaderPct-0.37) > 0.01 {
-		t.Fatalf("expected follower to carry 0.37 leader share, got %.2f", candidate.VolumeLeaderPct)
+	if math.Abs(candidate.VolumeLeaderPct-0.38) > 0.01 {
+		t.Fatalf("expected follower to carry 0.38 leader share, got %.2f", candidate.VolumeLeaderPct)
 	}
 	if candidate.LeaderRank != 2 {
 		t.Fatalf("expected follower to rank second among momentum leaders, got %d", candidate.LeaderRank)

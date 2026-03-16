@@ -25,6 +25,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/scanner"
 	"github.com/edwincloud/momentum-trading-bot/internal/storage"
 	"github.com/edwincloud/momentum-trading-bot/internal/strategy"
+	"github.com/edwincloud/momentum-trading-bot/internal/telemetry"
 )
 
 func main() {
@@ -47,14 +48,24 @@ func main() {
 	runtimeState.SetDependencyStatus("database", false, "not checked")
 	runtimeState.SetDependencyStatus("alpaca_trading", false, "not checked")
 	runtimeState.SetDependencyStatus("market_data_stream", false, "not connected")
-	recorder, err := storage.NewRecorder(ctx, appConfig.DatabaseURL)
+	
+	pgRecorder, err := storage.NewRecorder(ctx, appConfig.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer recorder.Close()
+	defer pgRecorder.Close()
+
+	fileLogger, err := telemetry.NewLogger("./logs")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer fileLogger.Close()
+
+	recorder := telemetry.NewCompositeRecorder(pgRecorder, fileLogger)
+
 	startupCtx, startupCancel := context.WithTimeout(ctx, time.Duration(appConfig.StartupTimeoutSec)*time.Second)
 	defer startupCancel()
-	if err := recorder.Ping(startupCtx); err != nil {
+	if err := pgRecorder.Ping(startupCtx); err != nil {
 		log.Fatalf("database health check failed: %v", err)
 	}
 	runtimeState.SetDependencyStatus("database", true, "postgres reachable")

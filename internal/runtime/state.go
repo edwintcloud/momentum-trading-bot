@@ -46,6 +46,13 @@ func (s *State) SetRecorder(recorder domain.EventRecorder) {
 	s.recorder = recorder
 }
 
+// Recorder returns the attached persistence sink.
+func (s *State) Recorder() domain.EventRecorder {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.recorder
+}
+
 // Pause prevents new entries while leaving the market pipeline running.
 func (s *State) Pause() {
 	s.mu.Lock()

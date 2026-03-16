@@ -849,6 +849,13 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 	if pending.order.Symbol == "" || pending.order.Side != "buy" {
 		return domain.ExecutionReport{}, pending, false, false
 	}
+
+	maxAllowedShares := int64(float64(current.Volume) * 0.10)
+	if pending.order.Quantity > maxAllowedShares {
+		pending.barsRemaining--
+		return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0
+	}
+
 	fillPrice := 0.0
 	switch {
 	case current.Open > 0 && current.Open <= pending.order.Price:
@@ -856,7 +863,15 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 	case current.Low > 0 && current.Low <= pending.order.Price:
 		fillPrice = pending.order.Price
 	}
+
 	if fillPrice > 0 {
+		spread := current.High - current.Low
+		if spread < 0 {
+			spread = 0
+		}
+		penalty := spread * 0.05
+		fillPrice = math.Min(pending.order.Price, fillPrice+penalty)
+
 		return domain.ExecutionReport{
 			Symbol:       pending.order.Symbol,
 			Side:         pending.order.Side,
@@ -883,25 +898,44 @@ func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
+	barClose := firstPositive(tick.Price, tick.BarOpen)
 	peakReturn := strategy.PeakRMultiple(position, highWatermark)
 	holdingTime := decisionAt.Sub(position.OpenedAt)
 	sameDayHold := sameTrainingDay(position.OpenedAt, decisionAt)
 
+	spread := tick.BarHigh - tick.BarLow
+	if spread < 0 {
+		spread = 0
+	}
+	penalty := spread * 0.05
+
+	localTime := decisionAt.In(marketTZ)
+	minutes := localTime.Hour()*60 + localTime.Minute()
+
 	switch {
+	case minutes >= 15*60+55:
+		fillPrice := math.Max(0.01, round2(barClose-penalty))
+		return fillPrice, "end-of-day-liquidation", true
 	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
-		return barOpen, previousReason, true
+		fillPrice := math.Max(0.01, round2(barOpen-penalty))
+		fmt.Printf("DEBUG EXIT: %s open-stop previousStop=%.2f barOpen=%.2f penalty=%.2f\n", position.Symbol, previousStop, barOpen, penalty)
+		return fillPrice, previousReason, true
 	case sameDayHold &&
 		holdingTime >= time.Duration(cfg.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
 		barLow > 0 &&
 		barLow <= strategy.FailedBreakoutPrice(position):
-		return strategy.FailedBreakoutPrice(position), "failed-breakout", true
+		fillPrice := math.Max(0.01, round2(strategy.FailedBreakoutPrice(position)-penalty))
+		fmt.Printf("DEBUG EXIT: %s failed-breakout fbp=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f\n", position.Symbol, strategy.FailedBreakoutPrice(position), barLow, penalty, peakReturn)
+		return fillPrice, "failed-breakout", true
 	case func() bool {
 		stopPrice, _ := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
 		return stopPrice > 0 && barLow > 0 && barLow <= stopPrice
 	}():
 		stopPrice, reason := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
-		return stopPrice, reason, true
+		fillPrice := math.Max(0.01, round2(stopPrice-penalty))
+		fmt.Printf("DEBUG EXIT: %s %s stopPrice=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f initialStop=%.2f\n", position.Symbol, reason, stopPrice, barLow, penalty, peakReturn, position.InitialStopPrice)
+		return fillPrice, reason, true
 	default:
 		return 0, "", false
 	}

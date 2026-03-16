@@ -71,6 +71,11 @@ func (r *Recorder) RecordDashboard(snapshot domain.DashboardSnapshot) {
 	r.enqueue(snapshot)
 }
 
+// RecordIndicatorState queues an indicator state snapshot.
+func (r *Recorder) RecordIndicatorState(state domain.IndicatorSnapshot) {
+	r.enqueue(state)
+}
+
 func (r *Recorder) enqueue(event any) {
 	select {
 	case r.events <- event:
@@ -152,6 +157,16 @@ func (r *Recorder) persist(ctx context.Context, event any) error {
 			VALUES ($1, $2::jsonb)
 		`, value.UpdatedAt, payload)
 		return err
+	case domain.IndicatorSnapshot:
+		payload, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		_, err = r.pool.Exec(ctx, `
+			INSERT INTO indicator_snapshots (symbol, captured_at, signal_type, reason, payload)
+			VALUES ($1, $2, $3, $4, $5::jsonb)
+		`, value.Symbol, value.Timestamp, value.SignalType, value.Reason, payload)
+		return err
 	default:
 		return fmt.Errorf("unsupported event type %T", event)
 	}
@@ -200,11 +215,22 @@ func (r *Recorder) initSchema(ctx context.Context) error {
 			payload JSONB NOT NULL
 		)
 		`,
+		`
+		CREATE TABLE IF NOT EXISTS indicator_snapshots (
+			id BIGSERIAL PRIMARY KEY,
+			symbol TEXT NOT NULL,
+			captured_at TIMESTAMPTZ NOT NULL,
+			signal_type TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			payload JSONB NOT NULL
+		)
+		`,
 		`CREATE INDEX IF NOT EXISTS idx_system_logs_logged_at ON system_logs (logged_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_scanner_candidates_symbol_at ON scanner_candidates (symbol, candidate_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_execution_reports_symbol_at ON execution_reports (symbol, filled_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_closed_trades_symbol_at ON closed_trades (symbol, closed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_dashboard_snapshots_captured_at ON dashboard_snapshots (captured_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_indicator_snapshots_symbol_at ON indicator_snapshots (symbol, captured_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := r.pool.Exec(ctx, statement); err != nil {

@@ -8,15 +8,16 @@ import (
 )
 
 const (
-	minATRPercentFallback = 0.012
-	stopATRMultiplier     = 2.00
-	maxRiskATRMultiplier  = 8.00
-	trailActivationR      = 0.75
-	trailATRMultiplier    = 2.60
-	tightTrailTriggerR    = 3.50
-	tightTrailATRMultiple = 1.85
-	failedBreakoutCutR    = 0.85
-	structureConfirmR     = 0.30
+	minATRPercentFallback = 0.020
+	stopATRMultiplier     = 1.10
+	maxRiskATRMultiplier  = 4.00
+	profitTargetR         = 0.90
+	trailActivationR      = 0.40
+	trailATRMultiplier    = 1.00
+	tightTrailTriggerR    = 0.55
+	tightTrailATRMultiple = 0.40
+	failedBreakoutCutR    = 0.35
+	structureConfirmR     = 0.00
 )
 
 // EntryPlan captures the volatility-aware stop and sizing basis for a setup.
@@ -117,27 +118,33 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	// Time-based break-even: if open long enough with confirmed positive
 	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 20*time.Minute && peakR >= 0.75 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 15*time.Minute && peakR >= 1.00 && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop
 			reason = "break-even-stop"
 		}
 	}
+	
+	// Hard Profit Target: Momentum stocks spike and crash. Take the money.
+	if peakR >= profitTargetR {
+		// Set stop right at current price to force immediate exit
+		return currentPrice, "profit-target"
+	}
+
 	if peakR >= trailActivationR && currentR >= structureConfirmR {
 		trailWidth := math.Max(position.EntryATR*trailATRMultiplier, riskPerShare*1.25)
 		if peakR >= tightTrailTriggerR {
-			trailWidth = math.Max(position.EntryATR*tightTrailATRMultiple, riskPerShare)
+			trailWidth = math.Max(position.EntryATR*tightTrailATRMultiple, riskPerShare*0.75)
 		}
 		// Graduated trail floor: don't lock in break-even until the trade
-		// has moved 1R in our favor. Below that, give the trade room to
-		// consolidate above the original stop.
+		// has moved enough in our favor.
 		trailFloor := position.AvgPrice - (riskPerShare * 0.30)
 		if peakR >= 1.00 {
 			trailFloor = position.AvgPrice
 		}
-		if peakR >= 1.25 {
-			trailFloor = position.AvgPrice + (riskPerShare * 0.10)
+		if peakR >= 1.50 {
+			trailFloor = position.AvgPrice + (riskPerShare * 0.50)
 		}
 		stopPrice = math.Max(stopPrice, trailFloor)
 		stopPrice = math.Max(stopPrice, highWatermark-trailWidth)

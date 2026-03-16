@@ -9,6 +9,16 @@ type EventRecorder interface {
 	RecordExecution(ExecutionReport)
 	RecordClosedTrade(ClosedTrade)
 	RecordDashboard(DashboardSnapshot)
+	RecordIndicatorState(IndicatorSnapshot)
+}
+
+// IndicatorSnapshot captures the raw mathematical state of indicators at a point in time.
+type IndicatorSnapshot struct {
+	Symbol     string    `json:"symbol"`
+	Timestamp  time.Time `json:"timestamp"`
+	SignalType string    `json:"signalType"` // e.g., "entry", "exit"
+	Reason     string    `json:"reason"`
+	Indicators map[string]float64 `json:"indicators"`
 }
 
 // Tick is a normalized market data event shared across the trading pipeline.

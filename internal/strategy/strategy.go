@@ -151,6 +151,9 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if !markethours.IsTradableSessionAt(decisionAt) {
 		return CandidateDecision{Reason: "outside-session", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
+	if s.isLateSession(decisionAt) {
+		return CandidateDecision{Reason: "late-session-momentum-decay", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
 	if blockReason := s.runtime.EntryBlockReasonAt(decisionAt); blockReason != "" {
 		return CandidateDecision{Reason: blockReason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -209,6 +212,45 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		Confidence:   predictedReturn,
 		Timestamp:    decisionAt,
 	}
+
+	if s.runtime.Recorder() != nil {
+		s.runtime.Recorder().RecordIndicatorState(domain.IndicatorSnapshot{
+			Symbol:     candidate.Symbol,
+			Timestamp:  decisionAt,
+			SignalType: "entry",
+			Reason:     "entry-signal",
+			Indicators: map[string]float64{
+				"price":                   candidate.Price,
+				"open":                    candidate.Open,
+				"gapPercent":              candidate.GapPercent,
+				"relativeVolume":          candidate.RelativeVolume,
+				"preMarketVolume":         float64(candidate.PreMarketVolume),
+				"volume":                  float64(candidate.Volume),
+				"highOfDay":               candidate.HighOfDay,
+				"priceVsOpenPct":          candidate.PriceVsOpenPct,
+				"distanceFromHighPct":     candidate.DistanceFromHighPct,
+				"oneMinuteReturnPct":      candidate.OneMinuteReturnPct,
+				"threeMinuteReturnPct":    candidate.ThreeMinuteReturnPct,
+				"volumeRate":              candidate.VolumeRate,
+				"volumeLeaderPct":         candidate.VolumeLeaderPct,
+				"minutesSinceOpen":        candidate.MinutesSinceOpen,
+				"atr":                     candidate.ATR,
+				"atrPct":                  candidate.ATRPct,
+				"vwap":                    candidate.VWAP,
+				"priceVsVwapPct":          candidate.PriceVsVWAPPct,
+				"breakoutPct":             candidate.BreakoutPct,
+				"consolidationRangePct":   candidate.ConsolidationRangePct,
+				"pullbackDepthPct":        candidate.PullbackDepthPct,
+				"closeOffHighPct":         candidate.CloseOffHighPct,
+				"setupHigh":               candidate.SetupHigh,
+				"setupLow":                candidate.SetupLow,
+				"score":                   candidate.Score,
+				"predictedReturn":         predictedReturn,
+				"requiredReturn":          requiredReturn,
+			},
+		})
+	}
+
 	return CandidateDecision{
 		Signal:                 signal,
 		Emit:                   true,
@@ -253,10 +295,17 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	sameDayHold := sameTradingDay(position.OpenedAt, decisionAt)
 
 	reason := ""
+	localTime := decisionAt.In(markethours.Location())
+	minutes := localTime.Hour()*60 + localTime.Minute()
+
 	switch {
+	case minutes >= 15*60+55:
+		reason = "end-of-day-liquidation"
+		tick.Price = barClose
 	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
 		reason = previousReason
 		tick.Price = barOpen
+		fmt.Printf("DEBUG STRATEGY: %s open-stop previousStop=%.2f barOpen=%.2f\n", position.Symbol, previousStop, barOpen)
 	case sameDayHold &&
 		holdingTime >= time.Duration(s.config.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
@@ -264,6 +313,7 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		barLow <= failedBreakoutPrice(position):
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(position)
+		fmt.Printf("DEBUG STRATEGY: %s failed-breakout fbp=%.2f barLow=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, barLow, holdingTime.Minutes(), peakReturn)
 	case func() bool {
 		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
@@ -271,6 +321,7 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		}
 		reason = stopReason
 		tick.Price = stopPrice
+		fmt.Printf("DEBUG STRATEGY: %s %s stopPrice=%.2f barLow=%.2f peakReturn=%.2f\n", position.Symbol, reason, stopPrice, barLow, peakReturn)
 		return true
 	}():
 	default:
@@ -284,6 +335,33 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		state.lastLossAt = decisionAt
 		s.symbolStates[tick.Symbol] = state
 	}
+
+	if s.runtime.Recorder() != nil {
+		s.runtime.Recorder().RecordIndicatorState(domain.IndicatorSnapshot{
+			Symbol:     tick.Symbol,
+			Timestamp:  decisionAt,
+			SignalType: "exit",
+			Reason:     reason,
+			Indicators: map[string]float64{
+				"tickPrice":           tick.Price,
+				"tickBarOpen":         tick.BarOpen,
+				"tickBarHigh":         tick.BarHigh,
+				"tickBarLow":          tick.BarLow,
+				"tickVolume":          float64(tick.Volume),
+				"positionQuantity":    float64(position.Quantity),
+				"positionAvgPrice":    position.AvgPrice,
+				"positionLastPrice":    position.LastPrice,
+				"positionHighestPrice": position.HighestPrice,
+				"positionRisk":        position.RiskPerShare,
+				"positionATR":         position.EntryATR,
+				"highWatermark":       highWatermark,
+				"previousStop":        previousStop,
+				"peakReturn":          peakReturn,
+				"holdingTimeMin":      holdingTime.Minutes(),
+			},
+		})
+	}
+
 	return domain.TradeSignal{
 		Symbol:       tick.Symbol,
 		Side:         "sell",
@@ -432,18 +510,18 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
-	minLeaderPct := 0.15
-	maxLeaderRank := 3
+	minLeaderPct := 0.05
+	maxLeaderRank := 10
 	if s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp) {
-		minLeaderPct = 0.25
-		maxLeaderRank = 2
+		minLeaderPct = 0.10
+		maxLeaderRank = 5
 	}
 	if strongSqueeze {
-		minLeaderPct -= 0.05
-		maxLeaderRank++
+		minLeaderPct -= 0.02
+		maxLeaderRank += 2
 	}
-	if minLeaderPct < 0.08 {
-		minLeaderPct = 0.08
+	if minLeaderPct < 0.04 {
+		minLeaderPct = 0.04
 	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
@@ -655,6 +733,15 @@ func (s *Strategy) isOpeningSession(at time.Time) bool {
 	local := at.In(markethours.Location())
 	minutes := local.Hour()*60 + local.Minute()
 	return minutes >= 9*60+30 && minutes < 9*60+45
+}
+
+func (s *Strategy) isLateSession(at time.Time) bool {
+	if at.IsZero() {
+		return false
+	}
+	local := at.In(markethours.Location())
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes >= 15*60+30
 }
 
 func (s *Strategy) isParabolicEntry(candidate domain.Candidate) bool {

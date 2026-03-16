@@ -22,10 +22,10 @@ func TestTuneTradingConfigUsesConservativeSmallAccountProfile(t *testing.T) {
 func TestTuneTradingConfigUsesBrokerScaleForLargerAccount(t *testing.T) {
 	cfg := TuneTradingConfig(DefaultTradingConfig(), 150_000, 10_000)
 
-	if cfg.RiskPerTradePct != 0.01 {
+	if cfg.RiskPerTradePct != 0.015 {
 		t.Fatalf("expected standard risk per trade for larger account, got %.4f", cfg.RiskPerTradePct)
 	}
-	if cfg.MaxExposurePct != 0.34 {
+	if cfg.MaxExposurePct != 0.48 {
 		t.Fatalf("expected exposure cap to stay aligned with risk-based sizing, got %.2f", cfg.MaxExposurePct)
 	}
 	if cfg.HydrationRequestsPerMin != 2400 {

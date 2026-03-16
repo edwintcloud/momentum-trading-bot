@@ -189,6 +189,7 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 		ThreeMinuteReturnPct: 1.40,
 		VolumeRate:           1.45,
 		MinutesSinceOpen:     170,
+		SetupLow:             6.80,
 		Score:                20,
 		Timestamp:            at,
 	})
@@ -218,6 +219,7 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 		ThreeMinuteReturnPct: 1.05,
 		VolumeRate:           1.32,
 		MinutesSinceOpen:     145,
+		SetupLow:             6.90,
 		Score:                18,
 		Timestamp:            at,
 	})
@@ -277,8 +279,8 @@ func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 		OneMinuteReturnPct:   0.72,
 		ThreeMinuteReturnPct: 1.65,
 		VolumeRate:           1.45,
-		VolumeLeaderPct:      0.12,
-		LeaderRank:           4,
+		VolumeLeaderPct:      0.04,
+		LeaderRank:           6,
 		MinutesSinceOpen:     40,
 		Score:                24.0,
 		Timestamp:            at,
@@ -522,6 +524,7 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 		ThreeMinuteReturnPct: 1.20,
 		VolumeRate:           1.50,
 		MinutesSinceOpen:     55,
+		SetupLow:             3.00,
 		Score:                19,
 	}
 
@@ -676,8 +679,8 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 531 {
-		t.Fatalf("expected ATR-based quantity 531 using broker equity sizing, got %d", signal.Quantity)
+	if signal.Quantity != 965 {
+		t.Fatalf("expected quantity scaled by narrower stop, got %d", signal.Quantity)
 	}
 }
 
@@ -702,46 +705,37 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 		VolumeRate:           1.8,
 		LeaderRank:           1,
 		MinutesSinceOpen:     0,
+		SetupLow:             1.85,
 		Score:                28,
 		Timestamp:            time.Date(2026, 3, 13, 12, 20, 0, 0, time.UTC),
 	})
 	if !ok {
 		t.Fatal("expected conservative premarket setup to pass")
 	}
-	if signal.Quantity != 916 {
-		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 916 shares, got %d", signal.Quantity)
+	if signal.Quantity != 1833 {
+		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 1833 shares, got %d", signal.Quantity)
 	}
 }
 
-func TestStrategyUsesTrailingStopInsteadOfImmediateProfitTarget(t *testing.T) {
+func TestStrategyUsesHardProfitTargetOnMassiveSpike(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
 	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-3*time.Minute)))
-	book.MarkPriceAt("RKLB", 11.50, at.Add(-2*time.Minute))
+	book.MarkPriceAt("RKLB", 10.00, at.Add(-2*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
-	if signal, ok := strat.evaluateExit(domain.Tick{
+	// Spike to 11.50 (3.0R if R is 0.50)
+	spikeTick := domain.Tick{
 		Symbol:    "RKLB",
-		Price:     11.20,
-		HighOfDay: 11.50,
-		Timestamp: at.Add(-time.Minute),
-	}); ok {
-		t.Fatalf("expected no immediate take-profit exit, got %+v", signal)
-	}
-
-	signal, ok := strat.evaluateExit(domain.Tick{
-		Symbol:    "RKLB",
-		Price:     10.70,
+		Price:     11.50,
 		HighOfDay: 11.50,
 		Timestamp: at,
-	})
-	if !ok {
-		t.Fatal("expected trailing-stop exit after pullback from the high")
 	}
-	if signal.Reason != "trailing-stop" {
-		t.Fatalf("expected trailing-stop reason, got %+v", signal)
+	signal, ok := strat.evaluateExit(spikeTick)
+	if !ok || signal.Reason != "profit-target" {
+		t.Fatalf("expected profit-target exit immediately, got %+v", signal)
 	}
 }
 
@@ -756,10 +750,10 @@ func TestStrategyExitsFailedBreakoutBeforeFullStop(t *testing.T) {
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
-		Price:     9.56,
+		Price:     9.49,
 		BarOpen:   9.70,
 		BarHigh:   9.72,
-		BarLow:    9.55,
+		BarLow:    9.45,
 		HighOfDay: 10.10,
 		Timestamp: at,
 	})
@@ -777,13 +771,13 @@ func TestStrategyProtectsNearBreakEvenAfterInitialPop(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
 	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-10*time.Minute)))
-	book.MarkPriceAt("RKLB", 10.55, at.Add(-4*time.Minute))
+	book.MarkPriceAt("RKLB", 10.40, at.Add(-4*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
 		Price:     9.99,
-		HighOfDay: 10.55,
+		HighOfDay: 10.40,
 		Timestamp: at,
 	})
 	if !ok {

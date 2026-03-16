@@ -19,43 +19,43 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 		cfg.MaxOpenPositions = 2
 		cfg.MinPrice = 2.0
 	case equity < 100_000:
-		cfg.RiskPerTradePct = 0.0075
-		cfg.DailyLossLimitPct = 0.020
-		cfg.MaxTradesPerDay = 8
-		cfg.MaxOpenPositions = 3
-		cfg.MinPrice = 1.50
+		cfg.RiskPerTradePct = 0.035
+		cfg.DailyLossLimitPct = 0.200
+		cfg.MaxTradesPerDay = 30
+		cfg.MaxOpenPositions = 5
+		cfg.MinPrice = 1.00
 	default:
-		cfg.RiskPerTradePct = 0.010
-		cfg.DailyLossLimitPct = 0.025
-		cfg.MaxTradesPerDay = 8
-		cfg.MaxOpenPositions = 4
+		cfg.RiskPerTradePct = 0.015
+		cfg.DailyLossLimitPct = 0.080
+		cfg.MaxTradesPerDay = 20
+		cfg.MaxOpenPositions = 5
 		cfg.MinPrice = 1.00
 	}
 
-	cfg.StopLossPct = 0.07
-	cfg.TrailingStopPct = 0.08
-	cfg.TrailingStopActivationPct = 0.03
+	cfg.StopLossPct = 0.05
+	cfg.TrailingStopPct = 0.06
+	cfg.TrailingStopActivationPct = 0.02
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
-	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 0.40
-	cfg.MinEntryScore = 15.5
-	cfg.MinOneMinuteReturnPct = 0.10
-	cfg.MinThreeMinuteReturnPct = 0.45
-	cfg.MinVolumeRate = 1.05
-	cfg.MaxPriceVsOpenPct = 22.0
-	cfg.BreakoutFailureWindowMin = 20
-	cfg.BreakoutFailureLossPct = 0.0075
+	cfg.EntryModelEnabled = false
+	cfg.EntryModelMinPredictedReturnPct = 0.10
+	cfg.MinEntryScore = 28.0
+	cfg.MinOneMinuteReturnPct = 0.60
+	cfg.MinThreeMinuteReturnPct = 1.00
+	cfg.MinVolumeRate = 2.00
+	cfg.MaxPriceVsOpenPct = 25.0
+	cfg.BreakoutFailureWindowMin = 5
+	cfg.BreakoutFailureLossPct = 0.0050
 	cfg.BreakEvenActivationPct = 0.015
 	cfg.BreakEvenFloorPct = 0.001
-	cfg.StagnationWindowMin = 35
-	cfg.StagnationMinPeakPct = 0.010
-	cfg.MinGapPercent = 9.0
-	cfg.MaxPrice = 20.0
-	cfg.MinRelativeVolume = 5.0
-	cfg.MinPremarketVolume = 400_000
+	cfg.StagnationWindowMin = 5
+	cfg.StagnationMinPeakPct = 0.005
+	cfg.MinGapPercent = 4.0
+	cfg.MaxPrice = 50.0
+	cfg.MinRelativeVolume = 1.2
+	cfg.MinPremarketVolume = 100_000
 	cfg.ScannerWorkers = 4
-	cfg.LimitOrderSlippageDollars = 0.05
+	cfg.LimitOrderSlippageDollars = 0.02
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 
 	if historicalRateLimitPerMin > 0 {
@@ -87,8 +87,8 @@ func inferMaxExposurePct(cfg TradingConfig) float64 {
 	if exposure < 0.25 {
 		exposure = 0.25
 	}
-	if exposure > 0.60 {
-		exposure = 0.60
+	if exposure > 10.00 {
+		exposure = 10.00
 	}
 	return round2(exposure)
 }
