@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"math"
 	"testing"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
@@ -26,7 +27,7 @@ func TestDefaultEntryModelCapsExtremeFeatures(t *testing.T) {
 	extreme.ThreeMinuteReturnPct = 60
 	extreme.VolumeRate = 12
 
-	if got, want := model.Predict(extreme), model.Predict(capped); got != want {
+	if got, want := model.Predict(extreme), model.Predict(capped); math.Abs(got-want) > 1e-9 {
 		t.Fatalf("expected extreme features to be capped in prediction, got %.2f want %.2f", got, want)
 	}
 }

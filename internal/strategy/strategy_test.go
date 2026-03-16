@@ -257,6 +257,37 @@ func TestStrategyRejectsThinEarlyPremarketSetup(t *testing.T) {
 	}
 }
 
+func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := time.Date(2026, 3, 13, 13, 31, 0, 0, time.UTC)
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "CONL",
+		Price:                10.13,
+		Open:                 8.80,
+		HighOfDay:            10.18,
+		GapPercent:           15.0,
+		RelativeVolume:       52.0,
+		PriceVsOpenPct:       15.11,
+		DistanceFromHighPct:  0.49,
+		OneMinuteReturnPct:   2.75,
+		ThreeMinuteReturnPct: 4.30,
+		VolumeRate:           2.10,
+		MinutesSinceOpen:     1,
+		Score:                48.0,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected opening-session parabolic setup to be blocked")
+	}
+	if reason != "opening-parabolic" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
@@ -476,6 +507,37 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	}
 	if signal.Quantity != 1000 {
 		t.Fatalf("expected quantity 1000 using broker equity sizing, got %d", signal.Quantity)
+	}
+}
+
+func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(50000, 50500)
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	signal, ok := strat.evaluateCandidate(domain.Candidate{
+		Symbol:               "BIAF",
+		Price:                2.00,
+		Open:                 1.70,
+		HighOfDay:            2.02,
+		GapPercent:           12.0,
+		RelativeVolume:       15.0,
+		PriceVsOpenPct:       17.65,
+		DistanceFromHighPct:  0.99,
+		OneMinuteReturnPct:   1.2,
+		ThreeMinuteReturnPct: 2.6,
+		VolumeRate:           1.8,
+		MinutesSinceOpen:     0,
+		Score:                28,
+		Timestamp:            time.Date(2026, 3, 13, 12, 20, 0, 0, time.UTC),
+	})
+	if !ok {
+		t.Fatal("expected conservative premarket setup to pass")
+	}
+	if signal.Quantity != 2799 {
+		t.Fatalf("expected premarket low-priced sizing to be scaled down to 2799 shares, got %d", signal.Quantity)
 	}
 }
 
