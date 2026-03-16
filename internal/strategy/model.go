@@ -17,6 +17,7 @@ var modelFeatureOrder = []string{
 	"three_minute_return_pct",
 	"volume_rate",
 	"minutes_since_open",
+	"score",
 }
 
 // LinearModel predicts short-horizon upside using candidate features.
@@ -36,17 +37,18 @@ type TrainingSample struct {
 // near the high of day with improving short-term momentum and accelerating volume.
 func DefaultEntryModel() LinearModel {
 	return LinearModel{
-		Name:      "seeded-momentum-entry-v1",
-		Intercept: -1.20,
+		Name:      "seeded-momentum-entry-v2",
+		Intercept: -2.60,
 		Weights: map[string]float64{
-			"gap_percent":             0.05,
-			"relative_volume":         0.18,
-			"price_vs_open_pct":       0.22,
-			"distance_from_high_pct":  -0.95,
-			"one_minute_return_pct":   1.35,
-			"three_minute_return_pct": 0.55,
-			"volume_rate":             0.40,
+			"gap_percent":             0.04,
+			"relative_volume":         0.14,
+			"price_vs_open_pct":       0.12,
+			"distance_from_high_pct":  -1.10,
+			"one_minute_return_pct":   1.05,
+			"three_minute_return_pct": 0.65,
+			"volume_rate":             0.32,
 			"minutes_since_open":      -0.01,
+			"score":                   0.12,
 		},
 	}
 }
@@ -124,7 +126,7 @@ func TrainLinearModel(samples []TrainingSample) (LinearModel, error) {
 	}
 
 	model := LinearModel{
-		Name:      "trained-momentum-entry-v1",
+		Name:      "trained-momentum-entry-v2",
 		Intercept: coefficients[0],
 		Weights:   make(map[string]float64, len(modelFeatureOrder)),
 	}
@@ -144,6 +146,7 @@ func featureValues(candidate domain.Candidate) map[string]float64 {
 		"three_minute_return_pct": candidate.ThreeMinuteReturnPct,
 		"volume_rate":             candidate.VolumeRate,
 		"minutes_since_open":      candidate.MinutesSinceOpen,
+		"score":                   candidate.Score,
 	}
 }
 

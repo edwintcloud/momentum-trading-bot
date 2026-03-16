@@ -16,6 +16,17 @@ type TradingConfig struct {
 	EntryModelEnabled               bool
 	EntryModelPath                  string
 	EntryModelMinPredictedReturnPct float64
+	MinEntryScore                   float64
+	MinOneMinuteReturnPct           float64
+	MinThreeMinuteReturnPct         float64
+	MinVolumeRate                   float64
+	MaxPriceVsOpenPct               float64
+	BreakoutFailureWindowMin        int
+	BreakoutFailureLossPct          float64
+	BreakEvenActivationPct          float64
+	BreakEvenFloorPct               float64
+	StagnationWindowMin             int
+	StagnationMinPeakPct            float64
 	ScannerWorkers                  int
 	MinPrice                        float64
 	MinGapPercent                   float64
@@ -45,6 +56,17 @@ func DefaultTradingConfig() TradingConfig {
 		ExitCooldownSec:                 5,
 		EntryModelEnabled:               true,
 		EntryModelMinPredictedReturnPct: 1.50,
+		MinEntryScore:                   14.0,
+		MinOneMinuteReturnPct:           0.20,
+		MinThreeMinuteReturnPct:         0.60,
+		MinVolumeRate:                   1.15,
+		MaxPriceVsOpenPct:               20.0,
+		BreakoutFailureWindowMin:        12,
+		BreakoutFailureLossPct:          0.008,
+		BreakEvenActivationPct:          0.018,
+		BreakEvenFloorPct:               0.0015,
+		StagnationWindowMin:             45,
+		StagnationMinPeakPct:            0.012,
 		ScannerWorkers:                  6,
 		MinPrice:                        1.0,
 		MinGapPercent:                   10.0,

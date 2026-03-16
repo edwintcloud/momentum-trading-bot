@@ -95,6 +95,8 @@ func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
 }
 
 func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
+	oneMinuteReturn, threeMinuteReturn, volumeRate := s.updateSymbolState(tick)
+
 	if tick.Price <= s.config.MinPrice {
 		return domain.Candidate{}, false, "min-price"
 	}
@@ -111,7 +113,6 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		return domain.Candidate{}, false, "volume-spike"
 	}
 
-	oneMinuteReturn, threeMinuteReturn, volumeRate := s.updateSymbolState(tick)
 	priceVsOpenPct := percentChange(tick.Open, tick.Price)
 	distanceFromHighPct := percentChange(tick.Price, tick.HighOfDay)
 	score := (tick.GapPercent * 0.30) +

@@ -24,6 +24,11 @@ func IsTradableSessionAt(at time.Time) bool {
 	return minutes >= premarketOpenMinute && minutes < postmarketCloseMinute
 }
 
+// Location returns the shared America/New_York market timezone.
+func Location() *time.Location {
+	return newYorkLocation
+}
+
 func mustLoadLocation(name string) *time.Location {
 	location, err := time.LoadLocation(name)
 	if err != nil {

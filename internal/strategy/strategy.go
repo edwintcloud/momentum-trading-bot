@@ -128,11 +128,26 @@ func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain
 			return domain.TradeSignal{}, false, "entry-cooldown"
 		}
 	}
+	if candidate.Score < s.config.MinEntryScore {
+		return domain.TradeSignal{}, false, "low-score"
+	}
+	if candidate.OneMinuteReturnPct < s.config.MinOneMinuteReturnPct {
+		return domain.TradeSignal{}, false, "weak-one-minute-return"
+	}
+	if candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
+		return domain.TradeSignal{}, false, "weak-three-minute-return"
+	}
+	if candidate.VolumeRate < s.config.MinVolumeRate {
+		return domain.TradeSignal{}, false, "weak-volume-rate"
+	}
+	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct {
+		return domain.TradeSignal{}, false, "too-extended-from-open"
+	}
 	if candidate.Price < candidate.HighOfDay*0.995 {
 		return domain.TradeSignal{}, false, "below-breakout-zone"
 	}
 	predictedReturn := s.entryModel.Predict(candidate)
-	if s.config.EntryModelEnabled && predictedReturn < s.config.EntryModelMinPredictedReturnPct {
+	if s.config.EntryModelEnabled && predictedReturn < s.requiredPredictedReturn(candidate) {
 		return domain.TradeSignal{}, false, "model-threshold"
 	}
 
@@ -181,11 +196,27 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	stopPrice := position.AvgPrice * (1 - s.config.StopLossPct)
 	trailingStop := position.HighestPrice * (1 - s.config.TrailingStopPct)
 	trailingActivationPrice := position.AvgPrice * (1 + s.config.TrailingStopActivationPct)
+	currentReturn := priceReturn(position.AvgPrice, tick.Price)
+	peakReturn := priceReturn(position.AvgPrice, position.HighestPrice)
+	holdingTime := decisionAt.Sub(position.OpenedAt)
+	sameDayHold := sameTradingDay(position.OpenedAt, decisionAt)
 
 	reason := ""
 	switch {
 	case tick.Price <= stopPrice:
 		reason = "stop-loss"
+	case sameDayHold &&
+		holdingTime >= time.Duration(s.config.BreakoutFailureWindowMin)*time.Minute &&
+		peakReturn < s.config.BreakEvenActivationPct &&
+		currentReturn <= -s.config.BreakoutFailureLossPct:
+		reason = "failed-breakout"
+	case peakReturn >= s.config.BreakEvenActivationPct && currentReturn <= s.config.BreakEvenFloorPct:
+		reason = "break-even-stop"
+	case sameDayHold &&
+		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
+		peakReturn < s.config.StagnationMinPeakPct &&
+		currentReturn <= 0:
+		reason = "time-stop"
 	case position.HighestPrice >= trailingActivationPrice && tick.Price <= trailingStop:
 		reason = "trailing-stop"
 	default:
@@ -209,4 +240,34 @@ func decisionTime(timestamp time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return timestamp.UTC()
+}
+
+func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
+	threshold := s.config.EntryModelMinPredictedReturnPct
+	if candidate.MinutesSinceOpen > 90 {
+		threshold += 0.40
+	}
+	if candidate.Score < s.config.MinEntryScore+2 {
+		threshold += 0.25
+	}
+	if candidate.VolumeRate < s.config.MinVolumeRate+0.25 {
+		threshold += 0.15
+	}
+	return threshold
+}
+
+func sameTradingDay(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	aDay := a.In(markethours.Location()).Format("2006-01-02")
+	bDay := b.In(markethours.Location()).Format("2006-01-02")
+	return aDay == bDay
+}
+
+func priceReturn(entryPrice, currentPrice float64) float64 {
+	if entryPrice <= 0 {
+		return 0
+	}
+	return (currentPrice - entryPrice) / entryPrice
 }

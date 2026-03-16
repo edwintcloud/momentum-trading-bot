@@ -92,13 +92,16 @@ func main() {
 		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, appConfig.Trading.StartingCapital, historicalRateLimit)
 	}
 	runtimeState.RecordLog("info", "risk", fmt.Sprintf(
-		"broker-tuned config risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f",
+		"broker-tuned config risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f min_score=%.1f min_1m=%.2f model_threshold=%.2f",
 		appConfig.Trading.RiskPerTradePct*100,
 		appConfig.Trading.DailyLossLimitPct*100,
 		appConfig.Trading.MaxOpenPositions,
 		appConfig.Trading.MaxExposurePct*100,
 		appConfig.Trading.MinGapPercent,
 		appConfig.Trading.MinRelativeVolume,
+		appConfig.Trading.MinEntryScore,
+		appConfig.Trading.MinOneMinuteReturnPct,
+		appConfig.Trading.EntryModelMinPredictedReturnPct,
 	))
 	portfolioManager := portfolio.NewManager(appConfig.Trading, runtimeState)
 	portfolioManager.SetRecorder(recorder)

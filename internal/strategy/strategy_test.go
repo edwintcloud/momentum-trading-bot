@@ -146,6 +146,64 @@ func TestStrategyUsesTrailingStopInsteadOfImmediateProfitTarget(t *testing.T) {
 	}
 }
 
+func TestStrategyExitsFailedBreakoutBeforeFullStop(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionTime()
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "RKLB",
+		Side:     "buy",
+		Price:    10,
+		Quantity: 100,
+		FilledAt: at.Add(-13 * time.Minute),
+	})
+	book.MarkPriceAt("RKLB", 10.05, at.Add(-8*time.Minute))
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	signal, ok := strat.evaluateExit(domain.Tick{
+		Symbol:    "RKLB",
+		Price:     9.90,
+		HighOfDay: 10.10,
+		Timestamp: at,
+	})
+	if !ok {
+		t.Fatal("expected failed-breakout exit")
+	}
+	if signal.Reason != "failed-breakout" {
+		t.Fatalf("expected failed-breakout reason, got %+v", signal)
+	}
+}
+
+func TestStrategyProtectsNearBreakEvenAfterInitialPop(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionTime()
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "RKLB",
+		Side:     "buy",
+		Price:    10,
+		Quantity: 100,
+		FilledAt: at.Add(-10 * time.Minute),
+	})
+	book.MarkPriceAt("RKLB", 10.25, at.Add(-4*time.Minute))
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	signal, ok := strat.evaluateExit(domain.Tick{
+		Symbol:    "RKLB",
+		Price:     10.01,
+		HighOfDay: 10.25,
+		Timestamp: at,
+	})
+	if !ok {
+		t.Fatal("expected break-even protection exit")
+	}
+	if signal.Reason != "break-even-stop" {
+		t.Fatalf("expected break-even-stop reason, got %+v", signal)
+	}
+}
+
 func TestStrategyBlocksEntriesOutsideTradableSession(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

@@ -429,6 +429,9 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 			}
 			stats.candidateBars++
 			maxHigh := rec.bar.Close
+			minLow := rec.bar.Close
+			endClose := rec.bar.Close
+			barsSeen := 0
 			for lookahead := 1; lookahead <= runCfg.LabelLookaheadBars && pos+lookahead < len(indices); lookahead++ {
 				future := records[indices[pos+lookahead]]
 				if !withinWindow(future.bar.Timestamp, runCfg.TrainStart, runCfg.TrainEnd) {
@@ -437,11 +440,16 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 				if future.bar.High > maxHigh {
 					maxHigh = future.bar.High
 				}
+				if future.bar.Low < minLow {
+					minLow = future.bar.Low
+				}
+				endClose = future.bar.Close
+				barsSeen++
 			}
-			forwardReturn := 0.0
-			if maxHigh > rec.bar.Close {
-				forwardReturn = ((maxHigh - rec.bar.Close) / rec.bar.Close) * 100
+			if barsSeen == 0 {
+				continue
 			}
+			forwardReturn := trainingTarget(rec.bar.Close, maxHigh, minLow, endClose)
 			samples = append(samples, strategy.TrainingSample{
 				Candidate:        rec.candidate,
 				ForwardReturnPct: forwardReturn,
@@ -454,6 +462,16 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 	}
 	model, err := strategy.TrainLinearModel(samples)
 	return model, stats, err
+}
+
+func trainingTarget(entryClose, maxHigh, minLow, endClose float64) float64 {
+	if entryClose <= 0 {
+		return 0
+	}
+	continuationReturn := ((endClose - entryClose) / entryClose) * 100
+	maxExcursion := ((maxHigh - entryClose) / entryClose) * 100
+	adverseExcursion := ((minLow - entryClose) / entryClose) * 100
+	return (continuationReturn * 0.65) + (maxExcursion * 0.35) + (adverseExcursion * 1.10)
 }
 
 func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
