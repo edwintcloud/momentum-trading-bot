@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -194,5 +195,73 @@ func TestTrainingTargetPenalizesFailedBreakouts(t *testing.T) {
 	}
 	if bad >= 0 {
 		t.Fatalf("expected failed breakout target to be negative, got %.2fR", bad)
+	}
+}
+
+func TestTrainingCorpusCacheRoundTrip(t *testing.T) {
+	originalRoot := trainingCorpusCacheRoot
+	trainingCorpusCacheRoot = filepath.Join(t.TempDir(), "training-corpus")
+	defer func() {
+		trainingCorpusCacheRoot = originalRoot
+	}()
+
+	expected := trainingCorpus{
+		candidateTimestamps: []time.Time{
+			time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
+		},
+		rows: []trainingRow{
+			{
+				candidateAt: time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
+				availableAt: time.Date(2026, 3, 10, 14, 5, 0, 0, time.UTC),
+				sample: strategy.TrainingSample{
+					Candidate: domain.Candidate{
+						Symbol:    "TEST",
+						Price:     5.25,
+						SetupType: "consolidation-breakout",
+					},
+					ForwardReturnPct: 1.25,
+				},
+			},
+		},
+	}
+
+	if err := saveTrainingCorpusCache("cache-key", expected); err != nil {
+		t.Fatalf("expected training corpus cache save to succeed, got %v", err)
+	}
+
+	loaded, ok, err := loadTrainingCorpusCache("cache-key")
+	if err != nil {
+		t.Fatalf("expected training corpus cache load to succeed, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected training corpus cache hit")
+	}
+	if !reflect.DeepEqual(expected, loaded) {
+		t.Fatalf("expected cached corpus %+v, got %+v", expected, loaded)
+	}
+}
+
+func TestTrainingCorpusCacheKeyIncludesTradingConfig(t *testing.T) {
+	cfgA := config.DefaultTradingConfig()
+	cfgB := config.DefaultTradingConfig()
+	cfgB.MinRelativeVolume = cfgA.MinRelativeVolume + 1
+
+	runCfg := RunConfig{
+		Start:              time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
+		End:                time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC),
+		TrainStart:         time.Date(2026, 3, 9, 14, 0, 0, 0, time.UTC),
+		TrainEnd:           time.Date(2026, 3, 9, 20, 0, 0, 0, time.UTC),
+		LabelLookaheadBars: 24,
+	}
+	records := []record{
+		{bar: bar{Timestamp: time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC), Symbol: "TEST"}},
+		{bar: bar{Timestamp: time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC), Symbol: "TEST"}},
+	}
+	symbolIndices := map[string][]int{"TEST": []int{0, 1}}
+
+	keyA := trainingCorpusCacheKey(cfgA, runCfg, records, symbolIndices)
+	keyB := trainingCorpusCacheKey(cfgB, runCfg, records, symbolIndices)
+	if keyA == keyB {
+		t.Fatal("expected training corpus cache key to change when trading config changes")
 	}
 }

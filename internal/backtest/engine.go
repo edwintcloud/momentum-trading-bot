@@ -205,7 +205,39 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
 	corpus := trainingCorpus{}
 	if !runCfg.TrainStart.IsZero() {
-		corpus = precomputeTrainingCorpus(cfg, records, symbolIndices, runCfg)
+		cacheKey := trainingCorpusCacheKey(cfg, runCfg, records, symbolIndices)
+		loadedCorpus := false
+		if cached, ok, err := loadTrainingCorpusCache(cacheKey); err != nil {
+			runtimeState.RecordLog("warn", "backtest", "could not load training corpus cache: "+err.Error())
+		} else if ok {
+			corpus = cached
+			loadedCorpus = true
+			runtimeState.RecordLog(
+				"info",
+				"backtest",
+				fmt.Sprintf(
+					"loaded training corpus cache rows=%d candidates=%d",
+					len(corpus.rows),
+					len(corpus.candidateTimestamps),
+				),
+			)
+		}
+		if !loadedCorpus {
+			corpus = precomputeTrainingCorpus(cfg, records, symbolIndices, runCfg)
+			if err := saveTrainingCorpusCache(cacheKey, corpus); err != nil {
+				runtimeState.RecordLog("warn", "backtest", "could not save training corpus cache: "+err.Error())
+			} else {
+				runtimeState.RecordLog(
+					"info",
+					"backtest",
+					fmt.Sprintf(
+						"saved training corpus cache rows=%d candidates=%d",
+						len(corpus.rows),
+						len(corpus.candidateTimestamps),
+					),
+				)
+			}
+		}
 	}
 	diagnostics := Diagnostics{
 		BarsLoaded:         len(records),

@@ -226,7 +226,7 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	}
 }
 
-func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
+func TestStrategyRejectsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -250,8 +250,11 @@ func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 		Score:                22.0,
 		Timestamp:            at,
 	})
-	if !ok {
-		t.Fatalf("expected strong squeeze to survive soft model gate, got %s", reason)
+	if ok {
+		t.Fatal("expected flat-model strong squeeze to remain blocked by model gate")
+	}
+	if reason != "model-threshold" {
+		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
 

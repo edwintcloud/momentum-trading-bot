@@ -433,13 +433,13 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	}
 	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.30
 	if strongSqueeze {
-		minThreshold = 0.0
+		minThreshold = maxFloat(minThreshold, 0.20)
 	}
 	if strongSqueeze && s.isPremarket(candidate.Timestamp) {
-		minThreshold = 0.90
+		minThreshold = 0.60
 	}
 	if strongSqueeze && s.isOpeningSession(candidate.Timestamp) {
-		minThreshold = 0.85
+		minThreshold = 0.45
 	}
 	if threshold < minThreshold {
 		threshold = minThreshold
@@ -606,9 +606,6 @@ func (s *Strategy) predictEntryReturn(candidate domain.Candidate, strongSqueeze 
 	}
 	seedPrediction := s.seedModel.Predict(candidate)
 	blended := (activePrediction * 0.70) + (seedPrediction * 0.30)
-	if strongSqueeze && blended < 0 {
-		return 0
-	}
 	return blended
 }
 
