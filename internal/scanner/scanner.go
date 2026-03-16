@@ -48,18 +48,22 @@ type scanMetrics struct {
 
 // Scanner scans market ticks for momentum candidates.
 type Scanner struct {
-	config       config.TradingConfig
-	runtime      *runtime.State
-	mu           sync.Mutex
-	state        map[string]*symbolState
-	leaderDay    string
-	leaderMetric float64
-	leaderSymbol string
+	config        config.TradingConfig
+	runtime       *runtime.State
+	mu            sync.Mutex
+	state         map[string]*symbolState
+	leaderDay     string
+	leaderMetrics map[string]float64
 }
 
 // NewScanner creates a scanner with the configured filters.
 func NewScanner(cfg config.TradingConfig, runtimeState *runtime.State) *Scanner {
-	return &Scanner{config: cfg, runtime: runtimeState, state: make(map[string]*symbolState)}
+	return &Scanner{
+		config:        cfg,
+		runtime:       runtimeState,
+		state:         make(map[string]*symbolState),
+		leaderMetrics: make(map[string]float64),
+	}
 }
 
 // Start evaluates ticks concurrently and emits candidates.
@@ -136,9 +140,9 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		return domain.Candidate{}, false, "not-gap-or-squeeze"
 	}
 
-	volumeLeaderPct := s.updateVolumeLeadership(tick)
+	volumeLeaderPct, leaderRank := s.updateVolumeLeadership(tick)
 	distanceFromHighPct := percentChange(tick.Price, tick.HighOfDay)
-	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, metrics)
+	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, leaderRank, metrics)
 	atrPct := 0.0
 	if tick.Price > 0 && metrics.atr > 0 {
 		atrPct = (metrics.atr / tick.Price) * 100
@@ -158,6 +162,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		ThreeMinuteReturnPct:  round2(scoreOrZero(metrics.threeMinuteReturn)),
 		VolumeRate:            round2(scoreOrZero(metrics.volumeRate)),
 		VolumeLeaderPct:       clampFloat(scoreOrZero(volumeLeaderPct), 0, 1),
+		LeaderRank:            leaderRank,
 		MinutesSinceOpen:      round2(minutesSinceOpen(tick.Timestamp)),
 		ATR:                   round2(scoreOrZero(metrics.atr)),
 		ATRPct:                round2(scoreOrZero(atrPct)),
@@ -177,7 +182,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	}, true, "candidate"
 }
 
-func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, metrics scanMetrics) float64 {
+func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
 	score := (clampFloat(tick.GapPercent, -10, 35) * 0.15) +
 		(clampFloat(tick.RelativeVolume, 0, 18) * 1.25) +
 		(clampFloat(priceVsOpenPct, -5, 30) * 0.45) +
@@ -192,9 +197,20 @@ func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHi
 		(clampFloat(metrics.closeOffHighPct, 0, 100) * 0.05) +
 		(clampFloat(volumeLeaderPct, 0, 1) * 5.50)
 
+	switch leaderRank {
+	case 1:
+		score += 2.50
+	case 2:
+		score += 1.50
+	case 3:
+		score += 0.75
+	}
+
 	switch metrics.setupType {
 	case "consolidation-breakout":
 		score += 8
+	case "higher-low-reclaim":
+		score += 7
 	case "vwap-reclaim":
 		score += 6.5
 	case "opening-range-breakout":
@@ -305,6 +321,11 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	setupHigh := maxBarHigh(recentSetupBars)
 	setupLow := minBarLow(recentSetupBars)
 	impulseHigh := maxBarHigh(impulseBars)
+	priorBars := completed
+	if len(priorBars) > 1 {
+		priorBars = priorBars[:len(priorBars)-1]
+	}
+	priorPullbackLow := minBarLow(lastNBars(priorBars, 3))
 	metrics.setupHigh = setupHigh
 	metrics.setupLow = setupLow
 	metrics.breakoutPct = percentChange(setupHigh, current.close)
@@ -325,10 +346,18 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	shallowEnoughPullback := metrics.pullbackDepthPct >= maxFloat(atrPct*0.35, 0.40) &&
 		metrics.pullbackDepthPct <= maxFloat(atrPct*2.40, 8.0)
 	strengthClose := metrics.closeOffHighPct <= 35
+	higherLow := priorPullbackLow > 0 && setupLow > priorPullbackLow
+	renewedVolume := metrics.volumeRate >= 1.05
 
 	switch {
 	case metrics.breakoutPct >= -0.15 && tightConsolidation && shallowEnoughPullback && aboveVWAP && strengthClose:
 		metrics.setupType = "consolidation-breakout"
+	case metrics.breakoutPct >= -maxFloat(atrPct*0.60, 0.45) &&
+		aboveVWAP &&
+		higherLow &&
+		renewedVolume &&
+		strengthClose:
+		metrics.setupType = "higher-low-reclaim"
 	case vwapReclaim && metrics.breakoutPct >= -maxFloat(atrPct*0.45, 0.35) && shallowEnoughPullback && metrics.closeOffHighPct <= 40:
 		metrics.setupType = "vwap-reclaim"
 	case minutesSinceOpen(current.timestamp) <= 30 && metrics.breakoutPct >= 0 && aboveVWAP && metrics.closeOffHighPct <= 30:
@@ -338,25 +367,35 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	return metrics
 }
 
-func (s *Scanner) updateVolumeLeadership(tick domain.Tick) float64 {
+func (s *Scanner) updateVolumeLeadership(tick domain.Tick) (float64, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
 	if s.leaderDay != dayKey {
 		s.leaderDay = dayKey
-		s.leaderMetric = 0
-		s.leaderSymbol = ""
+		s.leaderMetrics = make(map[string]float64)
 	}
-	leaderMetric := momentumLeaderMetric(tick)
-	if leaderMetric > s.leaderMetric {
-		s.leaderMetric = leaderMetric
-		s.leaderSymbol = tick.Symbol
+	metric := momentumLeaderMetric(tick)
+	if metric <= 0 {
+		return 1, 1
 	}
-	if s.leaderMetric <= 0 {
-		return 1
+	s.leaderMetrics[tick.Symbol] = metric
+
+	leaderMetric := 0.0
+	rank := 1
+	for symbol, candidateMetric := range s.leaderMetrics {
+		if candidateMetric > leaderMetric {
+			leaderMetric = candidateMetric
+		}
+		if symbol != tick.Symbol && candidateMetric > metric {
+			rank++
+		}
 	}
-	return leaderMetric / s.leaderMetric
+	if leaderMetric <= 0 {
+		return 1, rank
+	}
+	return metric / leaderMetric, rank
 }
 
 func momentumLeaderMetric(tick domain.Tick) float64 {

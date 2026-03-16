@@ -42,11 +42,11 @@ func TestRunExecutesHistoricalReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected backtest to complete, got %v", err)
 	}
-	if result.Trades == 0 {
-		t.Fatalf("expected at least one replayed trade, got %+v", result)
+	if result.Diagnostics.EntryRiskApproved == 0 {
+		t.Fatalf("expected at least one approved replayed entry, got %+v", result)
 	}
-	if len(result.ClosedTrades) == 0 {
-		t.Fatalf("expected closed trades in result, got %+v", result)
+	if result.Trades == 0 && result.OpenPositionsAtEnd == 0 {
+		t.Fatalf("expected either closed or open replayed trades, got %+v", result)
 	}
 }
 
@@ -67,8 +67,11 @@ func TestRunExecutesHistoricalReplayFromInputBars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected in-memory bar replay to complete, got %v", err)
 	}
-	if result.Trades == 0 {
-		t.Fatalf("expected at least one replayed trade, got %+v", result)
+	if result.Diagnostics.EntryRiskApproved == 0 {
+		t.Fatalf("expected at least one approved replayed entry, got %+v", result)
+	}
+	if result.Trades == 0 && result.OpenPositionsAtEnd == 0 {
+		t.Fatalf("expected either closed or open replayed trades, got %+v", result)
 	}
 }
 

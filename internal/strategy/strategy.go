@@ -241,14 +241,13 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	}
 
 	highWatermark := maxPrice(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := protectiveStop(position, position.HighestPrice)
+	previousStop, previousReason := protectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice))
 	if previousStop <= 0 {
-		previousStop, previousReason = protectiveStop(position, highWatermark)
+		previousStop, previousReason = protectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price))
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
 	barClose := firstPositive(tick.Price, barOpen)
-	currentReturn := currentRMultiple(position, barClose)
 	peakReturn := peakRMultiple(position, highWatermark)
 	holdingTime := decisionAt.Sub(position.OpenedAt)
 	sameDayHold := sameTradingDay(position.OpenedAt, decisionAt)
@@ -266,7 +265,7 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(position)
 	case func() bool {
-		stopPrice, stopReason := protectiveStop(position, highWatermark)
+		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
 			return false
 		}
@@ -274,11 +273,6 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		tick.Price = stopPrice
 		return true
 	}():
-	case sameDayHold &&
-		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
-		peakReturn < stagnationMinPeakR &&
-		currentReturn <= 0:
-		reason = "time-stop"
 	default:
 		return domain.TradeSignal{}, false, "hold"
 	}
@@ -363,6 +357,9 @@ func (s *Strategy) normalizeCandidate(candidate domain.Candidate) domain.Candida
 			candidate.SetupType = "vwap-reclaim"
 		}
 	}
+	if candidate.LeaderRank <= 0 && candidate.Volume == 0 {
+		candidate.LeaderRank = 1
+	}
 	return candidate
 }
 
@@ -384,6 +381,9 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	}
 	if candidate.SetupType == "consolidation-breakout" {
 		threshold -= 0.25
+	}
+	if candidate.SetupType == "higher-low-reclaim" {
+		threshold -= 0.15
 	}
 	if candidate.SetupType == "vwap-reclaim" {
 		threshold -= 0.10
@@ -451,11 +451,14 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
 	minLeaderPct := 0.15
+	maxLeaderRank := 3
 	if s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp) {
 		minLeaderPct = 0.25
+		maxLeaderRank = 2
 	}
 	if strongSqueeze {
 		minLeaderPct -= 0.05
+		maxLeaderRank++
 	}
 	if minLeaderPct < 0.08 {
 		minLeaderPct = 0.08
@@ -475,6 +478,9 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	if s.isParabolicEntry(candidate) {
 		return false, "parabolic-spike"
+	}
+	if s.leaderRank(candidate) > maxLeaderRank {
+		return false, "secondary-volume"
 	}
 	if volumeLeaderPct < minLeaderPct {
 		return false, "secondary-volume"
@@ -524,6 +530,7 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 	threeMinuteThreshold := s.config.MinThreeMinuteReturnPct + 0.40
 	volumeRateThreshold := s.config.MinVolumeRate + 0.15
 	volumeLeaderThreshold := 0.18
+	maxLeaderRank := 3
 
 	if s.isPremarket(candidate.Timestamp) {
 		scoreThreshold += 3
@@ -531,6 +538,7 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		threeMinuteThreshold += 0.40
 		volumeRateThreshold += 0.15
 		volumeLeaderThreshold = 0.30
+		maxLeaderRank = 2
 	}
 	if s.isOpeningSession(candidate.Timestamp) {
 		scoreThreshold += 1.5
@@ -538,6 +546,7 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		threeMinuteThreshold += 0.20
 		volumeRateThreshold += 0.10
 		volumeLeaderThreshold = 0.25
+		maxLeaderRank = 2
 	}
 
 	if s.isParabolicEntry(candidate) {
@@ -549,6 +558,7 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		candidate.ThreeMinuteReturnPct >= threeMinuteThreshold &&
 		candidate.VolumeRate >= volumeRateThreshold &&
 		s.volumeLeaderPct(candidate) >= volumeLeaderThreshold &&
+		s.leaderRank(candidate) <= maxLeaderRank &&
 		candidate.SetupType != ""
 }
 
@@ -660,11 +670,17 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	if volumeLeaderPct < 0.55 {
 		multiplier *= 0.75
 	}
+	if s.leaderRank(candidate) > 2 {
+		multiplier *= 0.80
+	}
 	if candidate.VolumeLeaderPct >= 0.90 && !s.isPremarket(candidate.Timestamp) {
 		multiplier *= 1.05
 	}
 	if candidate.SetupType == "vwap-reclaim" {
 		multiplier *= 0.85
+	}
+	if candidate.SetupType == "higher-low-reclaim" {
+		multiplier *= 0.95
 	}
 	if multiplier < 0.40 {
 		multiplier = 0.40
@@ -677,6 +693,16 @@ func (s *Strategy) volumeLeaderPct(candidate domain.Candidate) float64 {
 		return 1
 	}
 	return candidate.VolumeLeaderPct
+}
+
+func (s *Strategy) leaderRank(candidate domain.Candidate) int {
+	if candidate.LeaderRank <= 0 && candidate.Volume == 0 {
+		return 1
+	}
+	if candidate.LeaderRank <= 0 {
+		return 999
+	}
+	return candidate.LeaderRank
 }
 
 func sameTradingDay(a, b time.Time) bool {

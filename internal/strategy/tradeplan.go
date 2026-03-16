@@ -10,16 +10,13 @@ import (
 const (
 	minATRPercentFallback = 0.012
 	stopATRMultiplier     = 1.35
-	stopATRBuffer         = 0.10
-	maxRiskATRMultiplier  = 2.40
-	breakEvenTriggerR     = 1.00
-	breakEvenLockR        = 0.12
-	trailActivationR      = 2.00
+	maxRiskATRMultiplier  = 6.00
+	trailActivationR      = 1.00
 	trailATRMultiplier    = 2.60
 	tightTrailTriggerR    = 3.50
 	tightTrailATRMultiple = 1.85
 	failedBreakoutCutR    = 0.60
-	stagnationMinPeakR    = 0.75
+	structureConfirmR     = 0.35
 )
 
 // EntryPlan captures the volatility-aware stop and sizing basis for a setup.
@@ -48,13 +45,12 @@ func buildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
 	}
 	setupLow := candidate.SetupLow
 	if setupLow <= 0 || setupLow >= candidate.Price {
-		setupLow = candidate.Price - atr
+		setupLow = candidate.Price - (atr * stopATRMultiplier)
 	}
-	structureStop := setupLow - (atr * stopATRBuffer)
 	atrStop := candidate.Price - (atr * stopATRMultiplier)
-	stopPrice := math.Max(structureStop, atrStop)
+	stopPrice := math.Min(setupLow, atrStop)
 	if stopPrice >= candidate.Price {
-		stopPrice = candidate.Price - atr
+		stopPrice = atrStop
 	}
 	riskPerShare := candidate.Price - stopPrice
 	if riskPerShare <= 0 {
@@ -96,7 +92,7 @@ func PeakRMultiple(position domain.Position, highWatermark float64) float64 {
 	return peakRMultiple(position, highWatermark)
 }
 
-func protectiveStop(position domain.Position, highWatermark float64) (float64, string) {
+func protectiveStop(position domain.Position, highWatermark, currentPrice float64) (float64, string) {
 	stopPrice := position.InitialStopPrice
 	reason := "stop-loss"
 	if stopPrice <= 0 {
@@ -117,15 +113,17 @@ func protectiveStop(position domain.Position, highWatermark float64) (float64, s
 	fallbackPosition := position
 	fallbackPosition.RiskPerShare = riskPerShare
 	peakR := peakRMultiple(fallbackPosition, highWatermark)
-	if peakR >= breakEvenTriggerR {
-		stopPrice = math.Max(stopPrice, position.AvgPrice+(riskPerShare*breakEvenLockR))
-		reason = "break-even-stop"
-	}
-	if peakR >= trailActivationR {
+	currentR := currentRMultiple(fallbackPosition, currentPrice)
+	if peakR >= trailActivationR && currentR >= structureConfirmR {
 		trailWidth := math.Max(position.EntryATR*trailATRMultiplier, riskPerShare*1.25)
 		if peakR >= tightTrailTriggerR {
 			trailWidth = math.Max(position.EntryATR*tightTrailATRMultiple, riskPerShare)
 		}
+		trailFloor := position.AvgPrice
+		if currentR >= 1.25 {
+			trailFloor = position.AvgPrice + (riskPerShare * 0.10)
+		}
+		stopPrice = math.Max(stopPrice, trailFloor)
 		stopPrice = math.Max(stopPrice, highWatermark-trailWidth)
 		reason = "trailing-stop"
 	}
@@ -133,8 +131,8 @@ func protectiveStop(position domain.Position, highWatermark float64) (float64, s
 }
 
 // ProtectiveStop returns the active managed stop price and the exit reason it implies.
-func ProtectiveStop(position domain.Position, highWatermark float64) (float64, string) {
-	return protectiveStop(position, highWatermark)
+func ProtectiveStop(position domain.Position, highWatermark, currentPrice float64) (float64, string) {
+	return protectiveStop(position, highWatermark, currentPrice)
 }
 
 func failedBreakoutPrice(position domain.Position) float64 {

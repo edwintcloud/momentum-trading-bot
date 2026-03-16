@@ -236,6 +236,9 @@ func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 	if math.Abs(candidate.VolumeLeaderPct-0.37) > 0.01 {
 		t.Fatalf("expected follower to carry 0.37 leader share, got %.2f", candidate.VolumeLeaderPct)
 	}
+	if candidate.LeaderRank != 2 {
+		t.Fatalf("expected follower to rank second among momentum leaders, got %d", candidate.LeaderRank)
+	}
 }
 
 func TestScannerRejectsLowGap(t *testing.T) {
@@ -265,7 +268,7 @@ func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
 	base := engine.momentumScore(domain.Tick{
 		GapPercent:     12,
 		RelativeVolume: cfg.MinRelativeVolume + 15,
-	}, 18, 0.5, 0.9, scanMetrics{
+	}, 18, 0.5, 0.9, 1, scanMetrics{
 		oneMinuteReturn:   1.2,
 		threeMinuteReturn: 2.0,
 		volumeRate:        1.8,
@@ -273,7 +276,7 @@ func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
 	extreme := engine.momentumScore(domain.Tick{
 		GapPercent:     12,
 		RelativeVolume: 4_000,
-	}, 18, 0.5, 0.9, scanMetrics{
+	}, 18, 0.5, 0.9, 1, scanMetrics{
 		oneMinuteReturn:   1.2,
 		threeMinuteReturn: 2.0,
 		volumeRate:        1.8,

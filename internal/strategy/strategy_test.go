@@ -234,6 +234,7 @@ func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 		ThreeMinuteReturnPct: 1.65,
 		VolumeRate:           1.45,
 		VolumeLeaderPct:      0.12,
+		LeaderRank:           4,
 		MinutesSinceOpen:     40,
 		Score:                24.0,
 		Timestamp:            at,
@@ -266,6 +267,7 @@ func TestStrategyRejectsLowLeaderShareEvenWithStrongStats(t *testing.T) {
 		ThreeMinuteReturnPct: 5.43,
 		VolumeRate:           3.19,
 		VolumeLeaderPct:      0.02,
+		LeaderRank:           5,
 		MinutesSinceOpen:     32,
 		Score:                70.48,
 		Timestamp:            at,
@@ -298,6 +300,7 @@ func TestStrategyAllowsLeaderVolumeSetup(t *testing.T) {
 		ThreeMinuteReturnPct: 1.10,
 		VolumeRate:           1.45,
 		VolumeLeaderPct:      0.92,
+		LeaderRank:           1,
 		MinutesSinceOpen:     40,
 		Score:                18.5,
 		Timestamp:            at,
@@ -609,8 +612,8 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 965 {
-		t.Fatalf("expected ATR-based quantity 965 using broker equity sizing, got %d", signal.Quantity)
+	if signal.Quantity != 786 {
+		t.Fatalf("expected ATR-based quantity 786 using broker equity sizing, got %d", signal.Quantity)
 	}
 }
 
@@ -633,6 +636,7 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 		OneMinuteReturnPct:   1.2,
 		ThreeMinuteReturnPct: 2.6,
 		VolumeRate:           1.8,
+		LeaderRank:           1,
 		MinutesSinceOpen:     0,
 		Score:                28,
 		Timestamp:            time.Date(2026, 3, 13, 12, 20, 0, 0, time.UTC),
@@ -640,8 +644,8 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 	if !ok {
 		t.Fatal("expected conservative premarket setup to pass")
 	}
-	if signal.Quantity != 1699 {
-		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 1699 shares, got %d", signal.Quantity)
+	if signal.Quantity != 793 {
+		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 793 shares, got %d", signal.Quantity)
 	}
 }
 
@@ -711,15 +715,15 @@ func TestStrategyProtectsNearBreakEvenAfterInitialPop(t *testing.T) {
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
-		Price:     10.01,
+		Price:     9.99,
 		HighOfDay: 10.55,
 		Timestamp: at,
 	})
 	if !ok {
-		t.Fatal("expected break-even protection exit")
+		t.Fatal("expected trailing protection exit after 1R confirmation")
 	}
-	if signal.Reason != "break-even-stop" {
-		t.Fatalf("expected break-even-stop reason, got %+v", signal)
+	if signal.Reason != "trailing-stop" {
+		t.Fatalf("expected trailing-stop reason, got %+v", signal)
 	}
 }
 
