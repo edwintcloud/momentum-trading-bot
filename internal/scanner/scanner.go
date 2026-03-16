@@ -96,24 +96,20 @@ func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
 
 func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
 	oneMinuteReturn, threeMinuteReturn, volumeRate := s.updateSymbolState(tick)
+	priceVsOpenPct := percentChange(tick.Open, tick.Price)
 
 	if tick.Price <= s.config.MinPrice {
 		return domain.Candidate{}, false, "min-price"
 	}
-	if tick.GapPercent <= s.config.MinGapPercent {
-		return domain.Candidate{}, false, "min-gap"
-	}
 	if tick.RelativeVolume <= s.config.MinRelativeVolume {
 		return domain.Candidate{}, false, "min-relative-volume"
-	}
-	if tick.PreMarketVolume <= s.config.MinPremarketVolume {
-		return domain.Candidate{}, false, "min-premarket-volume"
 	}
 	if !tick.VolumeSpike {
 		return domain.Candidate{}, false, "volume-spike"
 	}
-
-	priceVsOpenPct := percentChange(tick.Open, tick.Price)
+	if !s.qualifiesMomentumProfile(tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate) {
+		return domain.Candidate{}, false, "not-gap-or-squeeze"
+	}
 	distanceFromHighPct := percentChange(tick.Price, tick.HighOfDay)
 	score := (tick.GapPercent * 0.30) +
 		(tick.RelativeVolume * 1.60) +
@@ -142,6 +138,24 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		CatalystURL:          tick.CatalystURL,
 		Timestamp:            tick.Timestamp,
 	}, true, "candidate"
+}
+
+func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate float64) bool {
+	if tick.GapPercent >= s.config.MinGapPercent && tick.PreMarketVolume >= s.config.MinPremarketVolume {
+		return true
+	}
+
+	intradayMoveThreshold := maxFloat(3.5, s.config.MinGapPercent*0.35)
+	if priceVsOpenPct < intradayMoveThreshold {
+		return false
+	}
+	if threeMinuteReturn < s.config.MinThreeMinuteReturnPct && oneMinuteReturn < s.config.MinOneMinuteReturnPct {
+		return false
+	}
+	if volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
+		return false
+	}
+	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25
 }
 
 func (s *Scanner) updateSymbolState(tick domain.Tick) (float64, float64, float64) {

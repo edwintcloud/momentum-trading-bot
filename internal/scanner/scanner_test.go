@@ -112,6 +112,55 @@ func TestScannerUsesEarlierRejectedTicksForMomentumContext(t *testing.T) {
 	}
 }
 
+func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
+	runtimeState := runtime.NewState()
+	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	base := time.Date(2026, 3, 10, 16, 0, 0, 0, time.UTC)
+
+	engine.evaluateTick(domain.Tick{
+		Symbol:          "SQUEEZE",
+		Price:           5.10,
+		Open:            4.90,
+		HighOfDay:       5.12,
+		GapPercent:      1.0,
+		RelativeVolume:  6.0,
+		PreMarketVolume: 0,
+		Volume:          300_000,
+		VolumeSpike:     true,
+		Timestamp:       base,
+	})
+	engine.evaluateTick(domain.Tick{
+		Symbol:          "SQUEEZE",
+		Price:           5.35,
+		Open:            4.90,
+		HighOfDay:       5.36,
+		GapPercent:      1.4,
+		RelativeVolume:  6.6,
+		PreMarketVolume: 0,
+		Volume:          520_000,
+		VolumeSpike:     true,
+		Timestamp:       base.Add(time.Minute),
+	})
+	candidate, ok := engine.evaluateTick(domain.Tick{
+		Symbol:          "SQUEEZE",
+		Price:           5.58,
+		Open:            4.90,
+		HighOfDay:       5.60,
+		GapPercent:      1.8,
+		RelativeVolume:  7.2,
+		PreMarketVolume: 0,
+		Volume:          820_000,
+		VolumeSpike:     true,
+		Timestamp:       base.Add(2 * time.Minute),
+	})
+	if !ok {
+		t.Fatal("expected intraday squeeze to pass scanner without gap profile")
+	}
+	if candidate.GapPercent >= config.DefaultTradingConfig().MinGapPercent {
+		t.Fatalf("expected test candidate to validate non-gap path, got %+v", candidate)
+	}
+}
+
 func TestScannerRejectsLowGap(t *testing.T) {
 	runtimeState := runtime.NewState()
 	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)

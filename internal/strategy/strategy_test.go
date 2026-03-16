@@ -87,11 +87,11 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 		Symbol:               "HUMA",
 		Price:                4.20,
 		Open:                 4.00,
-		HighOfDay:            4.21,
+		HighOfDay:            4.23,
 		GapPercent:           21,
 		RelativeVolume:       5.4,
 		PriceVsOpenPct:       5.0,
-		DistanceFromHighPct:  0.24,
+		DistanceFromHighPct:  0.71,
 		OneMinuteReturnPct:   0.02,
 		ThreeMinuteReturnPct: 0.10,
 		VolumeRate:           0.95,
@@ -104,6 +104,34 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 	}
 	if reason != "weak-follow-through" {
 		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "SQUEEZE",
+		Price:                7.45,
+		Open:                 5.40,
+		HighOfDay:            7.48,
+		GapPercent:           2.1,
+		RelativeVolume:       9.5,
+		PriceVsOpenPct:       37.96,
+		DistanceFromHighPct:  0.40,
+		OneMinuteReturnPct:   0.35,
+		ThreeMinuteReturnPct: 1.40,
+		VolumeRate:           1.45,
+		MinutesSinceOpen:     170,
+		Score:                20,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatalf("expected strong intraday squeeze to pass, got %s", reason)
 	}
 }
 

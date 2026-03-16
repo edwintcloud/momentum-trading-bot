@@ -38,12 +38,12 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
 	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 1.90
-	cfg.MinEntryScore = 13.5
+	cfg.EntryModelMinPredictedReturnPct = 1.50
+	cfg.MinEntryScore = 13.0
 	cfg.MinOneMinuteReturnPct = 0.10
 	cfg.MinThreeMinuteReturnPct = 0.45
 	cfg.MinVolumeRate = 1.05
-	cfg.MaxPriceVsOpenPct = 24.0
+	cfg.MaxPriceVsOpenPct = 28.0
 	cfg.BreakoutFailureWindowMin = 10
 	cfg.BreakoutFailureLossPct = 0.0075
 	cfg.BreakEvenActivationPct = 0.015

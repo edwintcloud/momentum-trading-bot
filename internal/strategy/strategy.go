@@ -131,7 +131,13 @@ func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return domain.TradeSignal{}, false, reason
 	}
-	if candidate.Price < candidate.HighOfDay*0.995 {
+	breakoutDiscount := 0.005
+	if candidate.Score >= s.config.MinEntryScore+4 &&
+		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.40 &&
+		candidate.VolumeRate >= s.config.MinVolumeRate+0.15 {
+		breakoutDiscount = 0.01
+	}
+	if candidate.Price < candidate.HighOfDay*(1-breakoutDiscount) {
 		return domain.TradeSignal{}, false, "below-breakout-zone"
 	}
 	predictedReturn := s.entryModel.Predict(candidate)
@@ -236,10 +242,10 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 		threshold += 0.40
 	}
 	if candidate.Score >= s.config.MinEntryScore+4 {
-		threshold -= 0.30
+		threshold -= 0.35
 	}
 	if candidate.RelativeVolume >= s.config.MinRelativeVolume+2 {
-		threshold -= 0.15
+		threshold -= 0.20
 	}
 	if candidate.Score < s.config.MinEntryScore+2 {
 		threshold += 0.25
@@ -253,7 +259,7 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct-2 {
 		threshold += 0.20
 	}
-	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.70
+	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.55
 	if threshold < minThreshold {
 		threshold = minThreshold
 	}
@@ -261,21 +267,27 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 }
 
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
-	if candidate.Score < s.config.MinEntryScore {
+	strongSqueeze := candidate.Score >= s.config.MinEntryScore+4 &&
+		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.40 &&
+		candidate.VolumeRate >= s.config.MinVolumeRate+0.15
+	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1) {
 		return false, "low-score"
 	}
-	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct && candidate.DistanceFromHighPct > 0.20 {
+	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct &&
+		candidate.DistanceFromHighPct > 0.35 &&
+		!strongSqueeze {
 		return false, "too-extended-from-open"
 	}
-	if candidate.OneMinuteReturnPct < -0.20 {
+	if candidate.OneMinuteReturnPct < -0.35 && candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
 		return false, "weak-one-minute-return"
 	}
-	if candidate.ThreeMinuteReturnPct < -0.10 {
+	if candidate.ThreeMinuteReturnPct < -0.20 && candidate.VolumeRate < s.config.MinVolumeRate {
 		return false, "weak-three-minute-return"
 	}
 	if candidate.OneMinuteReturnPct < s.config.MinOneMinuteReturnPct &&
 		candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct &&
-		candidate.VolumeRate < s.config.MinVolumeRate {
+		candidate.VolumeRate < s.config.MinVolumeRate &&
+		candidate.DistanceFromHighPct > 0.35 {
 		return false, "weak-follow-through"
 	}
 	if candidate.VolumeRate < s.config.MinVolumeRate &&
