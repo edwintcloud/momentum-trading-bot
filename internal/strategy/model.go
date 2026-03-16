@@ -46,14 +46,14 @@ type TrainingSample struct {
 func DefaultEntryModel() LinearModel {
 	return LinearModel{
 		Name:      "seeded-momentum-entry-v6",
-		Intercept: -0.10,
+		Intercept: -0.20,
 		Weights: map[string]float64{
 			"gap_percent":             0.01,
 			"relative_volume":         0.03,
 			"price_vs_open_pct":       0.01,
-			"price_vs_vwap_pct":       0.08,
-			"distance_from_high_pct":  -0.04,
-			"breakout_pct":            0.18,
+			"price_vs_vwap_pct":       0.01,
+			"distance_from_high_pct":  -0.08,
+			"breakout_pct":            0.25,
 			"one_minute_return_pct":   0.03,
 			"three_minute_return_pct": 0.05,
 			"volume_rate":             0.05,

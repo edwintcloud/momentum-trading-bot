@@ -166,8 +166,8 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if symbolState.entrySignals >= 2 {
 		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	if symbolState.lossExits > 0 && decisionAt.Sub(symbolState.lastLossAt) < 15*time.Minute {
-		return CandidateDecision{Reason: "post-loss-cooldown", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	if symbolState.lossExits > 0 {
+		return CandidateDecision{Reason: "symbol-loss-lockout", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
@@ -475,6 +475,13 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	if candidate.PriceVsVWAPPct < -0.35 {
 		return false, "below-vwap"
+	}
+	// Hard caps that apply even for squeeze entries — extreme extension is never safe.
+	if candidate.PriceVsVWAPPct > 16.0 {
+		return false, "vwap-extension"
+	}
+	if candidate.DistanceFromHighPct > 12.0 {
+		return false, "distance-from-high"
 	}
 	if candidate.PriceVsVWAPPct > 12.0 && !strongSqueeze {
 		return false, "vwap-extension"

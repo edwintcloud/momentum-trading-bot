@@ -497,7 +497,7 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 	if ok {
 		t.Fatal("expected immediate reentry after loss to be blocked")
 	}
-	if reason != "post-loss-cooldown" {
+	if reason != "symbol-loss-lockout" {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
