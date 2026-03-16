@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/strategy"
 )
 
 func TestRunExecutesHistoricalReplay(t *testing.T) {
@@ -121,13 +123,73 @@ func TestRunMarksOpenPositionsToMarketAtBacktestEnd(t *testing.T) {
 }
 
 func TestTrainingTargetPenalizesFailedBreakouts(t *testing.T) {
-	good := trainingTarget(10, 10.60, 9.95, 10.45)
-	bad := trainingTarget(10, 10.60, 9.10, 9.35)
+	cfg := config.DefaultTradingConfig()
+	start := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	candidate := domain.Candidate{
+		Symbol:                "TEST",
+		Price:                 10.00,
+		Open:                  9.70,
+		HighOfDay:             10.05,
+		GapPercent:            12.0,
+		RelativeVolume:        8.0,
+		Volume:                500_000,
+		PriceVsOpenPct:        3.09,
+		DistanceFromHighPct:   0.50,
+		OneMinuteReturnPct:    1.2,
+		ThreeMinuteReturnPct:  2.4,
+		VolumeRate:            1.8,
+		VolumeLeaderPct:       0.65,
+		MinutesSinceOpen:      30,
+		ATR:                   0.40,
+		ATRPct:                4.0,
+		PriceVsVWAPPct:        0.8,
+		BreakoutPct:           0.4,
+		ConsolidationRangePct: 2.2,
+		PullbackDepthPct:      1.6,
+		CloseOffHighPct:       18,
+		SetupHigh:             9.96,
+		SetupLow:              9.70,
+		SetupType:             "consolidation-breakout",
+		Score:                 26,
+		Timestamp:             start,
+	}
+	plan, ok, reason := strategy.BuildEntryPlan(candidate)
+	if !ok {
+		t.Fatalf("expected valid entry plan, got %s", reason)
+	}
+
+	goodRecords := []record{
+		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00}, candidate: candidate, hasCandidate: true},
+		{bar: bar{Timestamp: start.Add(time.Minute), Symbol: "TEST", Open: 10.01, High: 10.70, Low: 9.98, Close: 10.55}, tick: domain.Tick{Symbol: "TEST", Price: 10.55, BarOpen: 10.01, BarHigh: 10.70, BarLow: 9.98, Timestamp: start.Add(time.Minute)}},
+		{bar: bar{Timestamp: start.Add(2 * time.Minute), Symbol: "TEST", Open: 10.56, High: 11.10, Low: 10.40, Close: 10.95}, tick: domain.Tick{Symbol: "TEST", Price: 10.95, BarOpen: 10.56, BarHigh: 11.10, BarLow: 10.40, Timestamp: start.Add(2 * time.Minute)}},
+	}
+	badRecords := []record{
+		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00}, candidate: candidate, hasCandidate: true},
+		{bar: bar{Timestamp: start.Add(time.Minute), Symbol: "TEST", Open: 10.01, High: 10.12, Low: 9.55, Close: 9.62}, tick: domain.Tick{Symbol: "TEST", Price: 9.62, BarOpen: 10.01, BarHigh: 10.12, BarLow: 9.55, Timestamp: start.Add(time.Minute)}},
+		{bar: bar{Timestamp: start.Add(2 * time.Minute), Symbol: "TEST", Open: 9.60, High: 9.68, Low: 9.35, Close: 9.40}, tick: domain.Tick{Symbol: "TEST", Price: 9.40, BarOpen: 9.60, BarHigh: 9.68, BarLow: 9.35, Timestamp: start.Add(2 * time.Minute)}},
+	}
+
+	good, ok := trainingTarget(cfg, goodRecords[0], []int{0, 1, 2}, 0, goodRecords, RunConfig{
+		LabelLookaheadBars: 2,
+		TrainStart:         start,
+		TrainEnd:           start.Add(2 * time.Minute),
+	}, plan)
+	if !ok {
+		t.Fatal("expected good continuation training sample to produce a target")
+	}
+	bad, ok := trainingTarget(cfg, badRecords[0], []int{0, 1, 2}, 0, badRecords, RunConfig{
+		LabelLookaheadBars: 2,
+		TrainStart:         start,
+		TrainEnd:           start.Add(2 * time.Minute),
+	}, plan)
+	if !ok {
+		t.Fatal("expected failed breakout training sample to produce a target")
+	}
 
 	if good <= bad {
-		t.Fatalf("expected smooth continuation target %.2f to exceed failed breakout target %.2f", good, bad)
+		t.Fatalf("expected continuation target %.2fR to exceed failed breakout target %.2fR", good, bad)
 	}
 	if bad >= 0 {
-		t.Fatalf("expected failed breakout target to be negative, got %.2f", bad)
+		t.Fatalf("expected failed breakout target to be negative, got %.2fR", bad)
 	}
 }

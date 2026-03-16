@@ -13,26 +13,48 @@ import (
 
 var marketLocation = mustLoadLocation("America/New_York")
 
-type symbolSnapshot struct {
-	timestamp time.Time
-	price     float64
-	volume    int64
+type symbolBar struct {
+	timestamp        time.Time
+	open             float64
+	high             float64
+	low              float64
+	close            float64
+	volume           int64
+	cumulativeVolume int64
+	vwap             float64
 }
 
 type symbolState struct {
-	snapshots []symbolSnapshot
-	deltas    []int64
+	day                  string
+	bars                 []symbolBar
+	cumulativeDollarFlow float64
+}
+
+type scanMetrics struct {
+	oneMinuteReturn       float64
+	threeMinuteReturn     float64
+	volumeRate            float64
+	atr                   float64
+	vwap                  float64
+	priceVsVWAPPct        float64
+	breakoutPct           float64
+	consolidationRangePct float64
+	pullbackDepthPct      float64
+	closeOffHighPct       float64
+	setupHigh             float64
+	setupLow              float64
+	setupType             string
 }
 
 // Scanner scans market ticks for momentum candidates.
 type Scanner struct {
-	config         config.TradingConfig
-	runtime        *runtime.State
-	mu             sync.Mutex
-	state          map[string]*symbolState
-	leaderDay      string
-	leaderMetric   float64
-	leaderSymbol   string
+	config       config.TradingConfig
+	runtime      *runtime.State
+	mu           sync.Mutex
+	state        map[string]*symbolState
+	leaderDay    string
+	leaderMetric float64
+	leaderSymbol string
 }
 
 // NewScanner creates a scanner with the configured filters.
@@ -98,7 +120,7 @@ func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
 }
 
 func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
-	oneMinuteReturn, threeMinuteReturn, volumeRate := s.updateSymbolState(tick)
+	metrics := s.updateSymbolState(tick)
 	priceVsOpenPct := percentChange(tick.Open, tick.Price)
 
 	if tick.Price <= s.config.MinPrice {
@@ -110,118 +132,210 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if !tick.VolumeSpike {
 		return domain.Candidate{}, false, "volume-spike"
 	}
-	if !s.qualifiesMomentumProfile(tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate) {
+	if !s.qualifiesMomentumProfile(tick, priceVsOpenPct, metrics) {
 		return domain.Candidate{}, false, "not-gap-or-squeeze"
 	}
+
 	volumeLeaderPct := s.updateVolumeLeadership(tick)
 	distanceFromHighPct := percentChange(tick.Price, tick.HighOfDay)
-	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate, volumeLeaderPct)
+	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, metrics)
+	atrPct := 0.0
+	if tick.Price > 0 && metrics.atr > 0 {
+		atrPct = (metrics.atr / tick.Price) * 100
+	}
 	return domain.Candidate{
-		Symbol:               tick.Symbol,
-		Price:                tick.Price,
-		Open:                 tick.Open,
-		GapPercent:           tick.GapPercent,
-		RelativeVolume:       tick.RelativeVolume,
-		PreMarketVolume:      tick.PreMarketVolume,
-		Volume:               tick.Volume,
-		HighOfDay:            tick.HighOfDay,
-		PriceVsOpenPct:       round2(scoreOrZero(priceVsOpenPct)),
-		DistanceFromHighPct:  round2(scoreOrZero(distanceFromHighPct)),
-		OneMinuteReturnPct:   round2(scoreOrZero(oneMinuteReturn)),
-		ThreeMinuteReturnPct: round2(scoreOrZero(threeMinuteReturn)),
-		VolumeRate:           round2(scoreOrZero(volumeRate)),
-		VolumeLeaderPct:      clampFloat(scoreOrZero(volumeLeaderPct), 0, 1),
-		MinutesSinceOpen:     round2(minutesSinceOpen(tick.Timestamp)),
-		Score:                round2(scoreOrZero(score)),
-		Catalyst:             tick.Catalyst,
-		CatalystURL:          tick.CatalystURL,
-		Timestamp:            tick.Timestamp,
+		Symbol:                tick.Symbol,
+		Price:                 tick.Price,
+		Open:                  tick.Open,
+		GapPercent:            tick.GapPercent,
+		RelativeVolume:        tick.RelativeVolume,
+		PreMarketVolume:       tick.PreMarketVolume,
+		Volume:                tick.Volume,
+		HighOfDay:             tick.HighOfDay,
+		PriceVsOpenPct:        round2(scoreOrZero(priceVsOpenPct)),
+		DistanceFromHighPct:   round2(scoreOrZero(distanceFromHighPct)),
+		OneMinuteReturnPct:    round2(scoreOrZero(metrics.oneMinuteReturn)),
+		ThreeMinuteReturnPct:  round2(scoreOrZero(metrics.threeMinuteReturn)),
+		VolumeRate:            round2(scoreOrZero(metrics.volumeRate)),
+		VolumeLeaderPct:       clampFloat(scoreOrZero(volumeLeaderPct), 0, 1),
+		MinutesSinceOpen:      round2(minutesSinceOpen(tick.Timestamp)),
+		ATR:                   round2(scoreOrZero(metrics.atr)),
+		ATRPct:                round2(scoreOrZero(atrPct)),
+		VWAP:                  round2(scoreOrZero(metrics.vwap)),
+		PriceVsVWAPPct:        round2(scoreOrZero(metrics.priceVsVWAPPct)),
+		BreakoutPct:           round2(scoreOrZero(metrics.breakoutPct)),
+		ConsolidationRangePct: round2(scoreOrZero(metrics.consolidationRangePct)),
+		PullbackDepthPct:      round2(scoreOrZero(metrics.pullbackDepthPct)),
+		CloseOffHighPct:       round2(scoreOrZero(metrics.closeOffHighPct)),
+		SetupHigh:             round2(scoreOrZero(metrics.setupHigh)),
+		SetupLow:              round2(scoreOrZero(metrics.setupLow)),
+		SetupType:             metrics.setupType,
+		Score:                 round2(scoreOrZero(score)),
+		Catalyst:              tick.Catalyst,
+		CatalystURL:           tick.CatalystURL,
+		Timestamp:             tick.Timestamp,
 	}, true, "candidate"
 }
 
-func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate, volumeLeaderPct float64) float64 {
-	maxGap := s.config.MinGapPercent + 25
-	if maxGap < 25 {
-		maxGap = 25
-	}
-	maxRelativeVolume := s.config.MinRelativeVolume + 15
-	if maxRelativeVolume < 12 {
-		maxRelativeVolume = 12
-	}
-	maxPriceVsOpen := s.config.MaxPriceVsOpenPct + 5
-	if maxPriceVsOpen < 20 {
-		maxPriceVsOpen = 20
-	}
+func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, metrics scanMetrics) float64 {
+	score := (clampFloat(tick.GapPercent, -10, 35) * 0.15) +
+		(clampFloat(tick.RelativeVolume, 0, 18) * 1.25) +
+		(clampFloat(priceVsOpenPct, -5, 30) * 0.45) +
+		(clampFloat(metrics.oneMinuteReturn, -3, 4.5) * 1.35) +
+		(clampFloat(metrics.threeMinuteReturn, -5, 8) * 1.10) +
+		(clampFloat(metrics.volumeRate, 0.5, 4) * 1.20) +
+		(clampFloat(metrics.priceVsVWAPPct, -4, 8) * 1.10) +
+		(clampFloat(metrics.breakoutPct, -4, 5) * 1.55) +
+		(clampFloat(metrics.pullbackDepthPct, 0, 8) * 0.30) -
+		(clampFloat(distanceFromHighPct, 0, 6) * 1.40) -
+		(clampFloat(metrics.consolidationRangePct, 0, 8) * 0.55) -
+		(clampFloat(metrics.closeOffHighPct, 0, 100) * 0.05) +
+		(clampFloat(volumeLeaderPct, 0, 1) * 5.50)
 
-	return (clampFloat(tick.GapPercent, -10, maxGap) * 0.30) +
-		(clampFloat(tick.RelativeVolume, 0, maxRelativeVolume) * 1.60) +
-		(clampFloat(priceVsOpenPct, -5, maxPriceVsOpen) * 1.10) +
-		(clampFloat(oneMinuteReturn, -3, 6) * 3.40) +
-		(clampFloat(threeMinuteReturn, -5, 10) * 1.80) +
-		(clampFloat(volumeRate, 0.5, 4) * 1.20) -
-		(clampFloat(distanceFromHighPct, 0, 6) * 2.50) +
-		(clampFloat(volumeLeaderPct, 0, 1) * 6.00)
+	switch metrics.setupType {
+	case "consolidation-breakout":
+		score += 8
+	case "vwap-reclaim":
+		score += 6.5
+	case "opening-range-breakout":
+		score += 5
+	}
+	return score
 }
 
-func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate float64) bool {
+func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct float64, metrics scanMetrics) bool {
 	if tick.GapPercent >= s.config.MinGapPercent && tick.PreMarketVolume >= s.config.MinPremarketVolume {
 		return true
 	}
-
-	intradayMoveThreshold := maxFloat(3.5, s.config.MinGapPercent*0.35)
-	if priceVsOpenPct < intradayMoveThreshold {
+	if metrics.setupType == "" {
 		return false
 	}
-	if threeMinuteReturn < s.config.MinThreeMinuteReturnPct && oneMinuteReturn < s.config.MinOneMinuteReturnPct {
+	if priceVsOpenPct < maxFloat(2.5, s.config.MinGapPercent*0.25) {
 		return false
 	}
-	if volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
+	if metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
+		return false
+	}
+	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
 		return false
 	}
 	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25
 }
 
-func (s *Scanner) updateSymbolState(tick domain.Tick) (float64, float64, float64) {
+func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
 	state := s.state[tick.Symbol]
 	if state == nil {
 		state = &symbolState{}
 		s.state[tick.Symbol] = state
 	}
+	if state.day != dayKey {
+		state.day = dayKey
+		state.bars = nil
+		state.cumulativeDollarFlow = 0
+	}
 
 	deltaVolume := tick.Volume
-	if last := len(state.snapshots); last > 0 {
-		deltaVolume = tick.Volume - state.snapshots[last-1].volume
+	if count := len(state.bars); count > 0 {
+		deltaVolume = tick.Volume - state.bars[count-1].cumulativeVolume
 		if deltaVolume < 0 {
 			deltaVolume = tick.Volume
 		}
 	}
+	barOpen := firstNonZero(tick.BarOpen, tick.Price)
+	barHigh := maxFloat(tick.BarHigh, tick.Price)
+	barLow := firstNonZero(tick.BarLow, tick.Price)
+	if barLow > tick.Price {
+		barLow = tick.Price
+	}
+	typicalPrice := (barHigh + barLow + tick.Price) / 3
+	state.cumulativeDollarFlow += typicalPrice * float64(maxInt64(deltaVolume, 0))
+	vwap := tick.Price
+	if tick.Volume > 0 && state.cumulativeDollarFlow > 0 {
+		vwap = state.cumulativeDollarFlow / float64(tick.Volume)
+	}
 
-	state.snapshots = append(state.snapshots, symbolSnapshot{
-		timestamp: tick.Timestamp.UTC(),
-		price:     tick.Price,
-		volume:    tick.Volume,
+	state.bars = append(state.bars, symbolBar{
+		timestamp:        tick.Timestamp.UTC(),
+		open:             barOpen,
+		high:             barHigh,
+		low:              barLow,
+		close:            tick.Price,
+		volume:           maxInt64(deltaVolume, 0),
+		cumulativeVolume: tick.Volume,
+		vwap:             vwap,
 	})
-	cutoff := tick.Timestamp.UTC().Add(-5 * time.Minute)
-	trimmed := state.snapshots[:0]
-	for _, snapshot := range state.snapshots {
-		if snapshot.timestamp.Before(cutoff) {
+	cutoff := tick.Timestamp.UTC().Add(-90 * time.Minute)
+	trimmed := state.bars[:0]
+	for _, bar := range state.bars {
+		if bar.timestamp.Before(cutoff) {
 			continue
 		}
-		trimmed = append(trimmed, snapshot)
+		trimmed = append(trimmed, bar)
 	}
-	state.snapshots = trimmed
+	state.bars = trimmed
 
-	state.deltas = append(state.deltas, deltaVolume)
-	if len(state.deltas) > 6 {
-		state.deltas = state.deltas[len(state.deltas)-6:]
+	return deriveMetrics(state.bars)
+}
+
+func deriveMetrics(bars []symbolBar) scanMetrics {
+	if len(bars) == 0 {
+		return scanMetrics{}
+	}
+	current := bars[len(bars)-1]
+	metrics := scanMetrics{
+		oneMinuteReturn:   lookbackReturn(bars, 1),
+		threeMinuteReturn: lookbackReturn(bars, 3),
+		volumeRate:        recentVolumeRate(bars),
+		atr:               averageTrueRange(bars, 14),
+		vwap:              current.vwap,
+		priceVsVWAPPct:    percentChange(current.vwap, current.close),
+		closeOffHighPct:   closeOffHighPct(current),
 	}
 
-	return sampleReturn(state.snapshots, tick.Timestamp.UTC(), 1*time.Minute),
-		sampleReturn(state.snapshots, tick.Timestamp.UTC(), 3*time.Minute),
-		volumeRate(state.deltas, deltaVolume)
+	if len(bars) < 4 {
+		return metrics
+	}
+	completed := bars[:len(bars)-1]
+	recentSetupBars := lastNBars(completed, 3)
+	impulseBars := lastNBars(completed, 8)
+	setupHigh := maxBarHigh(recentSetupBars)
+	setupLow := minBarLow(recentSetupBars)
+	impulseHigh := maxBarHigh(impulseBars)
+	metrics.setupHigh = setupHigh
+	metrics.setupLow = setupLow
+	metrics.breakoutPct = percentChange(setupHigh, current.close)
+	metrics.consolidationRangePct = rangePct(setupLow, setupHigh)
+	metrics.pullbackDepthPct = drawdownPct(impulseHigh, setupLow)
+
+	aboveVWAP := metrics.priceVsVWAPPct >= -0.10
+	vwapReclaim := false
+	if len(completed) > 0 {
+		previous := completed[len(completed)-1]
+		vwapReclaim = previous.close <= previous.vwap && current.close > current.vwap
+	}
+	atrPct := 0.0
+	if current.close > 0 && metrics.atr > 0 {
+		atrPct = (metrics.atr / current.close) * 100
+	}
+	tightConsolidation := metrics.consolidationRangePct <= maxFloat(atrPct*1.75, 4.5)
+	shallowEnoughPullback := metrics.pullbackDepthPct >= maxFloat(atrPct*0.35, 0.40) &&
+		metrics.pullbackDepthPct <= maxFloat(atrPct*2.40, 8.0)
+	strengthClose := metrics.closeOffHighPct <= 35
+
+	switch {
+	case metrics.breakoutPct >= -0.15 && tightConsolidation && shallowEnoughPullback && aboveVWAP && strengthClose:
+		metrics.setupType = "consolidation-breakout"
+	case vwapReclaim && metrics.breakoutPct >= -maxFloat(atrPct*0.45, 0.35) && shallowEnoughPullback && metrics.closeOffHighPct <= 40:
+		metrics.setupType = "vwap-reclaim"
+	case minutesSinceOpen(current.timestamp) <= 30 && metrics.breakoutPct >= 0 && aboveVWAP && metrics.closeOffHighPct <= 30:
+		metrics.setupType = "opening-range-breakout"
+	}
+
+	return metrics
 }
 
 func (s *Scanner) updateVolumeLeadership(tick domain.Tick) float64 {
@@ -250,37 +364,108 @@ func momentumLeaderMetric(tick domain.Tick) float64 {
 	return tick.Price * float64(tick.Volume) * relativeVolume
 }
 
-func sampleReturn(samples []symbolSnapshot, current time.Time, lookback time.Duration) float64 {
-	if len(samples) < 2 {
+func lookbackReturn(bars []symbolBar, lookback int) float64 {
+	if len(bars) < lookback+1 {
 		return 0
 	}
-	target := current.Add(-lookback)
-	baseline := samples[0].price
-	for _, sample := range samples {
-		if sample.timestamp.After(target) {
-			break
-		}
-		baseline = sample.price
+	baseline := bars[len(bars)-1-lookback].close
+	if baseline <= 0 {
+		return 0
 	}
-	return percentChange(baseline, samples[len(samples)-1].price)
+	return percentChange(baseline, bars[len(bars)-1].close)
 }
 
-func volumeRate(deltas []int64, latest int64) float64 {
-	if len(deltas) < 2 {
+func recentVolumeRate(bars []symbolBar) float64 {
+	if len(bars) < 2 {
 		return 1
 	}
-	var total int64
-	for _, delta := range deltas[:len(deltas)-1] {
-		total += delta
-	}
-	if total <= 0 {
+	window := lastNBars(bars, 6)
+	if len(window) < 2 {
 		return 1
 	}
-	average := float64(total) / float64(len(deltas)-1)
+	latest := float64(window[len(window)-1].volume)
+	var total float64
+	for _, bar := range window[:len(window)-1] {
+		total += float64(bar.volume)
+	}
+	average := total / float64(len(window)-1)
 	if average <= 0 {
 		return 1
 	}
-	return float64(latest) / average
+	return latest / average
+}
+
+func averageTrueRange(bars []symbolBar, period int) float64 {
+	if len(bars) < 2 {
+		return 0
+	}
+	window := lastNBars(bars, period+1)
+	if len(window) < 2 {
+		return 0
+	}
+	var total float64
+	var count int
+	for index := 1; index < len(window); index++ {
+		prevClose := window[index-1].close
+		current := window[index]
+		trueRange := maxFloat(current.high-current.low, math.Abs(current.high-prevClose))
+		trueRange = maxFloat(trueRange, math.Abs(current.low-prevClose))
+		total += trueRange
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
+}
+
+func lastNBars(bars []symbolBar, count int) []symbolBar {
+	if count <= 0 || len(bars) <= count {
+		return bars
+	}
+	return bars[len(bars)-count:]
+}
+
+func maxBarHigh(bars []symbolBar) float64 {
+	high := 0.0
+	for _, bar := range bars {
+		if bar.high > high {
+			high = bar.high
+		}
+	}
+	return high
+}
+
+func minBarLow(bars []symbolBar) float64 {
+	low := 0.0
+	for _, bar := range bars {
+		if low == 0 || bar.low < low {
+			low = bar.low
+		}
+	}
+	return low
+}
+
+func rangePct(low, high float64) float64 {
+	if low <= 0 || high <= low {
+		return 0
+	}
+	return ((high - low) / low) * 100
+}
+
+func drawdownPct(high, low float64) float64 {
+	if high <= 0 || low <= 0 || low >= high {
+		return 0
+	}
+	return ((high - low) / high) * 100
+}
+
+func closeOffHighPct(bar symbolBar) float64 {
+	barRange := bar.high - bar.low
+	if barRange <= 0 {
+		return 0
+	}
+	return ((bar.high - bar.close) / barRange) * 100
 }
 
 func percentChange(from, to float64) float64 {
@@ -301,6 +486,22 @@ func round2(value float64) float64 {
 }
 
 func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func firstNonZero(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func maxInt64(a, b int64) int64 {
 	if a > b {
 		return a
 	}

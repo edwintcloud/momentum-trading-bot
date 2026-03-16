@@ -14,6 +14,36 @@ func inSessionSignalTime() time.Time {
 	return time.Date(2026, 3, 13, 14, 0, 0, 0, time.UTC)
 }
 
+func testBuySignal(symbol string, price float64, quantity int64, at time.Time) domain.TradeSignal {
+	riskPerShare := price * 0.05
+	return domain.TradeSignal{
+		Symbol:       symbol,
+		Side:         "buy",
+		Price:        price,
+		Quantity:     quantity,
+		StopPrice:    price - riskPerShare,
+		RiskPerShare: riskPerShare,
+		EntryATR:     price * 0.03,
+		SetupType:    "consolidation-breakout",
+		Timestamp:    at,
+	}
+}
+
+func testBuyExecution(symbol string, price float64, quantity int64, at time.Time) domain.ExecutionReport {
+	riskPerShare := price * 0.05
+	return domain.ExecutionReport{
+		Symbol:       symbol,
+		Side:         "buy",
+		Price:        price,
+		Quantity:     quantity,
+		StopPrice:    price - riskPerShare,
+		RiskPerShare: riskPerShare,
+		EntryATR:     price * 0.03,
+		SetupType:    "consolidation-breakout",
+		FilledAt:     at,
+	}
+}
+
 func TestRiskBlocksTradingWhenPaused(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
@@ -22,13 +52,7 @@ func TestRiskBlocksTradingWhenPaused(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	_, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "APVO",
-		Side:      "buy",
-		Price:     4,
-		Quantity:  100,
-		Timestamp: at,
-	})
+	_, approved, reason := engine.Evaluate(testBuySignal("APVO", 4, 100, at))
 	if approved {
 		t.Fatal("expected paused trading to block new orders")
 	}
@@ -43,13 +67,7 @@ func TestRiskAllowsExitEvenWhenPaused(t *testing.T) {
 	runtimeState.Pause()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionSignalTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "APVO",
-		Side:     "buy",
-		Price:    4,
-		Quantity: 100,
-		FilledAt: at.Add(-time.Minute),
-	})
+	book.ApplyExecution(testBuyExecution("APVO", 4, 100, at.Add(-time.Minute)))
 	engine := NewEngine(cfg, book, runtimeState)
 
 	request, approved, reason := engine.Evaluate(domain.TradeSignal{
@@ -76,13 +94,7 @@ func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	_, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "EONR",
-		Side:      "buy",
-		Price:     3.25,
-		Quantity:  100,
-		Timestamp: at,
-	})
+	_, approved, reason := engine.Evaluate(testBuySignal("EONR", 3.25, 100, at))
 	if approved {
 		t.Fatal("expected broker day loss to block new entries")
 	}
@@ -100,13 +112,7 @@ func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	request, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "EONR",
-		Side:      "buy",
-		Price:     10,
-		Quantity:  2000,
-		Timestamp: at,
-	})
+	request, approved, reason := engine.Evaluate(testBuySignal("EONR", 10, 2000, at))
 	if !approved {
 		t.Fatalf("expected quantity to be trimmed to fit max exposure, got %s", reason)
 	}
@@ -121,22 +127,10 @@ func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50_000, 50_000)
 	at := inSessionSignalTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "EONR",
-		Side:     "buy",
-		Price:    10,
-		Quantity: 1500,
-		FilledAt: at.Add(-time.Minute),
-	})
+	book.ApplyExecution(testBuyExecution("EONR", 10, 1500, at.Add(-time.Minute)))
 	engine := NewEngine(cfg, book, runtimeState)
 
-	_, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "APVO",
-		Side:      "buy",
-		Price:     10,
-		Quantity:  1,
-		Timestamp: at,
-	})
+	_, approved, reason := engine.Evaluate(testBuySignal("APVO", 10, 1, at))
 	if approved {
 		t.Fatal("expected max exposure block when no exposure remains")
 	}
@@ -151,13 +145,7 @@ func TestRiskBlocksOrdersOutsideTradableSession(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	engine := NewEngine(cfg, book, runtimeState)
 
-	_, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "APVO",
-		Side:      "buy",
-		Price:     4,
-		Quantity:  100,
-		Timestamp: time.Date(2026, 3, 13, 6, 30, 0, 0, time.UTC),
-	})
+	_, approved, reason := engine.Evaluate(testBuySignal("APVO", 4, 100, time.Date(2026, 3, 13, 6, 30, 0, 0, time.UTC)))
 	if approved {
 		t.Fatal("expected outside-session order to be blocked")
 	}
@@ -174,21 +162,9 @@ func TestRiskMaxTradesCountsEntriesNotExits(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "APVO",
-		Side:     "buy",
-		Price:    4,
-		Quantity: 100,
-		FilledAt: at.Add(-2 * time.Minute),
-	})
+	book.ApplyExecution(testBuyExecution("APVO", 4, 100, at.Add(-2*time.Minute)))
 
-	_, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "EONR",
-		Side:      "buy",
-		Price:     3.25,
-		Quantity:  100,
-		Timestamp: at,
-	})
+	_, approved, reason := engine.Evaluate(testBuySignal("EONR", 3.25, 100, at))
 	if approved {
 		t.Fatal("expected second entry of the day to be blocked")
 	}
@@ -220,13 +196,7 @@ func TestRiskUsesAdaptiveBufferForLowPricedBuy(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	request, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "BIAF",
-		Side:      "buy",
-		Price:     1.88,
-		Quantity:  100,
-		Timestamp: at,
-	})
+	request, approved, reason := engine.Evaluate(testBuySignal("BIAF", 1.88, 100, at))
 	if !approved {
 		t.Fatalf("expected low-priced buy to be approved, got %s", reason)
 	}
@@ -241,13 +211,7 @@ func TestRiskUsesAdaptiveBufferForLowPricedSell(t *testing.T) {
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionSignalTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "BIAF",
-		Side:     "buy",
-		Price:    1.88,
-		Quantity: 100,
-		FilledAt: at.Add(-time.Minute),
-	})
+	book.ApplyExecution(testBuyExecution("BIAF", 1.88, 100, at.Add(-time.Minute)))
 	engine := NewEngine(cfg, book, runtimeState)
 
 	request, approved, reason := engine.Evaluate(domain.TradeSignal{
@@ -274,13 +238,7 @@ func TestRiskCapsAdaptiveBufferForHigherPricedNames(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	request, approved, reason := engine.Evaluate(domain.TradeSignal{
-		Symbol:    "KBDU",
-		Side:      "buy",
-		Price:     27.04,
-		Quantity:  100,
-		Timestamp: at,
-	})
+	request, approved, reason := engine.Evaluate(testBuySignal("KBDU", 27.04, 100, at))
 	if !approved {
 		t.Fatalf("expected higher-priced buy to be approved, got %s", reason)
 	}

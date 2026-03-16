@@ -12,11 +12,17 @@ var modelFeatureOrder = []string{
 	"gap_percent",
 	"relative_volume",
 	"price_vs_open_pct",
+	"price_vs_vwap_pct",
 	"distance_from_high_pct",
+	"breakout_pct",
 	"one_minute_return_pct",
 	"three_minute_return_pct",
 	"volume_rate",
 	"volume_leader_pct",
+	"atr_pct",
+	"consolidation_range_pct",
+	"pullback_depth_pct",
+	"close_off_high_pct",
 	"minutes_since_open",
 }
 
@@ -39,18 +45,24 @@ type TrainingSample struct {
 // near the high of day with improving short-term momentum and accelerating volume.
 func DefaultEntryModel() LinearModel {
 	return LinearModel{
-		Name:      "seeded-momentum-entry-v5",
-		Intercept: -2.60,
+		Name:      "seeded-momentum-entry-v6",
+		Intercept: -0.55,
 		Weights: map[string]float64{
-			"gap_percent":             0.04,
-			"relative_volume":         0.14,
-			"price_vs_open_pct":       0.12,
-			"distance_from_high_pct":  -1.10,
-			"one_minute_return_pct":   1.05,
-			"three_minute_return_pct": 0.65,
-			"volume_rate":             0.32,
-			"volume_leader_pct":       1.25,
-			"minutes_since_open":      -0.01,
+			"gap_percent":             0.01,
+			"relative_volume":         0.03,
+			"price_vs_open_pct":       0.01,
+			"price_vs_vwap_pct":       0.08,
+			"distance_from_high_pct":  -0.08,
+			"breakout_pct":            0.12,
+			"one_minute_return_pct":   0.03,
+			"three_minute_return_pct": 0.05,
+			"volume_rate":             0.05,
+			"volume_leader_pct":       0.40,
+			"atr_pct":                 -0.03,
+			"consolidation_range_pct": -0.07,
+			"pullback_depth_pct":      0.04,
+			"close_off_high_pct":      -0.015,
+			"minutes_since_open":      -0.001,
 		},
 	}
 }
@@ -116,7 +128,7 @@ func TrainLinearModel(samples []TrainingSample) (LinearModel, error) {
 		for _, name := range modelFeatureOrder {
 			row = append(row, normalizeFeatureValue(name, values[name], means, scales))
 		}
-		target := clamp(sample.ForwardReturnPct, -15, 20)
+		target := clamp(sample.ForwardReturnPct, -2.5, 8.0)
 		for i := range row {
 			xty[i] += row[i] * target
 			for j := range row {
@@ -132,7 +144,7 @@ func TrainLinearModel(samples []TrainingSample) (LinearModel, error) {
 	}
 
 	model := LinearModel{
-		Name:          "trained-momentum-entry-v5",
+		Name:          "trained-momentum-entry-v6",
 		Intercept:     coefficients[0],
 		Weights:       make(map[string]float64, len(modelFeatureOrder)),
 		FeatureMeans:  means,
@@ -153,11 +165,17 @@ func featureValues(candidate domain.Candidate) map[string]float64 {
 		"gap_percent":             clamp(candidate.GapPercent, -10, 35),
 		"relative_volume":         clamp(candidate.RelativeVolume, 0, 20),
 		"price_vs_open_pct":       clamp(candidate.PriceVsOpenPct, -5, 35),
+		"price_vs_vwap_pct":       clamp(candidate.PriceVsVWAPPct, -5, 10),
 		"distance_from_high_pct":  clamp(candidate.DistanceFromHighPct, 0, 6),
+		"breakout_pct":            clamp(candidate.BreakoutPct, -4, 5),
 		"one_minute_return_pct":   clamp(candidate.OneMinuteReturnPct, -3, 6),
 		"three_minute_return_pct": clamp(candidate.ThreeMinuteReturnPct, -5, 10),
 		"volume_rate":             clamp(candidate.VolumeRate, 0.5, 4),
 		"volume_leader_pct":       clamp(volumeLeaderPct, 0, 1),
+		"atr_pct":                 clamp(candidate.ATRPct, 0.10, 12),
+		"consolidation_range_pct": clamp(candidate.ConsolidationRangePct, 0, 10),
+		"pullback_depth_pct":      clamp(candidate.PullbackDepthPct, 0, 12),
+		"close_off_high_pct":      clamp(candidate.CloseOffHighPct, 0, 100),
 		"minutes_since_open":      clamp(candidate.MinutesSinceOpen, 0, 390),
 	}
 }

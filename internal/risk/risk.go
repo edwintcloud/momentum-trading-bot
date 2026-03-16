@@ -74,11 +74,25 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			quantity = position.Quantity
 		}
 		limitPrice := r.limitPrice(signal.Price, signal.Side)
-		return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: orderTime}, true, "approved"
+		return domain.OrderRequest{
+			Symbol:       signal.Symbol,
+			Side:         signal.Side,
+			Price:        limitPrice,
+			Quantity:     quantity,
+			StopPrice:    signal.StopPrice,
+			RiskPerShare: signal.RiskPerShare,
+			EntryATR:     signal.EntryATR,
+			SetupType:    signal.SetupType,
+			Reason:       signal.Reason,
+			Timestamp:    orderTime,
+		}, true, "approved"
 	}
 
 	if blockReason := r.runtime.EntryBlockReasonAt(orderTime); blockReason != "" {
 		return domain.OrderRequest{}, false, blockReason
+	}
+	if signal.StopPrice <= 0 || signal.RiskPerShare <= 0 {
+		return domain.OrderRequest{}, false, "missing-stop"
 	}
 	if r.portfolio.EntriesToday() >= r.config.MaxTradesPerDay {
 		return domain.OrderRequest{}, false, "max-trades"
@@ -104,7 +118,18 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if quantity < 1 {
 		return domain.OrderRequest{}, false, "max-exposure"
 	}
-	return domain.OrderRequest{Symbol: signal.Symbol, Side: signal.Side, Price: limitPrice, Quantity: quantity, Reason: signal.Reason, Timestamp: orderTime}, true, "approved"
+	return domain.OrderRequest{
+		Symbol:       signal.Symbol,
+		Side:         signal.Side,
+		Price:        limitPrice,
+		Quantity:     quantity,
+		StopPrice:    signal.StopPrice,
+		RiskPerShare: signal.RiskPerShare,
+		EntryATR:     signal.EntryATR,
+		SetupType:    signal.SetupType,
+		Reason:       signal.Reason,
+		Timestamp:    orderTime,
+	}, true, "approved"
 }
 
 func (r *Engine) limitPrice(price float64, side string) float64 {

@@ -117,11 +117,14 @@ func runBacktest(args []string) error {
 	logBacktestDiagnostics(result.Diagnostics)
 
 	log.Printf(
-		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%% model=%s",
+		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f avg_win_r=%.2f avg_loss_r=%.2f realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%% model=%s",
 		result.Trades,
 		result.Wins,
 		result.Losses,
 		result.WinRate,
+		result.ProfitFactor,
+		result.AvgWinR,
+		result.AvgLossR,
 		result.RealizedPnL,
 		result.UnrealizedPnL,
 		result.NetPnL,
@@ -358,7 +361,7 @@ func logEntrySamples(samples []backtest.EntrySample) {
 	parts := make([]string, 0, len(samples))
 	for _, sample := range samples {
 		parts = append(parts, fmt.Sprintf(
-			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f 1m=%.2f 3m=%.2f vr=%.2f",
+			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f atr=%.2f vwap=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f",
 			sample.Symbol,
 			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
 			sample.Price,
@@ -369,6 +372,10 @@ func logEntrySamples(samples []backtest.EntrySample) {
 			sample.AllowedDistanceHighPct,
 			sample.RelativeVolume,
 			sample.VolumeLeaderPct,
+			sample.ATRPct,
+			sample.PriceVsVWAPPct,
+			sample.BreakoutPct,
+			sample.SetupType,
 			sample.OneMinuteReturnPct,
 			sample.ThreeMinuteReturnPct,
 			sample.VolumeRate,
@@ -405,7 +412,7 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			continue
 		}
 		log.Printf(
-			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
+			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f atr=%.2f vwap=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
 			item.reason,
 			sample.Symbol,
 			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
@@ -417,6 +424,10 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			sample.AllowedDistanceHighPct,
 			sample.RelativeVolume,
 			sample.VolumeLeaderPct,
+			sample.ATRPct,
+			sample.PriceVsVWAPPct,
+			sample.BreakoutPct,
+			sample.SetupType,
 			sample.OneMinuteReturnPct,
 			sample.ThreeMinuteReturnPct,
 			sample.VolumeRate,

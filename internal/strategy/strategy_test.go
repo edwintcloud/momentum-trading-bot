@@ -14,8 +14,29 @@ func inSessionTime() time.Time {
 	return time.Date(2026, 3, 13, 14, 0, 0, 0, time.UTC)
 }
 
-func TestStrategyCreatesEntrySignal(t *testing.T) {
+func testStrategyConfig() config.TradingConfig {
 	cfg := config.DefaultTradingConfig()
+	cfg.EntryModelEnabled = false
+	return cfg
+}
+
+func testExecutionReport(symbol string, price float64, quantity int64, filledAt time.Time) domain.ExecutionReport {
+	riskPerShare := price * 0.05
+	return domain.ExecutionReport{
+		Symbol:       symbol,
+		Side:         "buy",
+		Price:        price,
+		Quantity:     quantity,
+		StopPrice:    price - riskPerShare,
+		RiskPerShare: riskPerShare,
+		EntryATR:     price * 0.03,
+		SetupType:    "consolidation-breakout",
+		FilledAt:     filledAt,
+	}
+}
+
+func TestStrategyCreatesEntrySignal(t *testing.T) {
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -49,7 +70,7 @@ func TestStrategyCreatesEntrySignal(t *testing.T) {
 }
 
 func TestStrategyAllowsPullbackAndGoWhenBroaderFollowThroughIsStrong(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -77,7 +98,7 @@ func TestStrategyAllowsPullbackAndGoWhenBroaderFollowThroughIsStrong(t *testing.
 }
 
 func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -108,7 +129,7 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 }
 
 func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -136,7 +157,7 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 }
 
 func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	cfg.EntryModelEnabled = false
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -185,7 +206,7 @@ func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 		ThreeMinuteReturnPct: 1.10,
 		VolumeRate:           1.45,
 		MinutesSinceOpen:     150,
-		Score:                19.5,
+		Score:                22.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -194,7 +215,7 @@ func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 }
 
 func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -226,7 +247,7 @@ func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 }
 
 func TestStrategyRejectsLowLeaderShareEvenWithStrongStats(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -258,7 +279,7 @@ func TestStrategyRejectsLowLeaderShareEvenWithStrongStats(t *testing.T) {
 }
 
 func TestStrategyAllowsLeaderVolumeSetup(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -287,7 +308,7 @@ func TestStrategyAllowsLeaderVolumeSetup(t *testing.T) {
 }
 
 func TestStrategyRejectsParabolicEarlyPremarketSpike(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -320,7 +341,7 @@ func TestStrategyRejectsParabolicEarlyPremarketSpike(t *testing.T) {
 }
 
 func TestStrategyRejectsThinEarlyPremarketSetup(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -353,7 +374,7 @@ func TestStrategyRejectsThinEarlyPremarketSetup(t *testing.T) {
 }
 
 func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -384,19 +405,13 @@ func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
 }
 
 func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
 	at := inSessionTime()
 
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "DTCK",
-		Side:     "buy",
-		Price:    3.20,
-		Quantity: 100,
-		FilledAt: at.Add(-40 * time.Minute),
-	})
+	book.ApplyExecution(testExecutionReport("DTCK", 3.20, 100, at.Add(-40*time.Minute)))
 	book.MarkPriceAt("DTCK", 3.00, at.Add(-29*time.Minute))
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "DTCK",
@@ -441,7 +456,7 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 }
 
 func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -503,7 +518,7 @@ func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
 		ThreeMinuteReturnPct: 0.52,
 		VolumeRate:           1.05,
 		MinutesSinceOpen:     45,
-		Score:                14,
+		Score:                16,
 		Timestamp:            at,
 	})
 	if ok {
@@ -515,7 +530,7 @@ func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
 }
 
 func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -534,7 +549,7 @@ func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 		ThreeMinuteReturnPct: 0.20,
 		VolumeRate:           1.01,
 		MinutesSinceOpen:     160,
-		Score:                14,
+		Score:                16,
 		Timestamp:            at,
 	})
 	if ok {
@@ -546,17 +561,11 @@ func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 }
 
 func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "RKLB",
-		Side:     "buy",
-		Price:    10,
-		Quantity: 100,
-		FilledAt: at.Add(-time.Minute),
-	})
+	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-time.Minute)))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateExit(domain.Tick{
@@ -574,7 +583,7 @@ func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 }
 
 func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50500)
@@ -600,13 +609,13 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 1000 {
-		t.Fatalf("expected quantity 1000 using broker equity sizing, got %d", signal.Quantity)
+	if signal.Quantity != 965 {
+		t.Fatalf("expected ATR-based quantity 965 using broker equity sizing, got %d", signal.Quantity)
 	}
 }
 
 func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50500)
@@ -631,23 +640,17 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 	if !ok {
 		t.Fatal("expected conservative premarket setup to pass")
 	}
-	if signal.Quantity != 2799 {
-		t.Fatalf("expected premarket low-priced sizing to be scaled down to 2799 shares, got %d", signal.Quantity)
+	if signal.Quantity != 1699 {
+		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 1699 shares, got %d", signal.Quantity)
 	}
 }
 
 func TestStrategyUsesTrailingStopInsteadOfImmediateProfitTarget(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "RKLB",
-		Side:     "buy",
-		Price:    10,
-		Quantity: 100,
-		FilledAt: at.Add(-3 * time.Minute),
-	})
+	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-3*time.Minute)))
 	book.MarkPriceAt("RKLB", 11.50, at.Add(-2*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
@@ -675,23 +678,17 @@ func TestStrategyUsesTrailingStopInsteadOfImmediateProfitTarget(t *testing.T) {
 }
 
 func TestStrategyExitsFailedBreakoutBeforeFullStop(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "RKLB",
-		Side:     "buy",
-		Price:    10,
-		Quantity: 100,
-		FilledAt: at.Add(-13 * time.Minute),
-	})
+	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-13*time.Minute)))
 	book.MarkPriceAt("RKLB", 10.05, at.Add(-8*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
-		Price:     9.90,
+		Price:     9.65,
 		HighOfDay: 10.10,
 		Timestamp: at,
 	})
@@ -704,24 +701,18 @@ func TestStrategyExitsFailedBreakoutBeforeFullStop(t *testing.T) {
 }
 
 func TestStrategyProtectsNearBreakEvenAfterInitialPop(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   "RKLB",
-		Side:     "buy",
-		Price:    10,
-		Quantity: 100,
-		FilledAt: at.Add(-10 * time.Minute),
-	})
-	book.MarkPriceAt("RKLB", 10.25, at.Add(-4*time.Minute))
+	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-10*time.Minute)))
+	book.MarkPriceAt("RKLB", 10.55, at.Add(-4*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
 		Price:     10.01,
-		HighOfDay: 10.25,
+		HighOfDay: 10.55,
 		Timestamp: at,
 	})
 	if !ok {
@@ -733,7 +724,7 @@ func TestStrategyProtectsNearBreakEvenAfterInitialPop(t *testing.T) {
 }
 
 func TestStrategyBlocksEntriesOutsideTradableSession(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)

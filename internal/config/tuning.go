@@ -32,14 +32,14 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 		cfg.MinPrice = 1.00
 	}
 
-	cfg.StopLossPct = 0.04
-	cfg.TrailingStopPct = 0.045
-	cfg.TrailingStopActivationPct = 0.02
+	cfg.StopLossPct = 0.07
+	cfg.TrailingStopPct = 0.08
+	cfg.TrailingStopActivationPct = 0.03
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
 	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 1.50
-	cfg.MinEntryScore = 13.0
+	cfg.EntryModelMinPredictedReturnPct = 0.40
+	cfg.MinEntryScore = 15.5
 	cfg.MinOneMinuteReturnPct = 0.10
 	cfg.MinThreeMinuteReturnPct = 0.45
 	cfg.MinVolumeRate = 1.05
@@ -76,10 +76,8 @@ func round2(value float64) float64 {
 }
 
 func inferMaxExposurePct(cfg TradingConfig) float64 {
-	if cfg.StopLossPct <= 0 {
-		return 0.30
-	}
-	perPositionExposure := cfg.RiskPerTradePct / cfg.StopLossPct
+	assumedStopDistance := math.Max(cfg.StopLossPct, 0.07)
+	perPositionExposure := cfg.RiskPerTradePct / assumedStopDistance
 	targetFullRiskPositions := 2
 	if cfg.MaxOpenPositions > 0 && cfg.MaxOpenPositions < targetFullRiskPositions {
 		targetFullRiskPositions = cfg.MaxOpenPositions

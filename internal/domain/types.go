@@ -15,6 +15,9 @@ type EventRecorder interface {
 type Tick struct {
 	Symbol          string    `json:"symbol"`
 	Price           float64   `json:"price"`
+	BarOpen         float64   `json:"barOpen"`
+	BarHigh         float64   `json:"barHigh"`
+	BarLow          float64   `json:"barLow"`
 	Open            float64   `json:"open"`
 	HighOfDay       float64   `json:"highOfDay"`
 	Volume          int64     `json:"volume"`
@@ -29,46 +32,65 @@ type Tick struct {
 
 // Candidate is a stock that passed the scanner filters.
 type Candidate struct {
-	Symbol               string    `json:"symbol"`
-	Price                float64   `json:"price"`
-	Open                 float64   `json:"open"`
-	GapPercent           float64   `json:"gapPercent"`
-	RelativeVolume       float64   `json:"relativeVolume"`
-	PreMarketVolume      int64     `json:"premarketVolume"`
-	Volume               int64     `json:"volume"`
-	HighOfDay            float64   `json:"highOfDay"`
-	PriceVsOpenPct       float64   `json:"priceVsOpenPct"`
-	DistanceFromHighPct  float64   `json:"distanceFromHighPct"`
-	OneMinuteReturnPct   float64   `json:"oneMinuteReturnPct"`
-	ThreeMinuteReturnPct float64   `json:"threeMinuteReturnPct"`
-	VolumeRate           float64   `json:"volumeRate"`
-	VolumeLeaderPct      float64   `json:"volumeLeaderPct"`
-	MinutesSinceOpen     float64   `json:"minutesSinceOpen"`
-	Score                float64   `json:"score"`
-	Catalyst             string    `json:"catalyst"`
-	CatalystURL          string    `json:"catalystUrl"`
-	Timestamp            time.Time `json:"timestamp"`
+	Symbol                string    `json:"symbol"`
+	Price                 float64   `json:"price"`
+	Open                  float64   `json:"open"`
+	GapPercent            float64   `json:"gapPercent"`
+	RelativeVolume        float64   `json:"relativeVolume"`
+	PreMarketVolume       int64     `json:"premarketVolume"`
+	Volume                int64     `json:"volume"`
+	HighOfDay             float64   `json:"highOfDay"`
+	PriceVsOpenPct        float64   `json:"priceVsOpenPct"`
+	DistanceFromHighPct   float64   `json:"distanceFromHighPct"`
+	OneMinuteReturnPct    float64   `json:"oneMinuteReturnPct"`
+	ThreeMinuteReturnPct  float64   `json:"threeMinuteReturnPct"`
+	VolumeRate            float64   `json:"volumeRate"`
+	VolumeLeaderPct       float64   `json:"volumeLeaderPct"`
+	MinutesSinceOpen      float64   `json:"minutesSinceOpen"`
+	ATR                   float64   `json:"atr"`
+	ATRPct                float64   `json:"atrPct"`
+	VWAP                  float64   `json:"vwap"`
+	PriceVsVWAPPct        float64   `json:"priceVsVwapPct"`
+	BreakoutPct           float64   `json:"breakoutPct"`
+	ConsolidationRangePct float64   `json:"consolidationRangePct"`
+	PullbackDepthPct      float64   `json:"pullbackDepthPct"`
+	CloseOffHighPct       float64   `json:"closeOffHighPct"`
+	SetupHigh             float64   `json:"setupHigh"`
+	SetupLow              float64   `json:"setupLow"`
+	SetupType             string    `json:"setupType"`
+	Score                 float64   `json:"score"`
+	Catalyst              string    `json:"catalyst"`
+	CatalystURL           string    `json:"catalystUrl"`
+	Timestamp             time.Time `json:"timestamp"`
 }
 
 // TradeSignal is emitted by the strategy for both entries and exits.
 type TradeSignal struct {
-	Symbol     string    `json:"symbol"`
-	Side       string    `json:"side"`
-	Price      float64   `json:"price"`
-	Quantity   int64     `json:"quantity"`
-	Reason     string    `json:"reason"`
-	Confidence float64   `json:"confidence"`
-	Timestamp  time.Time `json:"timestamp"`
+	Symbol       string    `json:"symbol"`
+	Side         string    `json:"side"`
+	Price        float64   `json:"price"`
+	Quantity     int64     `json:"quantity"`
+	StopPrice    float64   `json:"stopPrice"`
+	RiskPerShare float64   `json:"riskPerShare"`
+	EntryATR     float64   `json:"entryAtr"`
+	SetupType    string    `json:"setupType"`
+	Reason       string    `json:"reason"`
+	Confidence   float64   `json:"confidence"`
+	Timestamp    time.Time `json:"timestamp"`
 }
 
 // OrderRequest is an execution-ready order approved by risk checks.
 type OrderRequest struct {
-	Symbol    string    `json:"symbol"`
-	Side      string    `json:"side"`
-	Price     float64   `json:"price"`
-	Quantity  int64     `json:"quantity"`
-	Reason    string    `json:"reason"`
-	Timestamp time.Time `json:"timestamp"`
+	Symbol       string    `json:"symbol"`
+	Side         string    `json:"side"`
+	Price        float64   `json:"price"`
+	Quantity     int64     `json:"quantity"`
+	StopPrice    float64   `json:"stopPrice"`
+	RiskPerShare float64   `json:"riskPerShare"`
+	EntryATR     float64   `json:"entryAtr"`
+	SetupType    string    `json:"setupType"`
+	Reason       string    `json:"reason"`
+	Timestamp    time.Time `json:"timestamp"`
 }
 
 // ExecutionReport represents a broker-confirmed fill.
@@ -77,6 +99,10 @@ type ExecutionReport struct {
 	Side          string    `json:"side"`
 	Price         float64   `json:"price"`
 	Quantity      int64     `json:"quantity"`
+	StopPrice     float64   `json:"stopPrice"`
+	RiskPerShare  float64   `json:"riskPerShare"`
+	EntryATR      float64   `json:"entryAtr"`
+	SetupType     string    `json:"setupType"`
 	Reason        string    `json:"reason"`
 	BrokerOrderID string    `json:"brokerOrderId"`
 	BrokerStatus  string    `json:"brokerStatus"`
@@ -85,15 +111,20 @@ type ExecutionReport struct {
 
 // Position is an open portfolio holding.
 type Position struct {
-	Symbol        string    `json:"symbol"`
-	Quantity      int64     `json:"quantity"`
-	AvgPrice      float64   `json:"avgPrice"`
-	LastPrice     float64   `json:"lastPrice"`
-	HighestPrice  float64   `json:"highestPrice"`
-	MarketValue   float64   `json:"marketValue"`
-	UnrealizedPnL float64   `json:"unrealizedPnL"`
-	OpenedAt      time.Time `json:"openedAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	Symbol           string    `json:"symbol"`
+	Quantity         int64     `json:"quantity"`
+	AvgPrice         float64   `json:"avgPrice"`
+	StopPrice        float64   `json:"stopPrice"`
+	InitialStopPrice float64   `json:"initialStopPrice"`
+	RiskPerShare     float64   `json:"riskPerShare"`
+	EntryATR         float64   `json:"entryAtr"`
+	SetupType        string    `json:"setupType"`
+	LastPrice        float64   `json:"lastPrice"`
+	HighestPrice     float64   `json:"highestPrice"`
+	MarketValue      float64   `json:"marketValue"`
+	UnrealizedPnL    float64   `json:"unrealizedPnL"`
+	OpenedAt         time.Time `json:"openedAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 // ClosedTrade records a completed round-trip trade.
@@ -103,6 +134,7 @@ type ClosedTrade struct {
 	EntryPrice float64   `json:"entryPrice"`
 	ExitPrice  float64   `json:"exitPrice"`
 	PnL        float64   `json:"pnl"`
+	RMultiple  float64   `json:"rMultiple"`
 	OpenedAt   time.Time `json:"openedAt"`
 	ClosedAt   time.Time `json:"closedAt"`
 	ExitReason string    `json:"exitReason"`

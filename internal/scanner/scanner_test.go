@@ -120,31 +120,70 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 
 	engine.evaluateTick(domain.Tick{
 		Symbol:          "SQUEEZE",
-		Price:           5.10,
+		Price:           5.45,
+		BarOpen:         5.00,
+		BarHigh:         5.50,
+		BarLow:          4.95,
 		Open:            4.90,
-		HighOfDay:       5.12,
+		HighOfDay:       5.50,
 		GapPercent:      1.0,
-		RelativeVolume:  6.0,
+		RelativeVolume:  5.6,
 		PreMarketVolume: 0,
-		Volume:          300_000,
+		Volume:          150_000,
 		VolumeSpike:     true,
 		Timestamp:       base,
 	})
 	engine.evaluateTick(domain.Tick{
 		Symbol:          "SQUEEZE",
-		Price:           5.35,
+		Price:           5.20,
+		BarOpen:         5.05,
+		BarHigh:         5.25,
+		BarLow:          5.00,
 		Open:            4.90,
-		HighOfDay:       5.36,
+		HighOfDay:       5.25,
+		GapPercent:      1.0,
+		RelativeVolume:  6.0,
+		PreMarketVolume: 0,
+		Volume:          250_000,
+		VolumeSpike:     true,
+		Timestamp:       base.Add(time.Minute),
+	})
+	engine.evaluateTick(domain.Tick{
+		Symbol:          "SQUEEZE",
+		Price:           5.32,
+		BarOpen:         5.18,
+		BarHigh:         5.35,
+		BarLow:          5.18,
+		Open:            4.90,
+		HighOfDay:       5.35,
+		GapPercent:      1.0,
+		RelativeVolume:  6.0,
+		PreMarketVolume: 0,
+		Volume:          400_000,
+		VolumeSpike:     true,
+		Timestamp:       base.Add(2 * time.Minute),
+	})
+	engine.evaluateTick(domain.Tick{
+		Symbol:          "SQUEEZE",
+		Price:           5.28,
+		BarOpen:         5.30,
+		BarHigh:         5.34,
+		BarLow:          5.24,
+		Open:            4.90,
+		HighOfDay:       5.35,
 		GapPercent:      1.4,
 		RelativeVolume:  6.6,
 		PreMarketVolume: 0,
-		Volume:          520_000,
+		Volume:          500_000,
 		VolumeSpike:     true,
-		Timestamp:       base.Add(time.Minute),
+		Timestamp:       base.Add(3 * time.Minute),
 	})
 	candidate, ok := engine.evaluateTick(domain.Tick{
 		Symbol:          "SQUEEZE",
 		Price:           5.58,
+		BarOpen:         5.30,
+		BarHigh:         5.60,
+		BarLow:          5.26,
 		Open:            4.90,
 		HighOfDay:       5.60,
 		GapPercent:      1.8,
@@ -152,7 +191,7 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 		PreMarketVolume: 0,
 		Volume:          820_000,
 		VolumeSpike:     true,
-		Timestamp:       base.Add(2 * time.Minute),
+		Timestamp:       base.Add(4 * time.Minute),
 	})
 	if !ok {
 		t.Fatal("expected intraday squeeze to pass scanner without gap profile")
@@ -226,11 +265,19 @@ func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
 	base := engine.momentumScore(domain.Tick{
 		GapPercent:     12,
 		RelativeVolume: cfg.MinRelativeVolume + 15,
-	}, 18, 0.5, 1.2, 2.0, 1.8, 0.9)
+	}, 18, 0.5, 0.9, scanMetrics{
+		oneMinuteReturn:   1.2,
+		threeMinuteReturn: 2.0,
+		volumeRate:        1.8,
+	})
 	extreme := engine.momentumScore(domain.Tick{
 		GapPercent:     12,
 		RelativeVolume: 4_000,
-	}, 18, 0.5, 1.2, 2.0, 1.8, 0.9)
+	}, 18, 0.5, 0.9, scanMetrics{
+		oneMinuteReturn:   1.2,
+		threeMinuteReturn: 2.0,
+		volumeRate:        1.8,
+	})
 
 	if base != extreme {
 		t.Fatalf("expected extreme relative volume to cap at the same score contribution, base=%.2f extreme=%.2f", base, extreme)

@@ -13,6 +13,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
+	"github.com/edwincloud/momentum-trading-bot/internal/volumeprofile"
 )
 
 var nyLocation = mustLoadLocation("America/New_York")
@@ -42,15 +43,15 @@ const hydrationBatchSize = 100
 
 // Engine streams live Alpaca market data and normalizes it into trading ticks.
 type Engine struct {
-	mu        sync.Mutex
-	client    *alpaca.Client
-	config    config.TradingConfig
-	portfolio *portfolio.Manager
-	runtime   *runtime.State
-	state     map[string]*symbolState
-	seenBars  map[string]bool
-	seenTypes map[string]bool
-	hydrationQueue chan hydrationRequest
+	mu                sync.Mutex
+	client            *alpaca.Client
+	config            config.TradingConfig
+	portfolio         *portfolio.Manager
+	runtime           *runtime.State
+	state             map[string]*symbolState
+	seenBars          map[string]bool
+	seenTypes         map[string]bool
+	hydrationQueue    chan hydrationRequest
 	hydrationOverflow map[string]hydrationRequest
 	hydrationSignal   chan struct{}
 	backpressureAt    time.Time
@@ -59,13 +60,13 @@ type Engine struct {
 // NewEngine creates a live market-data engine.
 func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Engine {
 	return &Engine{
-		client:    client,
-		config:    cfg,
-		portfolio: portfolioManager,
-		runtime:   runtimeState,
-		state:     make(map[string]*symbolState),
-		seenBars:  make(map[string]bool),
-		seenTypes: make(map[string]bool),
+		client:            client,
+		config:            cfg,
+		portfolio:         portfolioManager,
+		runtime:           runtimeState,
+		state:             make(map[string]*symbolState),
+		seenBars:          make(map[string]bool),
+		seenTypes:         make(map[string]bool),
 		hydrationQueue:    make(chan hydrationRequest, maxInt(cfg.HydrationQueueSize, 32)),
 		hydrationOverflow: make(map[string]hydrationRequest),
 		hydrationSignal:   make(chan struct{}, 1),
@@ -176,6 +177,9 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 	return domain.Tick{
 		Symbol:          message.Symbol,
 		Price:           round2(message.Close),
+		BarOpen:         round2(message.Open),
+		BarHigh:         round2(message.High),
+		BarLow:          round2(message.Low),
 		Open:            round2(state.open),
 		HighOfDay:       round2(state.highOfDay),
 		Volume:          state.totalVolume,
@@ -512,21 +516,7 @@ func calculateRelativeVolume(state *symbolState, timestamp time.Time) float64 {
 	if state.prevDayVolume <= 0 {
 		return 1.0
 	}
-	est := timestamp.In(nyLocation)
-	marketOpen := time.Date(est.Year(), est.Month(), est.Day(), 9, 30, 0, 0, nyLocation)
-	minutesSinceOpen := est.Sub(marketOpen).Minutes()
-	if minutesSinceOpen < 1 {
-		// Premarket: assume ~5% of daily volume as baseline
-		expected := float64(state.prevDayVolume) * 0.05
-		if expected < 1 {
-			return 1.0
-		}
-		return float64(state.totalVolume) / expected
-	}
-	if minutesSinceOpen > 390 {
-		minutesSinceOpen = 390
-	}
-	expected := float64(state.prevDayVolume) * (minutesSinceOpen / 390.0)
+	expected := float64(state.prevDayVolume) * volumeprofile.ExpectedCumulativeShare(timestamp)
 	if expected < 1 {
 		return 1.0
 	}

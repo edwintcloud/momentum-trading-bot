@@ -91,6 +91,21 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			totalCost := (float64(position.Quantity) * position.AvgPrice) + (float64(report.Quantity) * report.Price)
 			position.Quantity += report.Quantity
 			position.AvgPrice = totalCost / float64(position.Quantity)
+			if report.StopPrice > 0 {
+				position.StopPrice = report.StopPrice
+			}
+			if position.InitialStopPrice == 0 && report.StopPrice > 0 {
+				position.InitialStopPrice = report.StopPrice
+			}
+			if report.RiskPerShare > 0 {
+				position.RiskPerShare = report.RiskPerShare
+			}
+			if report.EntryATR > 0 {
+				position.EntryATR = report.EntryATR
+			}
+			if report.SetupType != "" {
+				position.SetupType = report.SetupType
+			}
 			position.LastPrice = report.Price
 			position.HighestPrice = math.Max(position.HighestPrice, report.Price)
 			position.MarketValue = float64(position.Quantity) * report.Price
@@ -99,15 +114,20 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			m.positions[report.Symbol] = position
 		} else {
 			m.positions[report.Symbol] = domain.Position{
-				Symbol:        report.Symbol,
-				Quantity:      report.Quantity,
-				AvgPrice:      report.Price,
-				LastPrice:     report.Price,
-				HighestPrice:  report.Price,
-				MarketValue:   float64(report.Quantity) * report.Price,
-				UnrealizedPnL: 0,
-				OpenedAt:      now,
-				UpdatedAt:     now,
+				Symbol:           report.Symbol,
+				Quantity:         report.Quantity,
+				AvgPrice:         report.Price,
+				StopPrice:        report.StopPrice,
+				InitialStopPrice: report.StopPrice,
+				RiskPerShare:     report.RiskPerShare,
+				EntryATR:         report.EntryATR,
+				SetupType:        report.SetupType,
+				LastPrice:        report.Price,
+				HighestPrice:     report.Price,
+				MarketValue:      float64(report.Quantity) * report.Price,
+				UnrealizedPnL:    0,
+				OpenedAt:         now,
+				UpdatedAt:        now,
 			}
 		}
 		m.tradesToday++
@@ -133,6 +153,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 		EntryPrice: position.AvgPrice,
 		ExitPrice:  report.Price,
 		PnL:        round2(pnl),
+		RMultiple:  roundRMultiple(pnl, position.RiskPerShare, closeQty),
 		OpenedAt:   position.OpenedAt,
 		ClosedAt:   now,
 		ExitReason: report.Reason,
@@ -402,6 +423,17 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 
 func round2(value float64) float64 {
 	return math.Round(value*100) / 100
+}
+
+func roundRMultiple(pnl, riskPerShare float64, quantity int64) float64 {
+	if riskPerShare <= 0 || quantity <= 0 {
+		return 0
+	}
+	totalRisk := riskPerShare * float64(quantity)
+	if totalRisk <= 0 {
+		return 0
+	}
+	return math.Round((pnl/totalRisk)*100) / 100
 }
 
 func (m *Manager) rollTradingDayLocked(now time.Time) {

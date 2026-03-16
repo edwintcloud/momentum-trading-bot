@@ -11,7 +11,7 @@ func TestTuneTradingConfigUsesConservativeSmallAccountProfile(t *testing.T) {
 	if cfg.MaxOpenPositions != 2 {
 		t.Fatalf("expected smaller open-position cap, got %d", cfg.MaxOpenPositions)
 	}
-	if cfg.MaxExposurePct != 0.30 {
+	if cfg.MaxExposurePct != 0.25 {
 		t.Fatalf("expected coherent exposure cap for two partial positions, got %.2f", cfg.MaxExposurePct)
 	}
 	if cfg.HydrationRequestsPerMin != 120 {
@@ -25,7 +25,7 @@ func TestTuneTradingConfigUsesBrokerScaleForLargerAccount(t *testing.T) {
 	if cfg.RiskPerTradePct != 0.01 {
 		t.Fatalf("expected standard risk per trade for larger account, got %.4f", cfg.RiskPerTradePct)
 	}
-	if cfg.MaxExposurePct != 0.55 {
+	if cfg.MaxExposurePct != 0.34 {
 		t.Fatalf("expected exposure cap to stay aligned with risk-based sizing, got %.2f", cfg.MaxExposurePct)
 	}
 	if cfg.HydrationRequestsPerMin != 2400 {

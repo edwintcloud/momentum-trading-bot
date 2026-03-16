@@ -19,6 +19,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwincloud/momentum-trading-bot/internal/scanner"
 	"github.com/edwincloud/momentum-trading-bot/internal/strategy"
+	"github.com/edwincloud/momentum-trading-bot/internal/volumeprofile"
 )
 
 var marketTZ = mustLoadLocation("America/New_York")
@@ -59,6 +60,9 @@ type Result struct {
 	EndingEquity         float64
 	NetPnL               float64
 	MaxDrawdownPct       float64
+	ProfitFactor         float64
+	AvgWinR              float64
+	AvgLossR             float64
 	Trades               int
 	Wins                 int
 	Losses               int
@@ -104,6 +108,10 @@ type EntrySample struct {
 	ThreeMinuteReturnPct    float64
 	VolumeRate              float64
 	VolumeLeaderPct         float64
+	ATRPct                  float64
+	PriceVsVWAPPct          float64
+	BreakoutPct             float64
+	SetupType               string
 	Score                   float64
 	PredictedReturnPct      float64
 	RequiredPredictedRetPct float64
@@ -128,6 +136,11 @@ type record struct {
 	tick         domain.Tick
 	candidate    domain.Candidate
 	hasCandidate bool
+}
+
+type pendingEntry struct {
+	order         domain.OrderRequest
+	barsRemaining int
 }
 
 type symbolState struct {
@@ -176,7 +189,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	model := strategy.DefaultEntryModel()
 	trainingWarning := ""
 	if !runCfg.TrainStart.IsZero() && !runCfg.TrainEnd.IsZero() {
-		trained, stats, trainErr := trainModel(records, symbolIndices, runCfg)
+		trained, stats, trainErr := trainModel(cfg, records, symbolIndices, runCfg)
 		diagnostics.TrainingCandidates = stats.candidateBars
 		diagnostics.TrainingSamples = stats.samples
 		if trainErr != nil {
@@ -197,6 +210,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	strat := strategy.NewStrategy(cfg, book, runtimeState)
 	strat.SetEntryModel(model)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
+	pendingEntries := make(map[string]pendingEntry)
 
 	equityCurve := make([]float64, 0, len(records))
 	for _, rec := range records {
@@ -210,7 +224,17 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		}
 		diagnostics.BarsInWindow++
 
-		book.MarkPriceAt(rec.tick.Symbol, rec.tick.Price, rec.tick.Timestamp)
+		if pending, exists := pendingEntries[rec.bar.Symbol]; exists {
+			if fill, updatedPending, filled, expired := maybeFillPendingEntry(pending, rec.bar); filled {
+				delete(pendingEntries, rec.bar.Symbol)
+				book.ApplyExecution(fill)
+			} else if expired {
+				delete(pendingEntries, rec.bar.Symbol)
+			} else {
+				pendingEntries[rec.bar.Symbol] = updatedPending
+			}
+		}
+
 		hadPosition := book.HasPosition(rec.tick.Symbol)
 		exitSignal, exitOK, exitReason := strat.EvaluateExitDetailed(rec.tick)
 		if hadPosition {
@@ -227,6 +251,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		} else if hadPosition {
 			incrementReason(diagnostics.ExitRejects, exitReason)
 		}
+		if book.HasPosition(rec.tick.Symbol) {
+			book.MarkPriceAt(rec.tick.Symbol, rec.tick.BarHigh, rec.tick.Timestamp)
+			book.MarkPriceAt(rec.tick.Symbol, rec.tick.Price, rec.tick.Timestamp)
+		}
 
 		candidate, ok, scanReason := scan.EvaluateTickDetailed(rec.tick)
 		if ok {
@@ -237,7 +265,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 				rememberEntrySignalSample(&diagnostics, candidate, decision)
 				if order, approved, riskReason := riskEngine.Evaluate(decision.Signal); approved {
 					diagnostics.EntryRiskApproved++
-					applyPaperFill(book, order, rec.tick.Timestamp)
+					pendingEntries[order.Symbol] = pendingEntry{order: order, barsRemaining: 2}
 				} else {
 					incrementReason(diagnostics.EntryRiskRejects, riskReason)
 					if riskReason == "daily-loss-limit" {
@@ -259,9 +287,18 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	closedTrades := book.GetClosedTrades()
 	openPositionsAtEnd := book.OpenPositionCount()
 	wins := 0
+	grossWins := 0.0
+	grossLosses := 0.0
+	totalWinR := 0.0
+	totalLossR := 0.0
 	for _, trade := range closedTrades {
 		if trade.PnL > 0 {
 			wins++
+			grossWins += trade.PnL
+			totalWinR += trade.RMultiple
+		} else if trade.PnL < 0 {
+			grossLosses += math.Abs(trade.PnL)
+			totalLossR += trade.RMultiple
 		}
 	}
 
@@ -270,8 +307,21 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	netPnL := realizedPnL + unrealizedPnL
 	endingEquity := cfg.StartingCapital + netPnL
 	winRate := 0.0
+	profitFactor := 0.0
+	avgWinR := 0.0
+	avgLossR := 0.0
 	if len(closedTrades) > 0 {
 		winRate = (float64(wins) / float64(len(closedTrades))) * 100
+	}
+	if grossLosses > 0 {
+		profitFactor = grossWins / grossLosses
+	}
+	if wins > 0 {
+		avgWinR = totalWinR / float64(wins)
+	}
+	losses := len(closedTrades) - wins
+	if losses > 0 {
+		avgLossR = totalLossR / float64(losses)
 	}
 
 	return Result{
@@ -283,9 +333,12 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		EndingEquity:         round2(endingEquity),
 		NetPnL:               round2(netPnL),
 		MaxDrawdownPct:       round2(maxDrawdownPct(equityCurve, cfg.StartingCapital)),
+		ProfitFactor:         round2(profitFactor),
+		AvgWinR:              round2(avgWinR),
+		AvgLossR:             round2(avgLossR),
 		Trades:               len(closedTrades),
 		Wins:                 wins,
-		Losses:               len(closedTrades) - wins,
+		Losses:               losses,
 		WinRate:              round2(winRate),
 		OpenPositionsAtEnd:   openPositionsAtEnd,
 		Diagnostics:          diagnostics,
@@ -444,7 +497,7 @@ func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []
 	return records, symbolIndices
 }
 
-func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConfig) (strategy.LinearModel, trainingStats, error) {
+func trainModel(cfg config.TradingConfig, records []record, symbolIndices map[string][]int, runCfg RunConfig) (strategy.LinearModel, trainingStats, error) {
 	samples := make([]strategy.TrainingSample, 0)
 	stats := trainingStats{}
 	for symbol, indices := range symbolIndices {
@@ -455,28 +508,14 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 				continue
 			}
 			stats.candidateBars++
-			maxHigh := rec.bar.Close
-			minLow := rec.bar.Close
-			endClose := rec.bar.Close
-			barsSeen := 0
-			for lookahead := 1; lookahead <= runCfg.LabelLookaheadBars && pos+lookahead < len(indices); lookahead++ {
-				future := records[indices[pos+lookahead]]
-				if !withinWindow(future.bar.Timestamp, runCfg.TrainStart, runCfg.TrainEnd) {
-					break
-				}
-				if future.bar.High > maxHigh {
-					maxHigh = future.bar.High
-				}
-				if future.bar.Low < minLow {
-					minLow = future.bar.Low
-				}
-				endClose = future.bar.Close
-				barsSeen++
-			}
-			if barsSeen == 0 {
+			plan, ok, _ := strategy.BuildEntryPlan(rec.candidate)
+			if !ok {
 				continue
 			}
-			forwardReturn := trainingTarget(rec.bar.Close, maxHigh, minLow, endClose)
+			forwardReturn, ok := trainingTarget(cfg, rec, indices, pos, records, runCfg, plan)
+			if !ok {
+				continue
+			}
 			samples = append(samples, strategy.TrainingSample{
 				Candidate:        rec.candidate,
 				ForwardReturnPct: forwardReturn,
@@ -491,14 +530,67 @@ func trainModel(records []record, symbolIndices map[string][]int, runCfg RunConf
 	return model, stats, err
 }
 
-func trainingTarget(entryClose, maxHigh, minLow, endClose float64) float64 {
-	if entryClose <= 0 {
-		return 0
+func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, runCfg RunConfig, plan strategy.EntryPlan) (float64, bool) {
+	entryOrder := domain.OrderRequest{
+		Symbol:       rec.candidate.Symbol,
+		Side:         "buy",
+		Price:        backtestLimitPrice(rec.candidate.Price, "buy", cfg.LimitOrderSlippageDollars),
+		Quantity:     1,
+		StopPrice:    plan.StopPrice,
+		RiskPerShare: plan.RiskPerShare,
+		EntryATR:     plan.EntryATR,
+		SetupType:    plan.SetupType,
+		Reason:       "training-entry",
+		Timestamp:    rec.candidate.Timestamp,
 	}
-	continuationReturn := ((endClose - entryClose) / entryClose) * 100
-	maxExcursion := ((maxHigh - entryClose) / entryClose) * 100
-	adverseExcursion := ((minLow - entryClose) / entryClose) * 100
-	return (continuationReturn * 0.65) + (maxExcursion * 0.35) + (adverseExcursion * 1.10)
+	pending := pendingEntry{order: entryOrder, barsRemaining: 2}
+	position := domain.Position{}
+	filled := false
+	lookaheadBars := runCfg.LabelLookaheadBars
+	if lookaheadBars < 20 {
+		lookaheadBars = 20
+	}
+	for lookahead := 1; lookahead <= lookaheadBars && pos+lookahead < len(indices); lookahead++ {
+		future := records[indices[pos+lookahead]]
+		if !withinWindow(future.bar.Timestamp, runCfg.TrainStart, runCfg.TrainEnd) {
+			break
+		}
+		if !filled {
+			if fill, updatedPending, didFill, expired := maybeFillPendingEntry(pending, future.bar); didFill {
+				filled = true
+				position = domain.Position{
+					Symbol:           fill.Symbol,
+					Quantity:         fill.Quantity,
+					AvgPrice:         fill.Price,
+					StopPrice:        fill.StopPrice,
+					InitialStopPrice: fill.StopPrice,
+					RiskPerShare:     fill.RiskPerShare,
+					EntryATR:         fill.EntryATR,
+					SetupType:        fill.SetupType,
+					LastPrice:        fill.Price,
+					HighestPrice:     fill.Price,
+					OpenedAt:         future.bar.Timestamp.UTC(),
+					UpdatedAt:        future.bar.Timestamp.UTC(),
+				}
+			} else if expired {
+				return 0, false
+			} else {
+				pending = updatedPending
+				continue
+			}
+		}
+
+		if exitPrice, _, exited := simulateManagedExit(position, future.tick, cfg); exited {
+			return strategy.CurrentRMultiple(position, exitPrice), true
+		}
+		position.HighestPrice = maxFloat(position.HighestPrice, future.tick.BarHigh, future.tick.Price)
+		position.LastPrice = future.tick.Price
+		position.UpdatedAt = future.tick.Timestamp.UTC()
+	}
+	if !filled {
+		return 0, false
+	}
+	return strategy.CurrentRMultiple(position, position.LastPrice), true
 }
 
 func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
@@ -552,6 +644,9 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 	return domain.Tick{
 		Symbol:          item.Symbol,
 		Price:           round2(item.Close),
+		BarOpen:         round2(item.Open),
+		BarHigh:         round2(item.High),
+		BarLow:          round2(item.Low),
 		Open:            round2(state.open),
 		HighOfDay:       round2(state.highOfDay),
 		Volume:          state.totalVolume,
@@ -567,13 +662,130 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 
 func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.Time) {
 	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:   order.Symbol,
-		Side:     order.Side,
-		Price:    order.Price,
-		Quantity: order.Quantity,
-		Reason:   order.Reason,
-		FilledAt: at.UTC(),
+		Symbol:       order.Symbol,
+		Side:         order.Side,
+		Price:        order.Price,
+		Quantity:     order.Quantity,
+		StopPrice:    order.StopPrice,
+		RiskPerShare: order.RiskPerShare,
+		EntryATR:     order.EntryATR,
+		SetupType:    order.SetupType,
+		Reason:       order.Reason,
+		FilledAt:     at.UTC(),
 	})
+}
+
+func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionReport, pendingEntry, bool, bool) {
+	if pending.order.Symbol == "" || pending.order.Side != "buy" {
+		return domain.ExecutionReport{}, pending, false, false
+	}
+	fillPrice := 0.0
+	switch {
+	case current.Open > 0 && current.Open <= pending.order.Price:
+		fillPrice = current.Open
+	case current.Low > 0 && current.Low <= pending.order.Price:
+		fillPrice = pending.order.Price
+	}
+	if fillPrice > 0 {
+		return domain.ExecutionReport{
+			Symbol:       pending.order.Symbol,
+			Side:         pending.order.Side,
+			Price:        round2(fillPrice),
+			Quantity:     pending.order.Quantity,
+			StopPrice:    pending.order.StopPrice,
+			RiskPerShare: pending.order.RiskPerShare,
+			EntryATR:     pending.order.EntryATR,
+			SetupType:    pending.order.SetupType,
+			Reason:       pending.order.Reason,
+			FilledAt:     current.Timestamp.UTC(),
+		}, pending, true, true
+	}
+	pending.barsRemaining--
+	return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0
+}
+
+func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.TradingConfig) (float64, string, bool) {
+	decisionAt := tick.Timestamp.UTC()
+	highWatermark := maxFloat(position.HighestPrice, tick.BarHigh, tick.Price)
+	previousStop, previousReason := strategy.ProtectiveStop(position, position.HighestPrice)
+	if previousStop <= 0 {
+		previousStop, previousReason = strategy.ProtectiveStop(position, highWatermark)
+	}
+	barOpen := firstPositive(tick.BarOpen, tick.Price)
+	barLow := firstPositive(tick.BarLow, tick.Price)
+	barClose := firstPositive(tick.Price, barOpen)
+	currentReturn := strategy.CurrentRMultiple(position, barClose)
+	peakReturn := strategy.PeakRMultiple(position, highWatermark)
+	holdingTime := decisionAt.Sub(position.OpenedAt)
+	sameDayHold := sameTrainingDay(position.OpenedAt, decisionAt)
+
+	switch {
+	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
+		return barOpen, previousReason, true
+	case sameDayHold &&
+		holdingTime >= time.Duration(cfg.BreakoutFailureWindowMin)*time.Minute &&
+		peakReturn < 1.0 &&
+		barLow > 0 &&
+		barLow <= strategy.FailedBreakoutPrice(position):
+		return strategy.FailedBreakoutPrice(position), "failed-breakout", true
+	case func() bool {
+		stopPrice, _ := strategy.ProtectiveStop(position, highWatermark)
+		return stopPrice > 0 && barLow > 0 && barLow <= stopPrice
+	}():
+		stopPrice, reason := strategy.ProtectiveStop(position, highWatermark)
+		return stopPrice, reason, true
+	case sameDayHold &&
+		holdingTime >= time.Duration(cfg.StagnationWindowMin)*time.Minute &&
+		peakReturn < 0.75 &&
+		currentReturn <= 0:
+		return barClose, "time-stop", true
+	default:
+		return 0, "", false
+	}
+}
+
+func backtestLimitPrice(price float64, side string, maxBuffer float64) float64 {
+	if price <= 0 {
+		return 0
+	}
+	buffer := price * 0.004
+	if buffer < 0.01 {
+		buffer = 0.01
+	}
+	if buffer > maxBuffer {
+		buffer = maxBuffer
+	}
+	buffer = round2(buffer)
+	if side == "sell" {
+		return round2(math.Max(0.01, price-buffer))
+	}
+	return round2(price + buffer)
+}
+
+func sameTrainingDay(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	return a.In(marketTZ).Format("2006-01-02") == b.In(marketTZ).Format("2006-01-02")
+}
+
+func firstPositive(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func maxFloat(values ...float64) float64 {
+	maximum := 0.0
+	for _, value := range values {
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return maximum
 }
 
 func maxDrawdownPct(curve []float64, startingCapital float64) float64 {
@@ -599,20 +811,7 @@ func calculateRelativeVolume(state *symbolState, timestamp time.Time) float64 {
 	if state.prevDayVolume <= 0 {
 		return 1.0
 	}
-	est := timestamp.In(marketTZ)
-	marketOpen := time.Date(est.Year(), est.Month(), est.Day(), 9, 30, 0, 0, marketTZ)
-	minutesSinceOpen := est.Sub(marketOpen).Minutes()
-	if minutesSinceOpen < 1 {
-		expected := float64(state.prevDayVolume) * 0.05
-		if expected < 1 {
-			return 1.0
-		}
-		return float64(state.totalVolume) / expected
-	}
-	if minutesSinceOpen > 390 {
-		minutesSinceOpen = 390
-	}
-	expected := float64(state.prevDayVolume) * (minutesSinceOpen / 390.0)
+	expected := float64(state.prevDayVolume) * volumeprofile.ExpectedCumulativeShare(timestamp)
 	if expected < 1 {
 		return 1.0
 	}
@@ -726,7 +925,11 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		OneMinuteReturnPct:      round2(candidate.OneMinuteReturnPct),
 		ThreeMinuteReturnPct:    round2(candidate.ThreeMinuteReturnPct),
 		VolumeRate:              round2(candidate.VolumeRate),
-		VolumeLeaderPct:         round2(candidate.VolumeLeaderPct),
+		VolumeLeaderPct:         candidate.VolumeLeaderPct,
+		ATRPct:                  round2(candidate.ATRPct),
+		PriceVsVWAPPct:          round2(candidate.PriceVsVWAPPct),
+		BreakoutPct:             round2(candidate.BreakoutPct),
+		SetupType:               candidate.SetupType,
 		Score:                   round2(candidate.Score),
 		PredictedReturnPct:      round2(decision.PredictedReturnPct),
 		RequiredPredictedRetPct: round2(decision.RequiredReturnPct),
