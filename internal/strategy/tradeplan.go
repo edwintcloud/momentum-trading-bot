@@ -11,12 +11,12 @@ const (
 	minATRPercentFallback = 0.012
 	stopATRMultiplier     = 2.00
 	maxRiskATRMultiplier  = 8.00
-	trailActivationR      = 0.60
+	trailActivationR      = 0.75
 	trailATRMultiplier    = 2.60
 	tightTrailTriggerR    = 3.50
 	tightTrailATRMultiple = 1.85
 	failedBreakoutCutR    = 0.85
-	structureConfirmR     = 0.20
+	structureConfirmR     = 0.30
 )
 
 // EntryPlan captures the volatility-aware stop and sizing basis for a setup.
@@ -114,10 +114,10 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	fallbackPosition.RiskPerShare = riskPerShare
 	peakR := peakRMultiple(fallbackPosition, highWatermark)
 	currentR := currentRMultiple(fallbackPosition, currentPrice)
-	// Time-based break-even: if open long enough with any positive excursion,
-	// move stop to entry to prevent small winners from becoming full losses.
+	// Time-based break-even: if open long enough with confirmed positive
+	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 15*time.Minute && peakR >= 0.50 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 20*time.Minute && peakR >= 0.75 && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop
@@ -129,8 +129,14 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 		if peakR >= tightTrailTriggerR {
 			trailWidth = math.Max(position.EntryATR*tightTrailATRMultiple, riskPerShare)
 		}
-		trailFloor := position.AvgPrice
-		if currentR >= 1.25 {
+		// Graduated trail floor: don't lock in break-even until the trade
+		// has moved 1R in our favor. Below that, give the trade room to
+		// consolidate above the original stop.
+		trailFloor := position.AvgPrice - (riskPerShare * 0.30)
+		if peakR >= 1.00 {
+			trailFloor = position.AvgPrice
+		}
+		if peakR >= 1.25 {
 			trailFloor = position.AvgPrice + (riskPerShare * 0.10)
 		}
 		stopPrice = math.Max(stopPrice, trailFloor)

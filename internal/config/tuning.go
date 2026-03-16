@@ -51,6 +51,7 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.StagnationWindowMin = 35
 	cfg.StagnationMinPeakPct = 0.010
 	cfg.MinGapPercent = 9.0
+	cfg.MaxPrice = 20.0
 	cfg.MinRelativeVolume = 5.0
 	cfg.MinPremarketVolume = 400_000
 	cfg.ScannerWorkers = 4

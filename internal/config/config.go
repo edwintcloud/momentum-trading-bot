@@ -29,6 +29,7 @@ type TradingConfig struct {
 	StagnationMinPeakPct            float64
 	ScannerWorkers                  int
 	MinPrice                        float64
+	MaxPrice                        float64
 	MinGapPercent                   float64
 	MinRelativeVolume               float64
 	MinPremarketVolume              int64
@@ -69,6 +70,7 @@ func DefaultTradingConfig() TradingConfig {
 		StagnationMinPeakPct:            0.012,
 		ScannerWorkers:                  6,
 		MinPrice:                        1.0,
+		MaxPrice:                        20.0,
 		MinGapPercent:                   10.0,
 		MinRelativeVolume:               5.0,
 		MinPremarketVolume:              500_000,

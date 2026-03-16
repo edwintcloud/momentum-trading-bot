@@ -130,6 +130,9 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if tick.Price <= s.config.MinPrice {
 		return domain.Candidate{}, false, "min-price"
 	}
+	if s.config.MaxPrice > 0 && tick.Price > s.config.MaxPrice {
+		return domain.Candidate{}, false, "max-price"
+	}
 	if tick.RelativeVolume <= s.config.MinRelativeVolume {
 		return domain.Candidate{}, false, "min-relative-volume"
 	}
