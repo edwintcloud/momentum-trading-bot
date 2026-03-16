@@ -491,6 +491,22 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if !s.hasTimingConfirmation(candidate, strongSqueeze) {
 		return false, "no-renewed-volume"
 	}
+	if candidate.SetupType == "consolidation-breakout" || candidate.SetupType == "opening-range-breakout" {
+		maxBreakoutExtension := maxFloat(candidate.ATRPct*0.40, 0.80)
+		if strongSqueeze {
+			maxBreakoutExtension += 0.35
+		}
+		if candidate.BreakoutPct > maxBreakoutExtension {
+			return false, "late-breakout"
+		}
+		maxVWAPPremium := maxFloat(candidate.ATRPct*1.50, 4.50)
+		if strongSqueeze {
+			maxVWAPPremium += maxFloat(candidate.ATRPct*0.25, 1.00)
+		}
+		if candidate.PriceVsVWAPPct > maxVWAPPremium {
+			return false, "vwap-extension"
+		}
+	}
 	if candidate.PriceVsVWAPPct < -0.35 {
 		return false, "below-vwap"
 	}

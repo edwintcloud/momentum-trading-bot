@@ -169,6 +169,88 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 	}
 }
 
+func TestStrategyRejectsLateBreakoutExtension(t *testing.T) {
+	cfg := testStrategyConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:                "LATE",
+		Price:                 6.85,
+		Open:                  5.40,
+		HighOfDay:             6.90,
+		GapPercent:            12.0,
+		RelativeVolume:        18.0,
+		PriceVsOpenPct:        26.85,
+		DistanceFromHighPct:   0.73,
+		OneMinuteReturnPct:    2.40,
+		ThreeMinuteReturnPct:  3.80,
+		VolumeRate:            2.00,
+		VolumeLeaderPct:       0.40,
+		LeaderRank:            2,
+		MinutesSinceOpen:      55,
+		ATRPct:                2.40,
+		PriceVsVWAPPct:        3.20,
+		BreakoutPct:           2.24,
+		ConsolidationRangePct: 1.60,
+		CloseOffHighPct:       18,
+		SetupHigh:             6.70,
+		SetupLow:              6.20,
+		SetupType:             "consolidation-breakout",
+		Score:                 24.0,
+		Timestamp:             at,
+	})
+	if ok {
+		t.Fatal("expected late breakout chase to be blocked")
+	}
+	if reason != "late-breakout" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyRejectsBreakoutFarAboveVWAP(t *testing.T) {
+	cfg := testStrategyConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:                "STRETCH",
+		Price:                 3.05,
+		Open:                  2.40,
+		HighOfDay:             3.06,
+		GapPercent:            8.0,
+		RelativeVolume:        30.0,
+		PriceVsOpenPct:        27.08,
+		DistanceFromHighPct:   0.33,
+		OneMinuteReturnPct:    2.10,
+		ThreeMinuteReturnPct:  3.10,
+		VolumeRate:            2.20,
+		VolumeLeaderPct:       0.30,
+		LeaderRank:            2,
+		MinutesSinceOpen:      80,
+		ATRPct:                2.10,
+		PriceVsVWAPPct:        9.50,
+		BreakoutPct:           0.66,
+		ConsolidationRangePct: 1.50,
+		CloseOffHighPct:       14,
+		SetupHigh:             3.03,
+		SetupLow:              2.85,
+		SetupType:             "consolidation-breakout",
+		Score:                 24.0,
+		Timestamp:             at,
+	})
+	if ok {
+		t.Fatal("expected vwap-stretched breakout to be blocked")
+	}
+	if reason != "vwap-extension" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
