@@ -9,14 +9,14 @@ import (
 
 const (
 	minATRPercentFallback = 0.020
-	stopATRMultiplier     = 1.10
+	stopATRMultiplier     = 1.00
 	maxRiskATRMultiplier  = 4.00
-	profitTargetR         = 0.90
-	trailActivationR      = 0.40
-	trailATRMultiplier    = 1.00
-	tightTrailTriggerR    = 0.55
-	tightTrailATRMultiple = 0.40
-	failedBreakoutCutR    = 0.35
+	profitTargetR         = 2.00
+	trailActivationR      = 0.70
+	trailATRMultiplier    = 1.50
+	tightTrailTriggerR    = 1.20
+	tightTrailATRMultiple = 0.60
+	failedBreakoutCutR    = 0.05
 	structureConfirmR     = 0.00
 )
 
@@ -118,7 +118,7 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	// Time-based break-even: if open long enough with confirmed positive
 	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 15*time.Minute && peakR >= 1.00 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 0.50 && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop

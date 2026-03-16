@@ -679,7 +679,7 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 965 {
+	if signal.Quantity != 1062 {
 		t.Fatalf("expected quantity scaled by narrower stop, got %d", signal.Quantity)
 	}
 }
@@ -771,17 +771,17 @@ func TestStrategyProtectsNearBreakEvenAfterInitialPop(t *testing.T) {
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
 	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-10*time.Minute)))
-	book.MarkPriceAt("RKLB", 10.40, at.Add(-4*time.Minute))
+	book.MarkPriceAt("RKLB", 10.50, at.Add(-4*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
 		Price:     9.99,
-		HighOfDay: 10.40,
+		HighOfDay: 10.50,
 		Timestamp: at,
 	})
 	if !ok {
-		t.Fatal("expected trailing protection exit after 1R confirmation")
+		t.Fatal("expected trailing protection exit after confirmation")
 	}
 	if signal.Reason != "trailing-stop" {
 		t.Fatalf("expected trailing-stop reason, got %+v", signal)
