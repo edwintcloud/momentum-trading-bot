@@ -111,13 +111,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		return domain.Candidate{}, false, "not-gap-or-squeeze"
 	}
 	distanceFromHighPct := percentChange(tick.Price, tick.HighOfDay)
-	score := (tick.GapPercent * 0.30) +
-		(tick.RelativeVolume * 1.60) +
-		(priceVsOpenPct * 1.10) +
-		(oneMinuteReturn * 3.40) +
-		(threeMinuteReturn * 1.80) +
-		(volumeRate * 1.20) -
-		(distanceFromHighPct * 2.50)
+	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate)
 	return domain.Candidate{
 		Symbol:               tick.Symbol,
 		Price:                tick.Price,
@@ -133,11 +127,34 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		ThreeMinuteReturnPct: round2(scoreOrZero(threeMinuteReturn)),
 		VolumeRate:           round2(scoreOrZero(volumeRate)),
 		MinutesSinceOpen:     round2(minutesSinceOpen(tick.Timestamp)),
-		Score:                score,
+		Score:                round2(scoreOrZero(score)),
 		Catalyst:             tick.Catalyst,
 		CatalystURL:          tick.CatalystURL,
 		Timestamp:            tick.Timestamp,
 	}, true, "candidate"
+}
+
+func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate float64) float64 {
+	maxGap := s.config.MinGapPercent + 25
+	if maxGap < 25 {
+		maxGap = 25
+	}
+	maxRelativeVolume := s.config.MinRelativeVolume + 15
+	if maxRelativeVolume < 12 {
+		maxRelativeVolume = 12
+	}
+	maxPriceVsOpen := s.config.MaxPriceVsOpenPct + 5
+	if maxPriceVsOpen < 20 {
+		maxPriceVsOpen = 20
+	}
+
+	return (clampFloat(tick.GapPercent, -10, maxGap) * 0.30) +
+		(clampFloat(tick.RelativeVolume, 0, maxRelativeVolume) * 1.60) +
+		(clampFloat(priceVsOpenPct, -5, maxPriceVsOpen) * 1.10) +
+		(clampFloat(oneMinuteReturn, -3, 6) * 3.40) +
+		(clampFloat(threeMinuteReturn, -5, 10) * 1.80) +
+		(clampFloat(volumeRate, 0.5, 4) * 1.20) -
+		(clampFloat(distanceFromHighPct, 0, 6) * 2.50)
 }
 
 func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate float64) bool {
@@ -256,6 +273,16 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func clampFloat(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 func scoreOrZero(value float64) float64 {

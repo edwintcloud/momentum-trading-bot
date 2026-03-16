@@ -38,7 +38,7 @@ type TrainingSample struct {
 // near the high of day with improving short-term momentum and accelerating volume.
 func DefaultEntryModel() LinearModel {
 	return LinearModel{
-		Name:      "seeded-momentum-entry-v3",
+		Name:      "seeded-momentum-entry-v4",
 		Intercept: -2.60,
 		Weights: map[string]float64{
 			"gap_percent":             0.04,
@@ -130,7 +130,7 @@ func TrainLinearModel(samples []TrainingSample) (LinearModel, error) {
 	}
 
 	model := LinearModel{
-		Name:          "trained-momentum-entry-v3",
+		Name:          "trained-momentum-entry-v4",
 		Intercept:     coefficients[0],
 		Weights:       make(map[string]float64, len(modelFeatureOrder)),
 		FeatureMeans:  means,
@@ -144,14 +144,14 @@ func TrainLinearModel(samples []TrainingSample) (LinearModel, error) {
 
 func featureValues(candidate domain.Candidate) map[string]float64 {
 	return map[string]float64{
-		"gap_percent":             candidate.GapPercent,
-		"relative_volume":         candidate.RelativeVolume,
-		"price_vs_open_pct":       candidate.PriceVsOpenPct,
-		"distance_from_high_pct":  candidate.DistanceFromHighPct,
-		"one_minute_return_pct":   candidate.OneMinuteReturnPct,
-		"three_minute_return_pct": candidate.ThreeMinuteReturnPct,
-		"volume_rate":             candidate.VolumeRate,
-		"minutes_since_open":      candidate.MinutesSinceOpen,
+		"gap_percent":             clamp(candidate.GapPercent, -10, 35),
+		"relative_volume":         clamp(candidate.RelativeVolume, 0, 20),
+		"price_vs_open_pct":       clamp(candidate.PriceVsOpenPct, -5, 35),
+		"distance_from_high_pct":  clamp(candidate.DistanceFromHighPct, 0, 6),
+		"one_minute_return_pct":   clamp(candidate.OneMinuteReturnPct, -3, 6),
+		"three_minute_return_pct": clamp(candidate.ThreeMinuteReturnPct, -5, 10),
+		"volume_rate":             clamp(candidate.VolumeRate, 0.5, 4),
+		"minutes_since_open":      clamp(candidate.MinutesSinceOpen, 0, 390),
 	}
 }
 

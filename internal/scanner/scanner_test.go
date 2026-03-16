@@ -179,3 +179,22 @@ func TestScannerRejectsLowGap(t *testing.T) {
 		t.Fatal("expected low-gap symbol to be rejected")
 	}
 }
+
+func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	engine := NewScanner(cfg, runtimeState)
+
+	base := engine.momentumScore(domain.Tick{
+		GapPercent:     12,
+		RelativeVolume: cfg.MinRelativeVolume + 15,
+	}, 18, 0.5, 1.2, 2.0, 1.8)
+	extreme := engine.momentumScore(domain.Tick{
+		GapPercent:     12,
+		RelativeVolume: 4_000,
+	}, 18, 0.5, 1.2, 2.0, 1.8)
+
+	if base != extreme {
+		t.Fatalf("expected extreme relative volume to cap at the same score contribution, base=%.2f extreme=%.2f", base, extreme)
+	}
+}
