@@ -196,7 +196,7 @@ func TestRiskUsesAdaptiveBufferForLowPricedBuy(t *testing.T) {
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
-	request, approved, reason := engine.Evaluate(testBuySignal("BIAF", 1.88, 100, at))
+	request, approved, reason := engine.Evaluate(testBuySignal("BIAF", 1.88, 500, at))
 	if !approved {
 		t.Fatalf("expected low-priced buy to be approved, got %s", reason)
 	}

@@ -147,6 +147,36 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	m.realizedPnL += pnl
 	m.dayRealizedPnL += pnl
 	m.tradesToday++
+	// Consolidate partial fills into the existing closed-trade record for
+	// the same symbol and exit reason instead of creating duplicate rows.
+	if len(m.closedTrades) > 0 {
+		prev := &m.closedTrades[0]
+		if prev.Symbol == report.Symbol && prev.ExitReason == report.Reason && prev.EntryPrice == position.AvgPrice && now.Sub(prev.ClosedAt) < 5*time.Second {
+			prevQty := prev.Quantity
+			totalQty := prevQty + closeQty
+			totalPnL := prev.PnL + round2(pnl)
+			prev.ExitPrice = round2((prev.ExitPrice*float64(prevQty) + report.Price*float64(closeQty)) / float64(totalQty))
+			prev.Quantity = totalQty
+			prev.PnL = totalPnL
+			prev.RMultiple = roundRMultiple(totalPnL, position.RiskPerShare, totalQty)
+			prev.ClosedAt = now
+			if m.recorder != nil {
+				m.recorder.RecordClosedTrade(*prev)
+			}
+			position.Quantity -= closeQty
+			if position.Quantity == 0 {
+				delete(m.positions, report.Symbol)
+				return
+			}
+			position.LastPrice = report.Price
+			position.HighestPrice = math.Max(position.HighestPrice, report.Price)
+			position.MarketValue = float64(position.Quantity) * report.Price
+			position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
+			position.UpdatedAt = now
+			m.positions[report.Symbol] = position
+			return
+		}
+	}
 	closed := domain.ClosedTrade{
 		Symbol:     report.Symbol,
 		Quantity:   closeQty,
@@ -410,7 +440,7 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		NetPnL:           round2(m.realizedPnL + unrealized),
 		Exposure:         round2(exposure),
 		OpenPositions:    len(m.positions),
-		TradesToday:      m.tradesToday,
+		TradesToday:      m.entriesToday,
 		DailyLossLimit:   round2(m.EffectiveCapital() * m.config.DailyLossLimitPct),
 		MaxOpenPositions: m.config.MaxOpenPositions,
 		MaxTradesPerDay:  m.config.MaxTradesPerDay,

@@ -118,6 +118,13 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if quantity < 1 {
 		return domain.OrderRequest{}, false, "max-exposure"
 	}
+	// Reject trivially small positions that result from nearly-full
+	// exposure. A position worth less than 0.5% of capital is not
+	// worth the slippage and execution risk.
+	notional := float64(quantity) * limitPrice
+	if notional < effectiveCapital*0.005 {
+		return domain.OrderRequest{}, false, "position-too-small"
+	}
 	return domain.OrderRequest{
 		Symbol:       signal.Symbol,
 		Side:         signal.Side,

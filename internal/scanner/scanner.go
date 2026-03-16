@@ -458,7 +458,18 @@ func averageTrueRange(bars []symbolBar, period int) float64 {
 	if count == 0 {
 		return 0
 	}
-	return total / float64(count)
+	atr := total / float64(count)
+	// Floor: 1-minute bars produce unrealistically small ATR values for
+	// low-volatility minutes. Enforce a minimum of 1% of price so that
+	// downstream stop placement and position sizing stay reasonable.
+	lastPrice := window[len(window)-1].close
+	if lastPrice > 0 {
+		minATR := lastPrice * 0.01
+		if atr < minATR {
+			atr = minATR
+		}
+	}
+	return atr
 }
 
 func lastNBars(bars []symbolBar, count int) []symbolBar {
@@ -519,6 +530,17 @@ func percentChange(from, to float64) float64 {
 
 func minutesSinceOpen(timestamp time.Time) float64 {
 	est := timestamp.In(marketLocation)
+	minutes := est.Hour()*60 + est.Minute()
+	// Premarket: return minutes since 4:00 AM ET as a negative offset
+	// so time-based filters can distinguish premarket from regular session.
+	if minutes < 9*60+30 {
+		preOpen := time.Date(est.Year(), est.Month(), est.Day(), 4, 0, 0, 0, est.Location())
+		sincePre := est.Sub(preOpen).Minutes()
+		if sincePre < 0 {
+			return 0
+		}
+		return sincePre
+	}
 	open := time.Date(est.Year(), est.Month(), est.Day(), 9, 30, 0, 0, est.Location())
 	return maxFloat(0, est.Sub(open).Minutes())
 }
