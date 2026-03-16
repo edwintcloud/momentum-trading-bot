@@ -166,7 +166,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if symbolState.entrySignals >= 2 {
 		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	if symbolState.lossExits > 0 && decisionAt.Sub(symbolState.lastLossAt) < 30*time.Minute {
+	if symbolState.lossExits > 0 && decisionAt.Sub(symbolState.lastLossAt) < 15*time.Minute {
 		return CandidateDecision{Reason: "post-loss-cooldown", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
@@ -241,9 +241,9 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	}
 
 	highWatermark := maxPrice(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := protectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice))
+	previousStop, previousReason := protectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
 	if previousStop <= 0 {
-		previousStop, previousReason = protectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price))
+		previousStop, previousReason = protectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
@@ -265,7 +265,7 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(position)
 	case func() bool {
-		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose)
+		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
 			return false
 		}
@@ -374,11 +374,8 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	threshold := s.config.EntryModelMinPredictedReturnPct
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
-	if volumeLeaderPct >= 0.85 {
-		threshold -= 0.20
-	} else if volumeLeaderPct < 0.20 {
-		threshold += 0.20
-	}
+
+	// Setup-type discounts.
 	if candidate.SetupType == "consolidation-breakout" {
 		threshold -= 0.25
 	}
@@ -388,49 +385,34 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	if candidate.SetupType == "vwap-reclaim" {
 		threshold -= 0.10
 	}
-	if s.isPremarket(candidate.Timestamp) && !strongSqueeze {
+
+	// Session penalties (keep only the strongest 3).
+	if s.isOpeningSession(candidate.Timestamp) {
 		threshold += 0.20
 	}
-	if s.isOpeningSession(candidate.Timestamp) {
-		threshold += 0.35
-	}
 	if candidate.MinutesSinceOpen > 180 && !strongSqueeze {
-		threshold += 0.30
-	} else if candidate.MinutesSinceOpen > 90 && !strongSqueeze {
 		threshold += 0.15
 	}
+	if volumeLeaderPct < 0.20 {
+		threshold += 0.15
+	}
+
+	// Quality discounts.
 	if strongSqueeze {
 		threshold -= 0.80
 	}
-	if candidate.Score >= s.config.MinEntryScore+4 {
-		threshold -= 0.35
-	}
-	if candidate.RelativeVolume >= s.config.MinRelativeVolume+2 {
+	if volumeLeaderPct >= 0.85 {
 		threshold -= 0.20
 	}
-	if candidate.PriceVsVWAPPct >= 0.35 {
-		threshold -= 0.15
-	}
-	if candidate.CloseOffHighPct <= 25 {
-		threshold -= 0.10
-	}
-	if candidate.Score < s.config.MinEntryScore+2 {
-		threshold += 0.25
-	}
-	if candidate.VolumeRate < s.config.MinVolumeRate+0.25 {
-		threshold += 0.15
-	}
-	if candidate.OneMinuteReturnPct < 0 {
-		threshold += 0.20
-	}
-	if candidate.PriceVsOpenPct > s.config.MaxPriceVsOpenPct-2 && !strongSqueeze {
-		threshold += 0.20
+	if candidate.Score >= s.config.MinEntryScore+4 {
+		threshold -= 0.25
 	}
 	if candidate.BreakoutPct >= -0.15 &&
 		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.15 &&
 		candidate.VolumeRate >= s.config.MinVolumeRate {
 		threshold -= 0.20
 	}
+
 	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.30
 	if strongSqueeze {
 		minThreshold = maxFloat(minThreshold, 0.20)
@@ -491,24 +473,14 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if !s.hasTimingConfirmation(candidate, strongSqueeze) {
 		return false, "no-renewed-volume"
 	}
-	if candidate.SetupType == "consolidation-breakout" || candidate.SetupType == "opening-range-breakout" {
-		maxBreakoutExtension := maxFloat(candidate.ATRPct*0.40, 0.80)
-		if strongSqueeze {
-			maxBreakoutExtension += 0.35
-		}
-		if candidate.BreakoutPct > maxBreakoutExtension {
-			return false, "late-breakout"
-		}
-		maxVWAPPremium := maxFloat(candidate.ATRPct*1.50, 4.50)
-		if strongSqueeze {
-			maxVWAPPremium += maxFloat(candidate.ATRPct*0.25, 1.00)
-		}
-		if candidate.PriceVsVWAPPct > maxVWAPPremium {
-			return false, "vwap-extension"
-		}
-	}
 	if candidate.PriceVsVWAPPct < -0.35 {
 		return false, "below-vwap"
+	}
+	if candidate.PriceVsVWAPPct > 12.0 && !strongSqueeze {
+		return false, "vwap-extension"
+	}
+	if candidate.DistanceFromHighPct > 8.0 && !strongSqueeze {
+		return false, "distance-from-high"
 	}
 	if candidate.PriceVsOpenPct > maxFloat(s.config.MaxPriceVsOpenPct, candidate.ATRPct*6.5) &&
 		candidate.BreakoutPct < -0.10 &&
@@ -534,7 +506,7 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 		candidate.Score < s.config.MinEntryScore+2 {
 		return false, "weak-volume-rate"
 	}
-	if candidate.CloseOffHighPct > 45 {
+	if candidate.CloseOffHighPct > 38 {
 		return false, "weak-close"
 	}
 	if candidate.ATRPct <= 0 {
@@ -712,7 +684,7 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 		multiplier *= 0.80
 	}
 	if candidate.Price < 3 {
-		multiplier *= 0.80
+		multiplier *= 0.90
 	}
 	if candidate.RelativeVolume >= 100 && candidate.PriceVsOpenPct >= 20 {
 		multiplier *= 0.80
@@ -732,8 +704,8 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	if candidate.SetupType == "higher-low-reclaim" {
 		multiplier *= 0.95
 	}
-	if multiplier < 0.40 {
-		multiplier = 0.40
+	if multiplier < 0.55 {
+		multiplier = 0.55
 	}
 	return multiplier
 }

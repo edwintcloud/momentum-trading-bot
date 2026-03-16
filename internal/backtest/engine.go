@@ -877,9 +877,9 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.TradingConfig) (float64, string, bool) {
 	decisionAt := tick.Timestamp.UTC()
 	highWatermark := maxFloat(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := strategy.ProtectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice))
+	previousStop, previousReason := strategy.ProtectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
 	if previousStop <= 0 {
-		previousStop, previousReason = strategy.ProtectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price))
+		previousStop, previousReason = strategy.ProtectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
@@ -897,10 +897,10 @@ func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.
 		barLow <= strategy.FailedBreakoutPrice(position):
 		return strategy.FailedBreakoutPrice(position), "failed-breakout", true
 	case func() bool {
-		stopPrice, _ := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen))
+		stopPrice, _ := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
 		return stopPrice > 0 && barLow > 0 && barLow <= stopPrice
 	}():
-		stopPrice, reason := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen))
+		stopPrice, reason := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
 		return stopPrice, reason, true
 	default:
 		return 0, "", false

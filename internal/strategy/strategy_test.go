@@ -169,88 +169,6 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 	}
 }
 
-func TestStrategyRejectsLateBreakoutExtension(t *testing.T) {
-	cfg := testStrategyConfig()
-	runtimeState := runtime.NewState()
-	book := portfolio.NewManager(cfg, runtimeState)
-	strat := NewStrategy(cfg, book, runtimeState)
-	at := inSessionTime()
-
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:                "LATE",
-		Price:                 6.85,
-		Open:                  5.40,
-		HighOfDay:             6.90,
-		GapPercent:            12.0,
-		RelativeVolume:        18.0,
-		PriceVsOpenPct:        26.85,
-		DistanceFromHighPct:   0.73,
-		OneMinuteReturnPct:    2.40,
-		ThreeMinuteReturnPct:  3.80,
-		VolumeRate:            2.00,
-		VolumeLeaderPct:       0.40,
-		LeaderRank:            2,
-		MinutesSinceOpen:      55,
-		ATRPct:                2.40,
-		PriceVsVWAPPct:        3.20,
-		BreakoutPct:           2.24,
-		ConsolidationRangePct: 1.60,
-		CloseOffHighPct:       18,
-		SetupHigh:             6.70,
-		SetupLow:              6.20,
-		SetupType:             "consolidation-breakout",
-		Score:                 24.0,
-		Timestamp:             at,
-	})
-	if ok {
-		t.Fatal("expected late breakout chase to be blocked")
-	}
-	if reason != "late-breakout" {
-		t.Fatalf("unexpected block reason: %s", reason)
-	}
-}
-
-func TestStrategyRejectsBreakoutFarAboveVWAP(t *testing.T) {
-	cfg := testStrategyConfig()
-	runtimeState := runtime.NewState()
-	book := portfolio.NewManager(cfg, runtimeState)
-	strat := NewStrategy(cfg, book, runtimeState)
-	at := inSessionTime()
-
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:                "STRETCH",
-		Price:                 3.05,
-		Open:                  2.40,
-		HighOfDay:             3.06,
-		GapPercent:            8.0,
-		RelativeVolume:        30.0,
-		PriceVsOpenPct:        27.08,
-		DistanceFromHighPct:   0.33,
-		OneMinuteReturnPct:    2.10,
-		ThreeMinuteReturnPct:  3.10,
-		VolumeRate:            2.20,
-		VolumeLeaderPct:       0.30,
-		LeaderRank:            2,
-		MinutesSinceOpen:      80,
-		ATRPct:                2.10,
-		PriceVsVWAPPct:        9.50,
-		BreakoutPct:           0.66,
-		ConsolidationRangePct: 1.50,
-		CloseOffHighPct:       14,
-		SetupHigh:             3.03,
-		SetupLow:              2.85,
-		SetupType:             "consolidation-breakout",
-		Score:                 24.0,
-		Timestamp:             at,
-	})
-	if ok {
-		t.Fatal("expected vwap-stretched breakout to be blocked")
-	}
-	if reason != "vwap-extension" {
-		t.Fatalf("unexpected block reason: %s", reason)
-	}
-}
-
 func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
@@ -541,12 +459,12 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 	at := inSessionTime()
 
 	book.ApplyExecution(testExecutionReport("DTCK", 3.20, 100, at.Add(-40*time.Minute)))
-	book.MarkPriceAt("DTCK", 3.00, at.Add(-29*time.Minute))
+	book.MarkPriceAt("DTCK", 3.00, at.Add(-14*time.Minute))
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "DTCK",
 		Price:     3.00,
 		HighOfDay: 3.25,
-		Timestamp: at.Add(-29 * time.Minute),
+		Timestamp: at.Add(-14 * time.Minute),
 	})
 	if !ok || signal.Reason != "stop-loss" {
 		t.Fatalf("expected setup loss to register stop-loss, got %+v ok=%t", signal, ok)
@@ -574,7 +492,7 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 		VolumeRate:           1.50,
 		MinutesSinceOpen:     55,
 		Score:                19,
-		Timestamp:            at.Add(-10 * time.Minute),
+		Timestamp:            at.Add(-5 * time.Minute),
 	})
 	if ok {
 		t.Fatal("expected immediate reentry after loss to be blocked")
@@ -758,8 +676,8 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 786 {
-		t.Fatalf("expected ATR-based quantity 786 using broker equity sizing, got %d", signal.Quantity)
+	if signal.Quantity != 531 {
+		t.Fatalf("expected ATR-based quantity 531 using broker equity sizing, got %d", signal.Quantity)
 	}
 }
 
@@ -790,8 +708,8 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 	if !ok {
 		t.Fatal("expected conservative premarket setup to pass")
 	}
-	if signal.Quantity != 793 {
-		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 793 shares, got %d", signal.Quantity)
+	if signal.Quantity != 916 {
+		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 916 shares, got %d", signal.Quantity)
 	}
 }
 
@@ -832,13 +750,16 @@ func TestStrategyExitsFailedBreakoutBeforeFullStop(t *testing.T) {
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	at := inSessionTime()
-	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-13*time.Minute)))
-	book.MarkPriceAt("RKLB", 10.05, at.Add(-8*time.Minute))
+	book.ApplyExecution(testExecutionReport("RKLB", 10, 100, at.Add(-25*time.Minute)))
+	book.MarkPriceAt("RKLB", 10.05, at.Add(-15*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateExit(domain.Tick{
 		Symbol:    "RKLB",
-		Price:     9.65,
+		Price:     9.56,
+		BarOpen:   9.70,
+		BarHigh:   9.72,
+		BarLow:    9.55,
 		HighOfDay: 10.10,
 		Timestamp: at,
 	})

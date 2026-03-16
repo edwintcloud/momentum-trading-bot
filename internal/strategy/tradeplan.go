@@ -9,14 +9,14 @@ import (
 
 const (
 	minATRPercentFallback = 0.012
-	stopATRMultiplier     = 1.35
-	maxRiskATRMultiplier  = 6.00
-	trailActivationR      = 1.00
+	stopATRMultiplier     = 2.00
+	maxRiskATRMultiplier  = 8.00
+	trailActivationR      = 0.60
 	trailATRMultiplier    = 2.60
 	tightTrailTriggerR    = 3.50
 	tightTrailATRMultiple = 1.85
-	failedBreakoutCutR    = 0.60
-	structureConfirmR     = 0.35
+	failedBreakoutCutR    = 0.85
+	structureConfirmR     = 0.20
 )
 
 // EntryPlan captures the volatility-aware stop and sizing basis for a setup.
@@ -92,7 +92,7 @@ func PeakRMultiple(position domain.Position, highWatermark float64) float64 {
 	return peakRMultiple(position, highWatermark)
 }
 
-func protectiveStop(position domain.Position, highWatermark, currentPrice float64) (float64, string) {
+func protectiveStop(position domain.Position, highWatermark, currentPrice float64, at time.Time) (float64, string) {
 	stopPrice := position.InitialStopPrice
 	reason := "stop-loss"
 	if stopPrice <= 0 {
@@ -114,6 +114,16 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	fallbackPosition.RiskPerShare = riskPerShare
 	peakR := peakRMultiple(fallbackPosition, highWatermark)
 	currentR := currentRMultiple(fallbackPosition, currentPrice)
+	// Time-based break-even: if open long enough with any positive excursion,
+	// move stop to entry to prevent small winners from becoming full losses.
+	holdingTime := at.Sub(position.OpenedAt)
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 15*time.Minute && peakR >= 0.50 && currentR >= 0 {
+		breakEvenStop := position.AvgPrice
+		if breakEvenStop > stopPrice {
+			stopPrice = breakEvenStop
+			reason = "break-even-stop"
+		}
+	}
 	if peakR >= trailActivationR && currentR >= structureConfirmR {
 		trailWidth := math.Max(position.EntryATR*trailATRMultiplier, riskPerShare*1.25)
 		if peakR >= tightTrailTriggerR {
@@ -131,8 +141,8 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 }
 
 // ProtectiveStop returns the active managed stop price and the exit reason it implies.
-func ProtectiveStop(position domain.Position, highWatermark, currentPrice float64) (float64, string) {
-	return protectiveStop(position, highWatermark, currentPrice)
+func ProtectiveStop(position domain.Position, highWatermark, currentPrice float64, at time.Time) (float64, string) {
+	return protectiveStop(position, highWatermark, currentPrice, at)
 }
 
 func failedBreakoutPrice(position domain.Position) float64 {

@@ -15,13 +15,13 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	case equity < 25_000:
 		cfg.RiskPerTradePct = 0.005
 		cfg.DailyLossLimitPct = 0.015
-		cfg.MaxTradesPerDay = 4
+		cfg.MaxTradesPerDay = 6
 		cfg.MaxOpenPositions = 2
 		cfg.MinPrice = 2.0
 	case equity < 100_000:
 		cfg.RiskPerTradePct = 0.0075
 		cfg.DailyLossLimitPct = 0.020
-		cfg.MaxTradesPerDay = 6
+		cfg.MaxTradesPerDay = 8
 		cfg.MaxOpenPositions = 3
 		cfg.MinPrice = 1.50
 	default:
@@ -43,8 +43,8 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.MinOneMinuteReturnPct = 0.10
 	cfg.MinThreeMinuteReturnPct = 0.45
 	cfg.MinVolumeRate = 1.05
-	cfg.MaxPriceVsOpenPct = 28.0
-	cfg.BreakoutFailureWindowMin = 10
+	cfg.MaxPriceVsOpenPct = 22.0
+	cfg.BreakoutFailureWindowMin = 20
 	cfg.BreakoutFailureLossPct = 0.0075
 	cfg.BreakEvenActivationPct = 0.015
 	cfg.BreakEvenFloorPct = 0.001
