@@ -135,6 +135,65 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 	}
 }
 
+func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "RECLAIM",
+		Price:                7.35,
+		Open:                 6.10,
+		HighOfDay:            7.48,
+		GapPercent:           3.0,
+		RelativeVolume:       8.4,
+		PriceVsOpenPct:       20.49,
+		DistanceFromHighPct:  1.77,
+		OneMinuteReturnPct:   0.28,
+		ThreeMinuteReturnPct: 1.05,
+		VolumeRate:           1.32,
+		MinutesSinceOpen:     145,
+		Score:                18,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatalf("expected strong reclaim setup to pass, got %s", reason)
+	}
+}
+
+func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "FADER",
+		Price:                9.90,
+		Open:                 6.00,
+		HighOfDay:            10.10,
+		GapPercent:           2.0,
+		RelativeVolume:       6.2,
+		PriceVsOpenPct:       65.0,
+		DistanceFromHighPct:  2.02,
+		OneMinuteReturnPct:   0.02,
+		ThreeMinuteReturnPct: 0.20,
+		VolumeRate:           1.01,
+		MinutesSinceOpen:     160,
+		Score:                14,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected exhausted extended move to be blocked")
+	}
+	if reason != "too-extended-from-open" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
