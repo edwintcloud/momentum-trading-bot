@@ -193,6 +193,70 @@ func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 	}
 }
 
+func TestStrategyRejectsParabolicEarlyPremarketSpike(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := time.Date(2026, 3, 13, 9, 8, 0, 0, time.UTC)
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "OIO",
+		Price:                18.52,
+		Open:                 12.40,
+		HighOfDay:            18.52,
+		GapPercent:           3.0,
+		RelativeVolume:       9.56,
+		PriceVsOpenPct:       49.35,
+		DistanceFromHighPct:  0,
+		OneMinuteReturnPct:   48.99,
+		ThreeMinuteReturnPct: 48.99,
+		VolumeRate:           4.49,
+		MinutesSinceOpen:     0,
+		Score:                471.36,
+		Volume:               250_000,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected parabolic early premarket entry to be blocked")
+	}
+	if reason != "parabolic-spike" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyRejectsThinEarlyPremarketSetup(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := time.Date(2026, 3, 13, 9, 20, 0, 0, time.UTC)
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "THIN",
+		Price:                3.50,
+		Open:                 3.20,
+		HighOfDay:            3.52,
+		GapPercent:           12.0,
+		RelativeVolume:       10.0,
+		PriceVsOpenPct:       9.38,
+		DistanceFromHighPct:  0.57,
+		OneMinuteReturnPct:   0.45,
+		ThreeMinuteReturnPct: 1.20,
+		VolumeRate:           1.60,
+		MinutesSinceOpen:     0,
+		Score:                25.0,
+		Volume:               300_000,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected thin early premarket setup to be blocked")
+	}
+	if reason != "thin-premarket" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
