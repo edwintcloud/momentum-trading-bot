@@ -123,7 +123,48 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 	if ok {
 		t.Fatal("expected weak follow-through setup to be blocked")
 	}
-	if reason != "weak-follow-through" {
+	if reason != "no-renewed-volume" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
+	cfg := testStrategyConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:                "DRYUP",
+		Price:                 6.25,
+		Open:                  5.90,
+		HighOfDay:             6.30,
+		GapPercent:            9.0,
+		RelativeVolume:        14.0,
+		PriceVsOpenPct:        5.93,
+		DistanceFromHighPct:   0.79,
+		OneMinuteReturnPct:    0.08,
+		ThreeMinuteReturnPct:  2.10,
+		VolumeRate:            0.72,
+		VolumeLeaderPct:       0.95,
+		LeaderRank:            1,
+		MinutesSinceOpen:      65,
+		ATRPct:                3.20,
+		PriceVsVWAPPct:        0.55,
+		BreakoutPct:           0.18,
+		ConsolidationRangePct: 1.80,
+		CloseOffHighPct:       18,
+		SetupHigh:             6.24,
+		SetupLow:              5.92,
+		SetupType:             "vwap-reclaim",
+		Score:                 24,
+		Timestamp:             at,
+	})
+	if ok {
+		t.Fatal("expected breakout without renewed volume to be blocked")
+	}
+	if reason != "no-renewed-volume" {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
@@ -509,20 +550,30 @@ func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
 	at := inSessionTime()
 
 	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:               "WEAK",
-		Price:                4.20,
-		Open:                 4.00,
-		HighOfDay:            4.21,
-		GapPercent:           14,
-		RelativeVolume:       5.8,
-		PriceVsOpenPct:       5.0,
-		DistanceFromHighPct:  0.24,
-		OneMinuteReturnPct:   0.12,
-		ThreeMinuteReturnPct: 0.52,
-		VolumeRate:           1.05,
-		MinutesSinceOpen:     45,
-		Score:                16,
-		Timestamp:            at,
+		Symbol:                "WEAK",
+		Price:                 4.20,
+		Open:                  4.00,
+		HighOfDay:             4.21,
+		GapPercent:            14,
+		RelativeVolume:        5.8,
+		PriceVsOpenPct:        5.0,
+		DistanceFromHighPct:   0.24,
+		OneMinuteReturnPct:    0.12,
+		ThreeMinuteReturnPct:  0.52,
+		VolumeRate:            1.30,
+		VolumeLeaderPct:       0.92,
+		LeaderRank:            1,
+		ATRPct:                2.40,
+		PriceVsVWAPPct:        0.30,
+		BreakoutPct:           0.12,
+		ConsolidationRangePct: 1.4,
+		CloseOffHighPct:       20,
+		SetupHigh:             4.18,
+		SetupLow:              4.02,
+		SetupType:             "vwap-reclaim",
+		MinutesSinceOpen:      45,
+		Score:                 16,
+		Timestamp:             at,
 	})
 	if ok {
 		t.Fatal("expected marginal setup to remain blocked by model gate")
@@ -540,20 +591,30 @@ func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 	at := inSessionTime()
 
 	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:               "FADER",
-		Price:                9.90,
-		Open:                 6.00,
-		HighOfDay:            10.10,
-		GapPercent:           2.0,
-		RelativeVolume:       6.2,
-		PriceVsOpenPct:       65.0,
-		DistanceFromHighPct:  2.02,
-		OneMinuteReturnPct:   0.02,
-		ThreeMinuteReturnPct: 0.20,
-		VolumeRate:           1.01,
-		MinutesSinceOpen:     160,
-		Score:                16,
-		Timestamp:            at,
+		Symbol:                "FADER",
+		Price:                 9.90,
+		Open:                  6.00,
+		HighOfDay:             10.10,
+		GapPercent:            2.0,
+		RelativeVolume:        6.2,
+		PriceVsOpenPct:        65.0,
+		DistanceFromHighPct:   2.02,
+		OneMinuteReturnPct:    0.15,
+		ThreeMinuteReturnPct:  0.20,
+		VolumeRate:            1.25,
+		VolumeLeaderPct:       0.95,
+		LeaderRank:            1,
+		ATRPct:                3.60,
+		PriceVsVWAPPct:        0.30,
+		BreakoutPct:           -0.12,
+		ConsolidationRangePct: 1.6,
+		CloseOffHighPct:       42,
+		SetupHigh:             10.05,
+		SetupLow:              9.40,
+		SetupType:             "vwap-reclaim",
+		MinutesSinceOpen:      160,
+		Score:                 16,
+		Timestamp:             at,
 	})
 	if ok {
 		t.Fatal("expected exhausted extended move to be blocked")

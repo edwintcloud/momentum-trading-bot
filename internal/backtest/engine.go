@@ -176,6 +176,17 @@ type trainingStats struct {
 	samples       int
 }
 
+type trainingRow struct {
+	candidateAt time.Time
+	availableAt time.Time
+	sample      strategy.TrainingSample
+}
+
+type trainingCorpus struct {
+	candidateTimestamps []time.Time
+	rows                []trainingRow
+}
+
 // Run executes a CSV-driven backtest using the live strategy/risk/portfolio components.
 func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Result, error) {
 	if runCfg.LabelLookaheadBars <= 0 {
@@ -192,6 +203,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 
 	runtimeState := runtime.NewState()
 	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
+	corpus := trainingCorpus{}
+	if !runCfg.TrainStart.IsZero() {
+		corpus = precomputeTrainingCorpus(cfg, records, symbolIndices, runCfg)
+	}
 	diagnostics := Diagnostics{
 		BarsLoaded:         len(records),
 		ScannerRejects:     make(map[string]int),
@@ -234,7 +249,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					trainCfg := runCfg
 					trainCfg.TrainStart = windowStart
 					trainCfg.TrainEnd = windowEnd
-					trained, stats, trainErr := trainModel(cfg, records, symbolIndices, trainCfg)
+					trained, stats, trainErr := trainModel(corpus, trainCfg.TrainStart, trainCfg.TrainEnd)
 					diagnostics.TrainingRuns++
 					diagnostics.TrainingCandidates += stats.candidateBars
 					diagnostics.TrainingSamples += stats.samples
@@ -594,31 +609,56 @@ func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []
 	return records, symbolIndices
 }
 
-func trainModel(cfg config.TradingConfig, records []record, symbolIndices map[string][]int, runCfg RunConfig) (strategy.LinearModel, trainingStats, error) {
-	samples := make([]strategy.TrainingSample, 0)
-	stats := trainingStats{}
-	for symbol, indices := range symbolIndices {
-		_ = symbol
+func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbolIndices map[string][]int, runCfg RunConfig) trainingCorpus {
+	corpus := trainingCorpus{
+		candidateTimestamps: make([]time.Time, 0),
+		rows:                make([]trainingRow, 0),
+	}
+	for _, indices := range symbolIndices {
 		for pos, idx := range indices {
 			rec := records[idx]
-			if !rec.hasCandidate || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.TrainEnd) {
+			if !rec.hasCandidate || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.End) {
 				continue
 			}
-			stats.candidateBars++
+			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
 			plan, ok, _ := strategy.BuildEntryPlan(rec.candidate)
 			if !ok {
 				continue
 			}
-			forwardReturn, ok := trainingTarget(cfg, rec, indices, pos, records, runCfg, plan)
+			forwardReturn, availableAt, ok := trainingTargetOutcome(cfg, rec, indices, pos, records, runCfg.LabelLookaheadBars, plan)
 			if !ok {
 				continue
 			}
-			samples = append(samples, strategy.TrainingSample{
-				Candidate:        rec.candidate,
-				ForwardReturnPct: forwardReturn,
+			corpus.rows = append(corpus.rows, trainingRow{
+				candidateAt: rec.bar.Timestamp,
+				availableAt: availableAt,
+				sample: strategy.TrainingSample{
+					Candidate:        rec.candidate,
+					ForwardReturnPct: forwardReturn,
+				},
 			})
-			stats.samples++
 		}
+	}
+	return corpus
+}
+
+func trainModel(corpus trainingCorpus, trainStart, trainEnd time.Time) (strategy.LinearModel, trainingStats, error) {
+	stats := trainingStats{}
+	samples := make([]strategy.TrainingSample, 0)
+	for _, timestamp := range corpus.candidateTimestamps {
+		if withinWindow(timestamp, trainStart, trainEnd) {
+			stats.candidateBars++
+		}
+	}
+	for _, row := range corpus.rows {
+		if !withinWindow(row.candidateAt, trainStart, trainEnd) {
+			continue
+		}
+		if row.availableAt.After(trainEnd) {
+			continue
+		}
+		samples = append(samples, row.sample)
+		stats.samples++
 	}
 	if len(samples) == 0 {
 		return strategy.LinearModel{}, stats, fmt.Errorf("no training samples produced from the requested train window")
@@ -628,6 +668,11 @@ func trainModel(cfg config.TradingConfig, records []record, symbolIndices map[st
 }
 
 func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, runCfg RunConfig, plan strategy.EntryPlan) (float64, bool) {
+	target, _, ok := trainingTargetOutcome(cfg, rec, indices, pos, records, runCfg.LabelLookaheadBars, plan)
+	return target, ok
+}
+
+func trainingTargetOutcome(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, lookaheadBars int, plan strategy.EntryPlan) (float64, time.Time, bool) {
 	entryOrder := domain.OrderRequest{
 		Symbol:       rec.candidate.Symbol,
 		Side:         "buy",
@@ -643,15 +688,11 @@ func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int
 	pending := pendingEntry{order: entryOrder, barsRemaining: 2}
 	position := domain.Position{}
 	filled := false
-	lookaheadBars := runCfg.LabelLookaheadBars
 	if lookaheadBars < 20 {
 		lookaheadBars = 20
 	}
 	for lookahead := 1; lookahead <= lookaheadBars && pos+lookahead < len(indices); lookahead++ {
 		future := records[indices[pos+lookahead]]
-		if !withinWindow(future.bar.Timestamp, runCfg.TrainStart, runCfg.TrainEnd) {
-			break
-		}
 		if !filled {
 			if fill, updatedPending, didFill, expired := maybeFillPendingEntry(pending, future.bar); didFill {
 				filled = true
@@ -670,7 +711,7 @@ func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int
 					UpdatedAt:        future.bar.Timestamp.UTC(),
 				}
 			} else if expired {
-				return 0, false
+				return 0, time.Time{}, false
 			} else {
 				pending = updatedPending
 				continue
@@ -678,16 +719,16 @@ func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int
 		}
 
 		if exitPrice, _, exited := simulateManagedExit(position, future.tick, cfg); exited {
-			return strategy.CurrentRMultiple(position, exitPrice), true
+			return strategy.CurrentRMultiple(position, exitPrice), future.tick.Timestamp.UTC(), true
 		}
 		position.HighestPrice = maxFloat(position.HighestPrice, future.tick.BarHigh, future.tick.Price)
 		position.LastPrice = future.tick.Price
 		position.UpdatedAt = future.tick.Timestamp.UTC()
 	}
 	if !filled {
-		return 0, false
+		return 0, time.Time{}, false
 	}
-	return strategy.CurrentRMultiple(position, position.LastPrice), true
+	return strategy.CurrentRMultiple(position, position.LastPrice), position.UpdatedAt.UTC(), true
 }
 
 func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {

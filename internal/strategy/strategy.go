@@ -488,6 +488,9 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.SetupType == "" {
 		return false, "no-setup"
 	}
+	if !s.hasTimingConfirmation(candidate, strongSqueeze) {
+		return false, "no-renewed-volume"
+	}
 	if candidate.PriceVsVWAPPct < -0.35 {
 		return false, "below-vwap"
 	}
@@ -560,6 +563,40 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		s.volumeLeaderPct(candidate) >= volumeLeaderThreshold &&
 		s.leaderRank(candidate) <= maxLeaderRank &&
 		candidate.SetupType != ""
+}
+
+func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSqueeze bool) bool {
+	minVolumeRate := maxFloat(s.config.MinVolumeRate, 1.10)
+	if strongSqueeze {
+		minVolumeRate = maxFloat(0.95, s.config.MinVolumeRate)
+	}
+
+	switch candidate.SetupType {
+	case "consolidation-breakout", "opening-range-breakout":
+		if candidate.VolumeRate < maxFloat(minVolumeRate, 1.15) {
+			return false
+		}
+		if candidate.OneMinuteReturnPct < 0.10 && candidate.BreakoutPct < 0 {
+			return false
+		}
+		if candidate.CloseOffHighPct > 35 {
+			return false
+		}
+		return true
+	case "higher-low-reclaim", "vwap-reclaim":
+		if candidate.VolumeRate < minVolumeRate {
+			return false
+		}
+		if candidate.OneMinuteReturnPct < 0.05 && candidate.PriceVsVWAPPct < 0 && candidate.BreakoutPct < -0.10 {
+			return false
+		}
+		if candidate.PriceVsVWAPPct < -0.20 {
+			return false
+		}
+		return true
+	default:
+		return candidate.VolumeRate >= minVolumeRate
+	}
 }
 
 func (s *Strategy) predictEntryReturn(candidate domain.Candidate, strongSqueeze bool) float64 {
