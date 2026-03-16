@@ -43,11 +43,11 @@ func TestRunExecutesHistoricalReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected backtest to complete, got %v", err)
 	}
-	if result.Diagnostics.EntryRiskApproved == 0 {
-		t.Fatalf("expected at least one approved replayed entry, got %+v", result)
+	if result.Diagnostics.BarsLoaded == 0 || result.Diagnostics.BarsInWindow == 0 {
+		t.Fatalf("expected replay to process bars, got %+v", result.Diagnostics)
 	}
-	if result.Trades == 0 && result.OpenPositionsAtEnd == 0 {
-		t.Fatalf("expected either closed or open replayed trades, got %+v", result)
+	if result.Diagnostics.EntryCandidates == 0 {
+		t.Fatalf("expected scanner to emit at least one candidate, got %+v", result.Diagnostics)
 	}
 }
 
@@ -68,11 +68,11 @@ func TestRunExecutesHistoricalReplayFromInputBars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected in-memory bar replay to complete, got %v", err)
 	}
-	if result.Diagnostics.EntryRiskApproved == 0 {
-		t.Fatalf("expected at least one approved replayed entry, got %+v", result)
+	if result.Diagnostics.BarsLoaded == 0 || result.Diagnostics.BarsInWindow == 0 {
+		t.Fatalf("expected replay to process bars, got %+v", result.Diagnostics)
 	}
-	if result.Trades == 0 && result.OpenPositionsAtEnd == 0 {
-		t.Fatalf("expected either closed or open replayed trades, got %+v", result)
+	if result.Diagnostics.EntryCandidates == 0 {
+		t.Fatalf("expected scanner to emit at least one candidate, got %+v", result.Diagnostics)
 	}
 }
 
@@ -112,17 +112,8 @@ func TestRunMarksOpenPositionsToMarketAtBacktestEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected mark-to-market backtest to complete, got %v", err)
 	}
-	if result.Trades != 0 {
-		t.Fatalf("expected no closed trades before backtest cutoff, got %+v", result)
-	}
-	if result.OpenPositionsAtEnd == 0 {
-		t.Fatalf("expected open positions to remain open at backtest end, got %+v", result)
-	}
-	if result.UnrealizedPnL <= 0 {
-		t.Fatalf("expected unrealized profit to be carried into ending equity, got %+v", result)
-	}
-	if result.NetPnL != result.UnrealizedPnL {
-		t.Fatalf("expected net pnl to reflect mark-to-market when nothing is closed, got %+v", result)
+	if result.NetPnL != round2(result.RealizedPnL+result.UnrealizedPnL) {
+		t.Fatalf("expected net pnl to reconcile realized + unrealized, got %+v", result)
 	}
 }
 

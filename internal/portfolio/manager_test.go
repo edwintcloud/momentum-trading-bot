@@ -127,3 +127,87 @@ func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
 		t.Fatalf("expected entry counter reset on next trading day, got %d", manager.EntriesToday())
 	}
 }
+
+func TestPortfolioCountsPartialBuyFillsAsSingleEntry(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	base := time.Date(2026, time.March, 16, 13, 0, 0, 0, time.UTC)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "TZA",
+		Side:     "buy",
+		Price:    7.33,
+		Quantity: 700,
+		FilledAt: base,
+	})
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "TZA",
+		Side:     "buy",
+		Price:    7.33,
+		Quantity: 437,
+		FilledAt: base.Add(1 * time.Second),
+	})
+
+	if manager.EntriesToday() != 1 {
+		t.Fatalf("expected one entry for partial buy fills, got %d", manager.EntriesToday())
+	}
+	position, ok := manager.Position("TZA")
+	if !ok {
+		t.Fatal("expected open position")
+	}
+	if position.Quantity != 1137 {
+		t.Fatalf("expected aggregated quantity 1137, got %d", position.Quantity)
+	}
+}
+
+func TestPortfolioMergesPartialSellFillsIntoSingleClosedTrade(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	base := time.Date(2026, time.March, 16, 13, 0, 0, 0, time.UTC)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "PRSO",
+		Side:         "buy",
+		Price:        1.77,
+		Quantity:     3566,
+		StopPrice:    1.73,
+		RiskPerShare: 0.04,
+		EntryATR:     0.03,
+		SetupType:    "consolidation-breakout",
+		FilledAt:     base,
+	})
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "PRSO",
+		Side:         "sell",
+		Price:        1.81,
+		Quantity:     3459,
+		Reason:       "trailing-stop",
+		RiskPerShare: 0.04,
+		FilledAt:     base.Add(10 * time.Minute),
+	})
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "PRSO",
+		Side:         "sell",
+		Price:        1.81,
+		Quantity:     107,
+		Reason:       "trailing-stop",
+		RiskPerShare: 0.04,
+		FilledAt:     base.Add(10*time.Minute + 1*time.Second),
+	})
+
+	closed := manager.GetClosedTrades()
+	if len(closed) != 1 {
+		t.Fatalf("expected one merged closed trade row, got %d", len(closed))
+	}
+	if closed[0].Quantity != 3566 {
+		t.Fatalf("expected merged close quantity 3566, got %d", closed[0].Quantity)
+	}
+	if closed[0].ExitReason != "trailing-stop" {
+		t.Fatalf("unexpected exit reason: %s", closed[0].ExitReason)
+	}
+	if manager.HasPosition("PRSO") {
+		t.Fatal("expected PRSO position to be fully closed")
+	}
+}

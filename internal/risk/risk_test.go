@@ -188,6 +188,28 @@ func TestRiskMaxTradesCountsEntriesNotExits(t *testing.T) {
 	}
 }
 
+func TestRiskMaxTradesCountsApprovedEntriesBeforeFills(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxTradesPerDay = 1
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	engine := NewEngine(cfg, book, runtimeState)
+	at := inSessionSignalTime()
+
+	_, approved, reason := engine.Evaluate(testBuySignal("TZA", 7.33, 100, at))
+	if !approved {
+		t.Fatalf("expected first entry approval, got %s", reason)
+	}
+
+	_, approved, reason = engine.Evaluate(testBuySignal("UVIX", 18.20, 100, at.Add(2*time.Second)))
+	if approved {
+		t.Fatal("expected second approved entry to be blocked before fills")
+	}
+	if reason != "max-trades" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestRiskUsesAdaptiveBufferForLowPricedBuy(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.LimitOrderSlippageDollars = 0.05

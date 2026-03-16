@@ -18,6 +18,8 @@ type Engine struct {
 	config    config.TradingConfig
 	portfolio *portfolio.Manager
 	runtime   *runtime.State
+	dayKey    string
+	approved  int
 }
 
 // NewEngine creates a new risk engine.
@@ -91,10 +93,14 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if blockReason := r.runtime.EntryBlockReasonAt(orderTime); blockReason != "" {
 		return domain.OrderRequest{}, false, blockReason
 	}
+	r.rollDay(orderTime)
+	if filledEntries := r.portfolio.EntriesToday(); filledEntries > r.approved {
+		r.approved = filledEntries
+	}
 	if signal.StopPrice <= 0 || signal.RiskPerShare <= 0 {
 		return domain.OrderRequest{}, false, "missing-stop"
 	}
-	if r.portfolio.EntriesToday() >= r.config.MaxTradesPerDay {
+	if r.approved >= r.config.MaxTradesPerDay {
 		return domain.OrderRequest{}, false, "max-trades"
 	}
 	if r.portfolio.OpenPositionCount() >= r.config.MaxOpenPositions {
@@ -125,7 +131,7 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if notional < effectiveCapital*0.005 {
 		return domain.OrderRequest{}, false, "position-too-small"
 	}
-	return domain.OrderRequest{
+	request := domain.OrderRequest{
 		Symbol:       signal.Symbol,
 		Side:         signal.Side,
 		Price:        limitPrice,
@@ -136,7 +142,18 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		SetupType:    signal.SetupType,
 		Reason:       signal.Reason,
 		Timestamp:    orderTime,
-	}, true, "approved"
+	}
+	r.approved++
+	return request, true, "approved"
+}
+
+func (r *Engine) rollDay(at time.Time) {
+	day := at.In(markethours.Location()).Format("2006-01-02")
+	if r.dayKey == day {
+		return
+	}
+	r.dayKey = day
+	r.approved = 0
 }
 
 func (r *Engine) limitPrice(price float64, side string) float64 {

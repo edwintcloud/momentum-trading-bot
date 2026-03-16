@@ -87,6 +87,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	m.rollTradingDayLocked(now)
 	position, exists := m.positions[report.Symbol]
 	if report.Side == "buy" {
+		isNewEntry := !exists
 		if exists {
 			totalCost := (float64(position.Quantity) * position.AvgPrice) + (float64(report.Quantity) * report.Price)
 			position.Quantity += report.Quantity
@@ -131,7 +132,9 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			}
 		}
 		m.tradesToday++
-		m.entriesToday++
+		if isNewEntry {
+			m.entriesToday++
+		}
 		return
 	}
 
@@ -147,35 +150,40 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	m.realizedPnL += pnl
 	m.dayRealizedPnL += pnl
 	m.tradesToday++
-	// Consolidate partial fills into the existing closed-trade record for
-	// the same symbol and exit reason instead of creating duplicate rows.
-	if len(m.closedTrades) > 0 {
-		prev := &m.closedTrades[0]
-		if prev.Symbol == report.Symbol && prev.ExitReason == report.Reason && prev.EntryPrice == position.AvgPrice && now.Sub(prev.ClosedAt) < 5*time.Second {
-			prevQty := prev.Quantity
-			totalQty := prevQty + closeQty
-			totalPnL := prev.PnL + round2(pnl)
-			prev.ExitPrice = round2((prev.ExitPrice*float64(prevQty) + report.Price*float64(closeQty)) / float64(totalQty))
-			prev.Quantity = totalQty
-			prev.PnL = totalPnL
-			prev.RMultiple = roundRMultiple(totalPnL, position.RiskPerShare, totalQty)
-			prev.ClosedAt = now
-			if m.recorder != nil {
-				m.recorder.RecordClosedTrade(*prev)
-			}
-			position.Quantity -= closeQty
-			if position.Quantity == 0 {
-				delete(m.positions, report.Symbol)
-				return
-			}
-			position.LastPrice = report.Price
-			position.HighestPrice = math.Max(position.HighestPrice, report.Price)
-			position.MarketValue = float64(position.Quantity) * report.Price
-			position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
-			position.UpdatedAt = now
-			m.positions[report.Symbol] = position
+	// Consolidate partial fills into an existing closed-trade record for the
+	// same opened position so the dashboard shows one round-trip trade row.
+	mergeIndex := m.findMergeableClosedTradeIndex(report, position, now)
+	if mergeIndex >= 0 {
+		mergedTrade := m.closedTrades[mergeIndex]
+		prevQty := mergedTrade.Quantity
+		totalQty := prevQty + closeQty
+		totalPnL := mergedTrade.PnL + round2(pnl)
+		mergedTrade.ExitPrice = round2((mergedTrade.ExitPrice*float64(prevQty) + report.Price*float64(closeQty)) / float64(totalQty))
+		mergedTrade.Quantity = totalQty
+		mergedTrade.PnL = totalPnL
+		mergedTrade.RMultiple = roundRMultiple(totalPnL, position.RiskPerShare, totalQty)
+		mergedTrade.ClosedAt = now
+		if mergeIndex > 0 {
+			m.closedTrades = append(m.closedTrades[:mergeIndex], m.closedTrades[mergeIndex+1:]...)
+			m.closedTrades = append([]domain.ClosedTrade{mergedTrade}, m.closedTrades...)
+		} else {
+			m.closedTrades[0] = mergedTrade
+		}
+		if m.recorder != nil {
+			m.recorder.RecordClosedTrade(mergedTrade)
+		}
+		position.Quantity -= closeQty
+		if position.Quantity == 0 {
+			delete(m.positions, report.Symbol)
 			return
 		}
+		position.LastPrice = report.Price
+		position.HighestPrice = math.Max(position.HighestPrice, report.Price)
+		position.MarketValue = float64(position.Quantity) * report.Price
+		position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
+		position.UpdatedAt = now
+		m.positions[report.Symbol] = position
+		return
 	}
 	closed := domain.ClosedTrade{
 		Symbol:     report.Symbol,
@@ -204,6 +212,28 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
 	position.UpdatedAt = now
 	m.positions[report.Symbol] = position
+}
+
+func (m *Manager) findMergeableClosedTradeIndex(report domain.ExecutionReport, position domain.Position, now time.Time) int {
+	for i, existing := range m.closedTrades {
+		if existing.Symbol != report.Symbol {
+			continue
+		}
+		if existing.ExitReason != report.Reason {
+			continue
+		}
+		if !existing.OpenedAt.Equal(position.OpenedAt) {
+			continue
+		}
+		if math.Abs(existing.EntryPrice-position.AvgPrice) > 0.011 {
+			continue
+		}
+		if now.Sub(existing.ClosedAt) > 2*time.Minute {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 // MarkPrice updates the latest price for an open position.
