@@ -161,6 +161,43 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 	}
 }
 
+func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
+	runtimeState := runtime.NewState()
+	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	base := time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC)
+
+	engine.evaluateTick(domain.Tick{
+		Symbol:          "LEADER",
+		Price:           6.10,
+		Open:            5.80,
+		HighOfDay:       6.12,
+		GapPercent:      11.0,
+		RelativeVolume:  8.0,
+		PreMarketVolume: 900_000,
+		Volume:          1_000_000,
+		VolumeSpike:     true,
+		Timestamp:       base,
+	})
+	candidate, ok := engine.evaluateTick(domain.Tick{
+		Symbol:          "FOLLOWER",
+		Price:           4.80,
+		Open:            4.30,
+		HighOfDay:       4.82,
+		GapPercent:      10.5,
+		RelativeVolume:  7.5,
+		PreMarketVolume: 850_000,
+		Volume:          500_000,
+		VolumeSpike:     true,
+		Timestamp:       base.Add(time.Minute),
+	})
+	if !ok {
+		t.Fatal("expected follower candidate to pass scanner")
+	}
+	if candidate.VolumeLeaderPct != 0.5 {
+		t.Fatalf("expected follower to carry 0.50 leader share, got %.2f", candidate.VolumeLeaderPct)
+	}
+}
+
 func TestScannerRejectsLowGap(t *testing.T) {
 	runtimeState := runtime.NewState()
 	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
@@ -188,11 +225,11 @@ func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
 	base := engine.momentumScore(domain.Tick{
 		GapPercent:     12,
 		RelativeVolume: cfg.MinRelativeVolume + 15,
-	}, 18, 0.5, 1.2, 2.0, 1.8)
+	}, 18, 0.5, 1.2, 2.0, 1.8, 0.9)
 	extreme := engine.momentumScore(domain.Tick{
 		GapPercent:     12,
 		RelativeVolume: 4_000,
-	}, 18, 0.5, 1.2, 2.0, 1.8)
+	}, 18, 0.5, 1.2, 2.0, 1.8, 0.9)
 
 	if base != extreme {
 		t.Fatalf("expected extreme relative volume to cap at the same score contribution, base=%.2f extreme=%.2f", base, extreme)

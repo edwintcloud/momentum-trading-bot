@@ -193,6 +193,67 @@ func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 	}
 }
 
+func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "SECONDARY",
+		Price:                5.20,
+		Open:                 4.80,
+		HighOfDay:            5.22,
+		GapPercent:           11.0,
+		RelativeVolume:       6.2,
+		PriceVsOpenPct:       8.33,
+		DistanceFromHighPct:  0.38,
+		OneMinuteReturnPct:   0.28,
+		ThreeMinuteReturnPct: 1.10,
+		VolumeRate:           1.45,
+		VolumeLeaderPct:      0.22,
+		MinutesSinceOpen:     40,
+		Score:                18.5,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected secondary-volume setup to be blocked")
+	}
+	if reason != "secondary-volume" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyAllowsLeaderVolumeSetup(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "LEADER",
+		Price:                5.20,
+		Open:                 4.80,
+		HighOfDay:            5.22,
+		GapPercent:           11.0,
+		RelativeVolume:       6.2,
+		PriceVsOpenPct:       8.33,
+		DistanceFromHighPct:  0.38,
+		OneMinuteReturnPct:   0.28,
+		ThreeMinuteReturnPct: 1.10,
+		VolumeRate:           1.45,
+		VolumeLeaderPct:      0.92,
+		MinutesSinceOpen:     40,
+		Score:                18.5,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatalf("expected leader-volume setup to pass, got %s", reason)
+	}
+}
+
 func TestStrategyRejectsParabolicEarlyPremarketSpike(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

@@ -26,10 +26,13 @@ type symbolState struct {
 
 // Scanner scans market ticks for momentum candidates.
 type Scanner struct {
-	config  config.TradingConfig
-	runtime *runtime.State
-	mu      sync.Mutex
-	state   map[string]*symbolState
+	config         config.TradingConfig
+	runtime        *runtime.State
+	mu             sync.Mutex
+	state          map[string]*symbolState
+	leaderDay      string
+	leaderVolume   int64
+	leaderSymbol   string
 }
 
 // NewScanner creates a scanner with the configured filters.
@@ -110,8 +113,9 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if !s.qualifiesMomentumProfile(tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate) {
 		return domain.Candidate{}, false, "not-gap-or-squeeze"
 	}
+	volumeLeaderPct := s.updateVolumeLeadership(tick)
 	distanceFromHighPct := percentChange(tick.Price, tick.HighOfDay)
-	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate)
+	score := s.momentumScore(tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate, volumeLeaderPct)
 	return domain.Candidate{
 		Symbol:               tick.Symbol,
 		Price:                tick.Price,
@@ -126,6 +130,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		OneMinuteReturnPct:   round2(scoreOrZero(oneMinuteReturn)),
 		ThreeMinuteReturnPct: round2(scoreOrZero(threeMinuteReturn)),
 		VolumeRate:           round2(scoreOrZero(volumeRate)),
+		VolumeLeaderPct:      round2(scoreOrZero(volumeLeaderPct)),
 		MinutesSinceOpen:     round2(minutesSinceOpen(tick.Timestamp)),
 		Score:                round2(scoreOrZero(score)),
 		Catalyst:             tick.Catalyst,
@@ -134,7 +139,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	}, true, "candidate"
 }
 
-func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate float64) float64 {
+func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, oneMinuteReturn, threeMinuteReturn, volumeRate, volumeLeaderPct float64) float64 {
 	maxGap := s.config.MinGapPercent + 25
 	if maxGap < 25 {
 		maxGap = 25
@@ -154,7 +159,8 @@ func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHi
 		(clampFloat(oneMinuteReturn, -3, 6) * 3.40) +
 		(clampFloat(threeMinuteReturn, -5, 10) * 1.80) +
 		(clampFloat(volumeRate, 0.5, 4) * 1.20) -
-		(clampFloat(distanceFromHighPct, 0, 6) * 2.50)
+		(clampFloat(distanceFromHighPct, 0, 6) * 2.50) +
+		(clampFloat(volumeLeaderPct, 0, 1) * 6.00)
 }
 
 func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct, oneMinuteReturn, threeMinuteReturn, volumeRate float64) bool {
@@ -216,6 +222,26 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) (float64, float64, float64
 	return sampleReturn(state.snapshots, tick.Timestamp.UTC(), 1*time.Minute),
 		sampleReturn(state.snapshots, tick.Timestamp.UTC(), 3*time.Minute),
 		volumeRate(state.deltas, deltaVolume)
+}
+
+func (s *Scanner) updateVolumeLeadership(tick domain.Tick) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
+	if s.leaderDay != dayKey {
+		s.leaderDay = dayKey
+		s.leaderVolume = 0
+		s.leaderSymbol = ""
+	}
+	if tick.Volume > s.leaderVolume {
+		s.leaderVolume = tick.Volume
+		s.leaderSymbol = tick.Symbol
+	}
+	if s.leaderVolume <= 0 {
+		return 1
+	}
+	return float64(tick.Volume) / float64(s.leaderVolume)
 }
 
 func sampleReturn(samples []symbolSnapshot, current time.Time, lookback time.Duration) float64 {

@@ -290,6 +290,12 @@ func decisionTime(timestamp time.Time) time.Time {
 func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	threshold := s.config.EntryModelMinPredictedReturnPct
 	strongSqueeze := s.isStrongSqueeze(candidate)
+	volumeLeaderPct := s.volumeLeaderPct(candidate)
+	if volumeLeaderPct >= 0.85 {
+		threshold -= 0.20
+	} else if volumeLeaderPct < 0.45 {
+		threshold += 0.20
+	}
 	if s.isPremarket(candidate.Timestamp) && !strongSqueeze {
 		threshold += 0.20
 	}
@@ -348,8 +354,19 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
 	strongSqueeze := s.isStrongSqueeze(candidate)
+	volumeLeaderPct := s.volumeLeaderPct(candidate)
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1) {
 		return false, "low-score"
+	}
+	if volumeLeaderPct < 0.35 &&
+		candidate.RelativeVolume < s.config.MinRelativeVolume+6 &&
+		candidate.Score < s.config.MinEntryScore+8 {
+		return false, "secondary-volume"
+	}
+	if (s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp)) &&
+		volumeLeaderPct < 0.55 &&
+		candidate.RelativeVolume < s.config.MinRelativeVolume+8 {
+		return false, "secondary-volume"
 	}
 	if s.isEarlyPremarket(candidate.Timestamp) && entryDollarVolume(candidate) < 2_000_000 {
 		return false, "thin-premarket"
@@ -397,18 +414,21 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 	relativeVolumeThreshold := s.config.MinRelativeVolume + 1.5
 	threeMinuteThreshold := s.config.MinThreeMinuteReturnPct + 0.40
 	volumeRateThreshold := s.config.MinVolumeRate + 0.15
+	volumeLeaderThreshold := 0.35
 
 	if s.isPremarket(candidate.Timestamp) {
 		scoreThreshold += 3
 		relativeVolumeThreshold += 2.0
 		threeMinuteThreshold += 0.40
 		volumeRateThreshold += 0.15
+		volumeLeaderThreshold = 0.50
 	}
 	if s.isOpeningSession(candidate.Timestamp) {
 		scoreThreshold += 1.5
 		relativeVolumeThreshold += 1.0
 		threeMinuteThreshold += 0.20
 		volumeRateThreshold += 0.10
+		volumeLeaderThreshold = 0.45
 	}
 
 	if s.isParabolicEntry(candidate) {
@@ -418,7 +438,8 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 	return candidate.Score >= scoreThreshold &&
 		candidate.RelativeVolume >= relativeVolumeThreshold &&
 		candidate.ThreeMinuteReturnPct >= threeMinuteThreshold &&
-		candidate.VolumeRate >= volumeRateThreshold
+		candidate.VolumeRate >= volumeRateThreshold &&
+		s.volumeLeaderPct(candidate) >= volumeLeaderThreshold
 }
 
 func (s *Strategy) predictEntryReturn(candidate domain.Candidate, strongSqueeze bool) float64 {
@@ -456,6 +477,9 @@ func (s *Strategy) allowedDistanceFromHigh(candidate domain.Candidate) float64 {
 	}
 	if candidate.VolumeRate >= s.config.MinVolumeRate+0.10 {
 		allowance += 0.30
+	}
+	if s.volumeLeaderPct(candidate) >= 0.85 {
+		allowance += 0.25
 	}
 	if candidate.MinutesSinceOpen >= 90 {
 		allowance += 0.35
@@ -522,6 +546,7 @@ func (s *Strategy) isParabolicEntry(candidate domain.Candidate) bool {
 
 func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	multiplier := 1.0
+	volumeLeaderPct := s.volumeLeaderPct(candidate)
 	if s.isPremarket(candidate.Timestamp) {
 		multiplier *= 0.70
 	}
@@ -534,10 +559,23 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	if candidate.RelativeVolume >= 100 && candidate.PriceVsOpenPct >= 20 {
 		multiplier *= 0.80
 	}
+	if volumeLeaderPct < 0.55 {
+		multiplier *= 0.75
+	}
+	if candidate.VolumeLeaderPct >= 0.90 && !s.isPremarket(candidate.Timestamp) {
+		multiplier *= 1.05
+	}
 	if multiplier < 0.40 {
 		multiplier = 0.40
 	}
 	return multiplier
+}
+
+func (s *Strategy) volumeLeaderPct(candidate domain.Candidate) float64 {
+	if candidate.VolumeLeaderPct <= 0 {
+		return 1
+	}
+	return candidate.VolumeLeaderPct
 }
 
 func sameTradingDay(a, b time.Time) bool {
