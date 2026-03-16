@@ -14,6 +14,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 )
 
 var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -129,6 +130,7 @@ func runBacktest(args []string) error {
 		result.MaxDrawdownPct,
 		result.ModelName,
 	)
+	logClosedTradeSamples(result.ClosedTrades)
 	return nil
 }
 
@@ -312,6 +314,8 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	logReasonCounts("risk entry rejects", diag.EntryRiskRejects, diag.EntrySignals)
 	logReasonCounts("strategy exit rejects", diag.ExitRejects, diag.ExitChecks)
 	logReasonCounts("risk exit rejects", diag.ExitRiskRejects, diag.ExitSignals)
+	logEntrySamples(diag.EntrySignalSamples)
+	logEntryRejectSamples(diag)
 }
 
 func logReasonCounts(label string, counts map[string]int, total int) {
@@ -345,4 +349,101 @@ func logReasonCounts(label string, counts map[string]int, total int) {
 		parts = append(parts, fmt.Sprintf("%s=%d(%.2f%%)", item.reason, item.count, share))
 	}
 	log.Printf("Backtest %s %s", label, strings.Join(parts, " "))
+}
+
+func logEntrySamples(samples []backtest.EntrySample) {
+	if len(samples) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, fmt.Sprintf(
+			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f 1m=%.2f 3m=%.2f vr=%.2f",
+			sample.Symbol,
+			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Price,
+			sample.Score,
+			sample.PredictedReturnPct,
+			sample.RequiredPredictedRetPct,
+			sample.DistanceFromHighPct,
+			sample.AllowedDistanceHighPct,
+			sample.RelativeVolume,
+			sample.OneMinuteReturnPct,
+			sample.ThreeMinuteReturnPct,
+			sample.VolumeRate,
+		))
+	}
+	log.Printf("Backtest entry samples %s", strings.Join(parts, " | "))
+}
+
+func logEntryRejectSamples(diag backtest.Diagnostics) {
+	if len(diag.EntryRejectSamples) == 0 || len(diag.EntryRejects) == 0 {
+		return
+	}
+	type reasonCount struct {
+		reason string
+		count  int
+	}
+	reasons := make([]reasonCount, 0, len(diag.EntryRejects))
+	for reason, count := range diag.EntryRejects {
+		reasons = append(reasons, reasonCount{reason: reason, count: count})
+	}
+	sort.Slice(reasons, func(i, j int) bool {
+		if reasons[i].count == reasons[j].count {
+			return reasons[i].reason < reasons[j].reason
+		}
+		return reasons[i].count > reasons[j].count
+	})
+	limit := len(reasons)
+	if limit > 3 {
+		limit = 3
+	}
+	for _, item := range reasons[:limit] {
+		sample, ok := diag.EntryRejectSamples[item.reason]
+		if !ok {
+			continue
+		}
+		log.Printf(
+			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
+			item.reason,
+			sample.Symbol,
+			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Price,
+			sample.Score,
+			sample.PredictedReturnPct,
+			sample.RequiredPredictedRetPct,
+			sample.DistanceFromHighPct,
+			sample.AllowedDistanceHighPct,
+			sample.RelativeVolume,
+			sample.OneMinuteReturnPct,
+			sample.ThreeMinuteReturnPct,
+			sample.VolumeRate,
+			sample.StrongSqueeze,
+		)
+	}
+}
+
+func logClosedTradeSamples(trades []domain.ClosedTrade) {
+	if len(trades) == 0 {
+		return
+	}
+	limit := len(trades)
+	if limit > 5 {
+		limit = 5
+	}
+	parts := make([]string, 0, limit)
+	for _, trade := range trades[:limit] {
+		parts = append(parts, fmt.Sprintf(
+			"%s qty=%d entry=%.2f exit=%.2f pnl=%.2f reason=%s opened=%s closed=%s",
+			trade.Symbol,
+			trade.Quantity,
+			trade.EntryPrice,
+			trade.ExitPrice,
+			trade.PnL,
+			trade.ExitReason,
+			trade.OpenedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			trade.ClosedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+		))
+	}
+	log.Printf("Backtest closed trades %s", strings.Join(parts, " | "))
 }

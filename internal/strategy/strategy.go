@@ -22,6 +22,17 @@ type Strategy struct {
 	lastExitAt  map[string]time.Time
 }
 
+// CandidateDecision captures the strategy's entry decision and supporting metrics.
+type CandidateDecision struct {
+	Signal                 domain.TradeSignal
+	Emit                   bool
+	Reason                 string
+	PredictedReturnPct     float64
+	RequiredReturnPct      float64
+	AllowedDistanceHighPct float64
+	StrongSqueeze          bool
+}
+
 // NewStrategy creates a strategy instance.
 func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Strategy {
 	entryModel := DefaultEntryModel()
@@ -87,13 +98,19 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 
 // EvaluateCandidate applies the entry rules to a scanner candidate.
 func (s *Strategy) EvaluateCandidate(candidate domain.Candidate) (domain.TradeSignal, bool) {
-	signal, ok, _ := s.evaluateCandidateDetailed(candidate)
-	return signal, ok
+	decision := s.evaluateCandidateDecision(candidate)
+	return decision.Signal, decision.Emit
 }
 
 // EvaluateCandidateDetailed applies the entry rules and returns the block reason when rejected.
 func (s *Strategy) EvaluateCandidateDetailed(candidate domain.Candidate) (domain.TradeSignal, bool, string) {
-	return s.evaluateCandidateDetailed(candidate)
+	decision := s.evaluateCandidateDecision(candidate)
+	return decision.Signal, decision.Emit, decision.Reason
+}
+
+// EvaluateCandidateDecision applies the entry rules and returns supporting metrics.
+func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) CandidateDecision {
+	return s.evaluateCandidateDecision(candidate)
 }
 
 // EvaluateExit applies the managed exit rules to a market tick.
@@ -108,35 +125,38 @@ func (s *Strategy) EvaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 }
 
 func (s *Strategy) evaluateCandidate(candidate domain.Candidate) (domain.TradeSignal, bool) {
-	signal, ok, _ := s.evaluateCandidateDetailed(candidate)
-	return signal, ok
+	decision := s.evaluateCandidateDecision(candidate)
+	return decision.Signal, decision.Emit
 }
 
-func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain.TradeSignal, bool, string) {
+func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) CandidateDecision {
 	decisionAt := decisionTime(candidate.Timestamp)
+	strongSqueeze := s.isStrongSqueeze(candidate)
+	allowedDistance := s.allowedDistanceFromHigh(candidate)
+	predictedReturn := s.entryModel.Predict(candidate)
+	requiredReturn := s.requiredPredictedReturn(candidate)
 	if !markethours.IsTradableSessionAt(decisionAt) {
-		return domain.TradeSignal{}, false, "outside-session"
+		return CandidateDecision{Reason: "outside-session", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if blockReason := s.runtime.EntryBlockReasonAt(decisionAt); blockReason != "" {
-		return domain.TradeSignal{}, false, blockReason
+		return CandidateDecision{Reason: blockReason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if s.portfolio.HasPosition(candidate.Symbol) {
-		return domain.TradeSignal{}, false, "has-position"
+		return CandidateDecision{Reason: "has-position", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if lastEntry, exists := s.lastEntryAt[candidate.Symbol]; exists {
 		if decisionAt.Sub(lastEntry) < time.Duration(s.config.EntryCooldownSec)*time.Second {
-			return domain.TradeSignal{}, false, "entry-cooldown"
+			return CandidateDecision{Reason: "entry-cooldown", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 		}
 	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
-		return domain.TradeSignal{}, false, reason
+		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	if candidate.DistanceFromHighPct > s.allowedDistanceFromHigh(candidate) {
-		return domain.TradeSignal{}, false, "below-breakout-zone"
+	if candidate.DistanceFromHighPct > allowedDistance {
+		return CandidateDecision{Reason: "below-breakout-zone", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	predictedReturn := s.entryModel.Predict(candidate)
-	if s.config.EntryModelEnabled && predictedReturn < s.requiredPredictedReturn(candidate) {
-		return domain.TradeSignal{}, false, "model-threshold"
+	if s.config.EntryModelEnabled && predictedReturn < requiredReturn {
+		return CandidateDecision{Reason: "model-threshold", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 
 	quantity := int64(0)
@@ -150,7 +170,7 @@ func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain
 	}
 	s.lastEntryAt[candidate.Symbol] = decisionAt
 
-	return domain.TradeSignal{
+	signal := domain.TradeSignal{
 		Symbol:     candidate.Symbol,
 		Side:       "buy",
 		Price:      candidate.Price,
@@ -158,7 +178,16 @@ func (s *Strategy) evaluateCandidateDetailed(candidate domain.Candidate) (domain
 		Reason:     "ml-breakout-entry",
 		Confidence: predictedReturn,
 		Timestamp:  decisionAt,
-	}, true, "entry-signal"
+	}
+	return CandidateDecision{
+		Signal:                 signal,
+		Emit:                   true,
+		Reason:                 "entry-signal",
+		PredictedReturnPct:     predictedReturn,
+		RequiredReturnPct:      requiredReturn,
+		AllowedDistanceHighPct: allowedDistance,
+		StrongSqueeze:          strongSqueeze,
+	}
 }
 
 func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {

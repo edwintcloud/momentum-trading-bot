@@ -85,6 +85,28 @@ type Diagnostics struct {
 	EntryRiskRejects   map[string]int
 	ExitRejects        map[string]int
 	ExitRiskRejects    map[string]int
+	EntrySignalSamples []EntrySample
+	EntryRejectSamples map[string]EntrySample
+}
+
+// EntrySample captures a representative entry decision for diagnostics.
+type EntrySample struct {
+	Symbol                  string
+	Timestamp               time.Time
+	Reason                  string
+	Price                   float64
+	GapPercent              float64
+	RelativeVolume          float64
+	PriceVsOpenPct          float64
+	DistanceFromHighPct     float64
+	AllowedDistanceHighPct  float64
+	OneMinuteReturnPct      float64
+	ThreeMinuteReturnPct    float64
+	VolumeRate              float64
+	Score                   float64
+	PredictedReturnPct      float64
+	RequiredPredictedRetPct float64
+	StrongSqueeze           bool
 }
 
 type bar struct {
@@ -141,12 +163,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	runtimeState := runtime.NewState()
 	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
 	diagnostics := Diagnostics{
-		BarsLoaded:       len(records),
-		ScannerRejects:   make(map[string]int),
-		EntryRejects:     make(map[string]int),
-		EntryRiskRejects: make(map[string]int),
-		ExitRejects:      make(map[string]int),
-		ExitRiskRejects:  make(map[string]int),
+		BarsLoaded:         len(records),
+		ScannerRejects:     make(map[string]int),
+		EntryRejects:       make(map[string]int),
+		EntryRiskRejects:   make(map[string]int),
+		ExitRejects:        make(map[string]int),
+		ExitRiskRejects:    make(map[string]int),
+		EntryRejectSamples: make(map[string]EntrySample),
 	}
 
 	model := strategy.DefaultEntryModel()
@@ -207,20 +230,23 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		candidate, ok, scanReason := scan.EvaluateTickDetailed(rec.tick)
 		if ok {
 			diagnostics.EntryCandidates++
-			if signal, shouldEnter, entryReason := strat.EvaluateCandidateDetailed(candidate); shouldEnter {
+			decision := strat.EvaluateCandidateDecision(candidate)
+			if decision.Emit {
 				diagnostics.EntrySignals++
-				if order, approved, riskReason := riskEngine.Evaluate(signal); approved {
+				rememberEntrySignalSample(&diagnostics, candidate, decision)
+				if order, approved, riskReason := riskEngine.Evaluate(decision.Signal); approved {
 					diagnostics.EntryRiskApproved++
 					applyPaperFill(book, order, rec.tick.Timestamp)
 				} else {
 					incrementReason(diagnostics.EntryRiskRejects, riskReason)
 					if riskReason == "daily-loss-limit" {
-						runtimeState.RecordLog("warn", "risk", "blocked buy "+signal.Symbol+": "+riskReason)
-						runtimeState.TriggerDailyLossStop(signal.Timestamp)
+						runtimeState.RecordLog("warn", "risk", "blocked buy "+decision.Signal.Symbol+": "+riskReason)
+						runtimeState.TriggerDailyLossStop(decision.Signal.Timestamp)
 					}
 				}
 			} else {
-				incrementReason(diagnostics.EntryRejects, entryReason)
+				incrementReason(diagnostics.EntryRejects, decision.Reason)
+				rememberEntryRejectSample(&diagnostics, candidate, decision)
 			}
 		} else {
 			incrementReason(diagnostics.ScannerRejects, scanReason)
@@ -669,4 +695,39 @@ func incrementReason(counts map[string]int, reason string) {
 		reason = "unknown"
 	}
 	counts[reason]++
+}
+
+func rememberEntrySignalSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
+	if len(diag.EntrySignalSamples) >= 3 {
+		return
+	}
+	diag.EntrySignalSamples = append(diag.EntrySignalSamples, buildEntrySample(candidate, decision))
+}
+
+func rememberEntryRejectSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
+	if _, exists := diag.EntryRejectSamples[decision.Reason]; exists {
+		return
+	}
+	diag.EntryRejectSamples[decision.Reason] = buildEntrySample(candidate, decision)
+}
+
+func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDecision) EntrySample {
+	return EntrySample{
+		Symbol:                  candidate.Symbol,
+		Timestamp:               candidate.Timestamp.UTC(),
+		Reason:                  decision.Reason,
+		Price:                   round2(candidate.Price),
+		GapPercent:              round2(candidate.GapPercent),
+		RelativeVolume:          round2(candidate.RelativeVolume),
+		PriceVsOpenPct:          round2(candidate.PriceVsOpenPct),
+		DistanceFromHighPct:     round2(candidate.DistanceFromHighPct),
+		AllowedDistanceHighPct:  round2(decision.AllowedDistanceHighPct),
+		OneMinuteReturnPct:      round2(candidate.OneMinuteReturnPct),
+		ThreeMinuteReturnPct:    round2(candidate.ThreeMinuteReturnPct),
+		VolumeRate:              round2(candidate.VolumeRate),
+		Score:                   round2(candidate.Score),
+		PredictedReturnPct:      round2(decision.PredictedReturnPct),
+		RequiredPredictedRetPct: round2(decision.RequiredReturnPct),
+		StrongSqueeze:           decision.StrongSqueeze,
+	}
 }
