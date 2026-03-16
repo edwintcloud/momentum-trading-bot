@@ -355,17 +355,20 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
+	minLeaderPct := 0.20
+	if s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp) {
+		minLeaderPct = 0.35
+	}
+	if strongSqueeze {
+		minLeaderPct -= 0.05
+	}
+	if minLeaderPct < 0.15 {
+		minLeaderPct = 0.15
+	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1) {
 		return false, "low-score"
 	}
-	if volumeLeaderPct < 0.35 &&
-		candidate.RelativeVolume < s.config.MinRelativeVolume+6 &&
-		candidate.Score < s.config.MinEntryScore+8 {
-		return false, "secondary-volume"
-	}
-	if (s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp)) &&
-		volumeLeaderPct < 0.55 &&
-		candidate.RelativeVolume < s.config.MinRelativeVolume+8 {
+	if volumeLeaderPct < minLeaderPct {
 		return false, "secondary-volume"
 	}
 	if s.isEarlyPremarket(candidate.Timestamp) && entryDollarVolume(candidate) < 2_000_000 {

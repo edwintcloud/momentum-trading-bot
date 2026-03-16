@@ -358,7 +358,7 @@ func logEntrySamples(samples []backtest.EntrySample) {
 	parts := make([]string, 0, len(samples))
 	for _, sample := range samples {
 		parts = append(parts, fmt.Sprintf(
-			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.2f 1m=%.2f 3m=%.2f vr=%.2f",
+			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f 1m=%.2f 3m=%.2f vr=%.2f",
 			sample.Symbol,
 			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
 			sample.Price,
@@ -405,7 +405,7 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			continue
 		}
 		log.Printf(
-			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.2f 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
+			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
 			item.reason,
 			sample.Symbol,
 			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),

@@ -209,16 +209,48 @@ func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 		RelativeVolume:       6.2,
 		PriceVsOpenPct:       8.33,
 		DistanceFromHighPct:  0.38,
-		OneMinuteReturnPct:   0.28,
-		ThreeMinuteReturnPct: 1.10,
+		OneMinuteReturnPct:   0.72,
+		ThreeMinuteReturnPct: 1.65,
 		VolumeRate:           1.45,
-		VolumeLeaderPct:      0.22,
+		VolumeLeaderPct:      0.12,
 		MinutesSinceOpen:     40,
-		Score:                18.5,
+		Score:                24.0,
 		Timestamp:            at,
 	})
 	if ok {
 		t.Fatal("expected secondary-volume setup to be blocked")
+	}
+	if reason != "secondary-volume" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyRejectsLowLeaderShareEvenWithStrongStats(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "LITX",
+		Price:                76.48,
+		Open:                 72.00,
+		HighOfDay:            76.48,
+		GapPercent:           10.0,
+		RelativeVolume:       7.7,
+		PriceVsOpenPct:       6.22,
+		DistanceFromHighPct:  0.0,
+		OneMinuteReturnPct:   3.35,
+		ThreeMinuteReturnPct: 5.43,
+		VolumeRate:           3.19,
+		VolumeLeaderPct:      0.02,
+		MinutesSinceOpen:     32,
+		Score:                70.48,
+		Timestamp:            at,
+	})
+	if ok {
+		t.Fatal("expected low leader-share setup to be blocked")
 	}
 	if reason != "secondary-volume" {
 		t.Fatalf("unexpected block reason: %s", reason)
