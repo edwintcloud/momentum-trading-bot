@@ -14,12 +14,13 @@ import (
 
 // Strategy implements breakout entries and managed exits.
 type Strategy struct {
-	config      config.TradingConfig
-	portfolio   *portfolio.Manager
-	runtime     *runtime.State
-	entryModel  LinearModel
-	lastEntryAt map[string]time.Time
-	lastExitAt  map[string]time.Time
+	config       config.TradingConfig
+	portfolio    *portfolio.Manager
+	runtime      *runtime.State
+	entryModel   LinearModel
+	lastEntryAt  map[string]time.Time
+	lastExitAt   map[string]time.Time
+	symbolStates map[string]symbolTradeState
 }
 
 // CandidateDecision captures the strategy's entry decision and supporting metrics.
@@ -31,6 +32,13 @@ type CandidateDecision struct {
 	RequiredReturnPct      float64
 	AllowedDistanceHighPct float64
 	StrongSqueeze          bool
+}
+
+type symbolTradeState struct {
+	dayKey       string
+	entrySignals int
+	lossExits    int
+	lastLossAt   time.Time
 }
 
 // NewStrategy creates a strategy instance.
@@ -46,12 +54,13 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		}
 	}
 	return &Strategy{
-		config:      cfg,
-		portfolio:   portfolioManager,
-		runtime:     runtimeState,
-		entryModel:  entryModel,
-		lastEntryAt: make(map[string]time.Time),
-		lastExitAt:  make(map[string]time.Time),
+		config:       cfg,
+		portfolio:    portfolioManager,
+		runtime:      runtimeState,
+		entryModel:   entryModel,
+		lastEntryAt:  make(map[string]time.Time),
+		lastExitAt:   make(map[string]time.Time),
+		symbolStates: make(map[string]symbolTradeState),
 	}
 }
 
@@ -149,6 +158,13 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 			return CandidateDecision{Reason: "entry-cooldown", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 		}
 	}
+	symbolState := s.symbolState(candidate.Symbol, decisionAt)
+	if symbolState.entrySignals >= 2 {
+		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
+	if symbolState.lossExits > 0 && decisionAt.Sub(symbolState.lastLossAt) < 30*time.Minute {
+		return CandidateDecision{Reason: "post-loss-cooldown", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -169,6 +185,8 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		quantity = 1
 	}
 	s.lastEntryAt[candidate.Symbol] = decisionAt
+	symbolState.entrySignals++
+	s.symbolStates[candidate.Symbol] = symbolState
 
 	signal := domain.TradeSignal{
 		Symbol:     candidate.Symbol,
@@ -241,6 +259,12 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	}
 
 	s.lastExitAt[tick.Symbol] = decisionAt
+	if reason == "stop-loss" || reason == "failed-breakout" {
+		state := s.symbolState(tick.Symbol, decisionAt)
+		state.lossExits++
+		state.lastLossAt = decisionAt
+		s.symbolStates[tick.Symbol] = state
+	}
 	return domain.TradeSignal{
 		Symbol:     tick.Symbol,
 		Side:       "sell",
@@ -346,6 +370,15 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 		candidate.VolumeRate >= s.config.MinVolumeRate+0.15
 }
 
+func (s *Strategy) symbolState(symbol string, at time.Time) symbolTradeState {
+	state := s.symbolStates[symbol]
+	dayKey := tradingDayKey(at)
+	if state.dayKey == dayKey {
+		return state
+	}
+	return symbolTradeState{dayKey: dayKey}
+}
+
 func (s *Strategy) allowedDistanceFromHigh(candidate domain.Candidate) float64 {
 	allowance := 0.80
 	if candidate.RelativeVolume >= s.config.MinRelativeVolume+1 {
@@ -376,9 +409,7 @@ func sameTradingDay(a, b time.Time) bool {
 	if a.IsZero() || b.IsZero() {
 		return false
 	}
-	aDay := a.In(markethours.Location()).Format("2006-01-02")
-	bDay := b.In(markethours.Location()).Format("2006-01-02")
-	return aDay == bDay
+	return tradingDayKey(a) == tradingDayKey(b)
 }
 
 func priceReturn(entryPrice, currentPrice float64) float64 {
@@ -386,4 +417,11 @@ func priceReturn(entryPrice, currentPrice float64) float64 {
 		return 0
 	}
 	return (currentPrice - entryPrice) / entryPrice
+}
+
+func tradingDayKey(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.In(markethours.Location()).Format("2006-01-02")
 }

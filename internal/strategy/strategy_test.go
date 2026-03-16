@@ -192,6 +192,105 @@ func TestStrategyAllowsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 	}
 }
 
+func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "DTCK",
+		Side:     "buy",
+		Price:    3.20,
+		Quantity: 100,
+		FilledAt: at.Add(-40 * time.Minute),
+	})
+	book.MarkPriceAt("DTCK", 3.00, at.Add(-29*time.Minute))
+	signal, ok := strat.evaluateExit(domain.Tick{
+		Symbol:    "DTCK",
+		Price:     3.00,
+		HighOfDay: 3.25,
+		Timestamp: at.Add(-29 * time.Minute),
+	})
+	if !ok || signal.Reason != "stop-loss" {
+		t.Fatalf("expected setup loss to register stop-loss, got %+v ok=%t", signal, ok)
+	}
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "DTCK",
+		Side:     "sell",
+		Price:    signal.Price,
+		Quantity: signal.Quantity,
+		Reason:   signal.Reason,
+		FilledAt: signal.Timestamp,
+	})
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "DTCK",
+		Price:                3.18,
+		Open:                 2.90,
+		HighOfDay:            3.20,
+		GapPercent:           9.5,
+		RelativeVolume:       10.5,
+		PriceVsOpenPct:       9.66,
+		DistanceFromHighPct:  0.63,
+		OneMinuteReturnPct:   0.42,
+		ThreeMinuteReturnPct: 1.20,
+		VolumeRate:           1.50,
+		MinutesSinceOpen:     55,
+		Score:                19,
+		Timestamp:            at.Add(-10 * time.Minute),
+	})
+	if ok {
+		t.Fatal("expected immediate reentry after loss to be blocked")
+	}
+	if reason != "post-loss-cooldown" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	candidate := domain.Candidate{
+		Symbol:               "DTCK",
+		Price:                3.18,
+		Open:                 2.90,
+		HighOfDay:            3.20,
+		GapPercent:           9.5,
+		RelativeVolume:       10.5,
+		PriceVsOpenPct:       9.66,
+		DistanceFromHighPct:  0.63,
+		OneMinuteReturnPct:   0.42,
+		ThreeMinuteReturnPct: 1.20,
+		VolumeRate:           1.50,
+		MinutesSinceOpen:     55,
+		Score:                19,
+	}
+
+	for i, ts := range []time.Time{at.Add(-3 * time.Hour), at.Add(-2 * time.Hour)} {
+		next := candidate
+		next.Timestamp = ts
+		if _, ok, reason := strat.EvaluateCandidateDetailed(next); !ok {
+			t.Fatalf("expected entry %d to pass, got %s", i+1, reason)
+		}
+	}
+
+	third := candidate
+	third.Timestamp = at
+	_, ok, reason := strat.EvaluateCandidateDetailed(third)
+	if ok {
+		t.Fatal("expected third same-day signal for symbol to be blocked")
+	}
+	if reason != "symbol-daily-cap" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
 func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
