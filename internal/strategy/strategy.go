@@ -207,10 +207,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		}
 	}
 	symbolState := s.symbolState(candidate.Symbol, decisionAt)
-	if symbolState.lossExits > 0 {
-		return CandidateDecision{Reason: "symbol-loss-lockout", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
-	}
-	if symbolState.entrySignals >= 2 {
+	if symbolState.entrySignals >= 5 {
 		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
@@ -222,7 +219,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if s.config.EntryModelEnabled && predictedReturn < requiredReturn {
 		return CandidateDecision{Reason: "model-threshold", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	plan, ok, reason := buildEntryPlan(candidate)
+	plan, ok, reason := buildEntryPlan(candidate, s.config)
 	if !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -243,6 +240,22 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		quantity = int64(riskAmount / plan.RiskPerShare)
 	}
 	quantity = int64(float64(quantity) * s.positionSizeMultiplier(candidate))
+	
+	maxExposurePct := s.config.MaxExposurePct
+	if maxExposurePct <= 0 {
+		maxExposurePct = 0.25
+	}
+	openPos := s.config.MaxOpenPositions
+	if openPos <= 0 {
+		openPos = 4
+	}
+	maxAllowedValue := s.portfolio.EffectiveCapital() * (maxExposurePct / float64(openPos))
+	
+	if float64(quantity)*candidate.Price > maxAllowedValue {
+		quantity = int64(maxAllowedValue / candidate.Price)
+		s.runtime.RecordLog("info", "strategy", fmt.Sprintf("clipped entry size for %s to portfolio limit of %d shares ($%.0f)", candidate.Symbol, quantity, maxAllowedValue))
+	}
+	
 	if quantity < 1 {
 		quantity = 1
 	}
@@ -533,9 +546,6 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	if s.isOpeningSession(candidate.Timestamp) {
 		threshold += 0.20
 	}
-	if candidate.MinutesSinceOpen > 180 && !strongSqueeze {
-		threshold += 0.15
-	}
 	if volumeLeaderPct < 0.20 {
 		threshold += 0.15
 	}
@@ -556,7 +566,10 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 		threshold -= 0.20
 	}
 
-	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.75
+	minThreshold := s.config.EntryModelMinPredictedReturnPct
+	if candidate.VolumeRate >= 5.0 && !s.isPremarket(candidate.Timestamp) {
+		minThreshold = maxFloat(minThreshold-0.05, 0.10)
+	}
 	if strongSqueeze {
 		minThreshold = maxFloat(minThreshold, 0.20)
 	}
@@ -572,20 +585,55 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	return threshold
 }
 
+var knownLeveragedETFs = map[string]bool{
+	"UVIX": true, "UVXY": true, "SQQQ": true, "TQQQ": true, "SOXL": true, "SOXS": true,
+	"SPXL": true, "SPXS": true, "UPRO": true, "SPXU": true, "UDOW": true, "SDOW": true,
+	"TNA":  true, "TZA":  true, "FAS":  true, "FAZ":  true, "NUGT": true, "DUST": true,
+	"JNUG": true, "JDST": true, "UGL":  true, "GLL":  true, "AGQ":  true, "ZSL":  true,
+	"BOIL": true, "KOLD": true, "UCO":  true, "SCO":  true, "YINN": true, "YANG": true,
+	"CWEB": true, "KORU": true, "EURL": true, "EDC":  true, "EDZ":  true, "INDL": true,
+	"LBJ":  true, "GUSH": true, "DRIP": true, "NRGU": true, "NRGD": true, "UAMY": true,
+	"BITX": true, "BITI": true, "MSTU": true, "TSLL": true, "TSLQ": true, "CONL": true,
+	"GDXD": true, "GDXU": true, "AAPU": true, "AAPD": true, "AMZU": true, "AMZD": true,
+	"NVDL": true, "NVDD": true, "NVDU": true, "MSFU": true, "MSFD": true, "GOOU": true,
+	"GOOD": true, "COINU": true, "COIND": true, "DPST": true, "LABU": true, "LABD": true,
+	"WTIU": true, "MSTZ": true, "SUPX": true, "DXD": true,
+}
+
+func isLeveragedETF(symbol string) bool {
+	return knownLeveragedETFs[symbol]
+}
+
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
+	if candidate.Price < s.config.MinPrice {
+		return false, "low-price"
+	}
+	if isLeveragedETF(candidate.Symbol) {
+		return false, "leveraged-etf"
+	}
+	if candidate.MinutesSinceOpen > float64(s.config.MaxEntryMinutesSinceOpen) {
+		return false, "late-session-entry"
+	}
+	if s.config.MaxPriceVsVWAPPct > 0 && candidate.PriceVsVWAPPct > s.config.MaxPriceVsVWAPPct {
+		return false, "vwap-overextended"
+	}
+
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
-	minLeaderPct := 0.002
+	minLeaderPct := 0.01
 	maxLeaderRank := 50
 	if strongSqueeze {
-		minLeaderPct -= 0.02
+		minLeaderPct -= 0.008 // Floor of 0.002 for strong squeezes
 		maxLeaderRank += 2
 	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
 	}
-	if s.isEarlyPremarket(candidate.Timestamp) && entryDollarVolume(candidate) < 2_000_000 {
-		return false, "thin-premarket"
+	if s.isEarlyPremarket(candidate.Timestamp) {
+		return false, "early-premarket-banned"
+	}
+	if s.config.MaxOneMinuteReturnPct > 0 && candidate.OneMinuteReturnPct > s.config.MaxOneMinuteReturnPct {
+		return false, "one-minute-flash-spike"
 	}
 	if s.isOpeningSession(candidate.Timestamp) &&
 		candidate.RelativeVolume >= 40 &&
@@ -622,8 +670,11 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.PriceVsVWAPPct > 12.0 && !strongSqueeze {
 		return false, "vwap-extension"
 	}
-	if candidate.DistanceFromHighPct > 8.0 && !strongSqueeze {
+	if candidate.DistanceFromHighPct > 4.5 && !strongSqueeze {
 		return false, "distance-from-high"
+	}
+	if candidate.BreakoutPct > 2.0 && !strongSqueeze {
+		return false, "breakout-too-extended"
 	}
 	if candidate.PriceVsOpenPct > maxFloat(s.config.MaxPriceVsOpenPct, candidate.ATRPct*6.5) &&
 		candidate.BreakoutPct < -0.10 &&
@@ -687,9 +738,9 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 }
 
 func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSqueeze bool) bool {
-	minVolumeRate := maxFloat(s.config.MinVolumeRate, 0.70)
+	minVolumeRate := s.config.MinVolumeRate
 	if strongSqueeze {
-		minVolumeRate = maxFloat(0.50, s.config.MinVolumeRate)
+		minVolumeRate -= 0.20
 	}
 
 	switch candidate.SetupType {

@@ -446,6 +446,61 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			sample.StrongSqueeze,
 		)
 	}
+
+	for _, sample := range diag.EntrySignalSamples {
+		log.Printf(
+			"Backtest accept sample reason=accepted symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f 15m=%.2f vr=%.2f squeeze=%t",
+			sample.Symbol,
+			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Price,
+			sample.Score,
+			sample.PredictedReturnPct,
+			sample.RequiredPredictedRetPct,
+			sample.DistanceFromHighPct,
+			sample.AllowedDistanceHighPct,
+			sample.RelativeVolume,
+			sample.VolumeLeaderPct,
+			sample.LeaderRank,
+			sample.ATRPct,
+			sample.PriceVsVWAPPct,
+			sample.BreakoutPct,
+			sample.SetupType,
+			sample.OneMinuteReturnPct,
+			sample.ThreeMinuteReturnPct,
+			sample.FifteenMinuteReturnPct,
+			sample.VolumeRate,
+			sample.StrongSqueeze,
+		)
+	}
+
+	for _, sample := range diag.EntryRejectSamples {
+		if sample.Symbol == "CUK" || sample.Symbol == "SMCX" || sample.Symbol == "RDW" || sample.Symbol == "NAMM" {
+			log.Printf(
+				"Backtest target reject symbol=%s reason=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f 15m=%.2f vr=%.2f squeeze=%t",
+				sample.Symbol,
+				sample.Reason,
+				sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+				sample.Price,
+				sample.Score,
+				sample.PredictedReturnPct,
+				sample.RequiredPredictedRetPct,
+				sample.DistanceFromHighPct,
+				sample.AllowedDistanceHighPct,
+				sample.RelativeVolume,
+				sample.VolumeLeaderPct,
+				sample.LeaderRank,
+				sample.ATRPct,
+				sample.PriceVsVWAPPct,
+				sample.BreakoutPct,
+				sample.SetupType,
+				sample.OneMinuteReturnPct,
+				sample.ThreeMinuteReturnPct,
+				sample.FifteenMinuteReturnPct,
+				sample.VolumeRate,
+				sample.StrongSqueeze,
+			)
+		}
+	}
 }
 
 func logClosedTradeSamples(trades []domain.ClosedTrade) {

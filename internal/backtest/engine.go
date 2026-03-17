@@ -658,7 +658,7 @@ func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbol
 				continue
 			}
 			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
-			plan, ok, _ := strategy.BuildEntryPlan(*rec.candidate)
+			plan, ok, _ := strategy.BuildEntryPlan(*rec.candidate, cfg)
 			if !ok {
 				continue
 			}
@@ -1147,13 +1147,13 @@ func incrementReason(counts map[string]int, reason string) {
 }
 
 func rememberEntrySignalSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
-	if len(diag.EntrySignalSamples) >= 3 {
-		return
-	}
 	diag.EntrySignalSamples = append(diag.EntrySignalSamples, buildEntrySample(candidate, decision))
 }
 
 func rememberEntryRejectSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
+	if candidate.Symbol == "CUK" || candidate.Symbol == "SMCX" || candidate.Symbol == "RDW" || candidate.Symbol == "NAMM" {
+		diag.EntryRejectSamples[fmt.Sprintf("%s-%s-%s", candidate.Symbol, decision.Reason, candidate.Timestamp.Format(time.RFC3339))] = buildEntrySample(candidate, decision)
+	}
 	if _, exists := diag.EntryRejectSamples[decision.Reason]; exists {
 		return
 	}

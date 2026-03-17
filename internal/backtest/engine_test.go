@@ -148,7 +148,7 @@ func TestTrainingTargetPenalizesFailedBreakouts(t *testing.T) {
 		Score:                 26,
 		Timestamp:             start,
 	}
-	plan, ok, reason := strategy.BuildEntryPlan(candidate)
+	plan, ok, reason := strategy.BuildEntryPlan(candidate, config.TradingConfig{StopLossPct: 0.08})
 	if !ok {
 		t.Fatalf("expected valid entry plan, got %s", reason)
 	}

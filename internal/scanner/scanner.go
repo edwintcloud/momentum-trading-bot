@@ -237,7 +237,7 @@ func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct floa
 	if metrics.fifteenMinuteReturn < s.config.MinFifteenMinuteReturnPct && metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
 		return false
 	}
-	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
+	if metrics.volumeRate < maxFloat(0.50, s.config.MinVolumeRate-0.05) {
 		return false
 	}
 	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25

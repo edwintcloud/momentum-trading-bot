@@ -433,7 +433,7 @@ func TestStrategyRejectsParabolicEarlyPremarketSpike(t *testing.T) {
 	if ok {
 		t.Fatal("expected parabolic early premarket entry to be blocked")
 	}
-	if reason != "parabolic-spike" {
+	if reason != "early-premarket-banned" {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
@@ -466,7 +466,7 @@ func TestStrategyRejectsThinEarlyPremarketSetup(t *testing.T) {
 	if ok {
 		t.Fatal("expected thin early premarket setup to be blocked")
 	}
-	if reason != "thin-premarket" {
+	if reason != "early-premarket-banned" {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
@@ -479,7 +479,7 @@ func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
 	at := time.Date(2026, 3, 13, 13, 31, 0, 0, time.UTC)
 
 	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:               "CONL",
+		Symbol:               "REAL",
 		Price:                10.13,
 		Open:                 8.80,
 		HighOfDay:            10.18,
@@ -502,7 +502,7 @@ func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
 	}
 }
 
-func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
+func TestStrategyAllowsReentryAfterLoss(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -544,13 +544,16 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 		VolumeRate:           1.50,
 		MinutesSinceOpen:     55,
 		Score:                19,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
+		SetupHigh:            10.05,
+		SetupLow:             9.90,
+		SetupType:            "opening-range-breakout",
 		Timestamp:            at.Add(-5 * time.Minute),
 	})
-	if ok {
-		t.Fatal("expected immediate reentry after loss to be blocked")
-	}
-	if reason != "symbol-loss-lockout" {
-		t.Fatalf("unexpected block reason: %s", reason)
+	if !ok {
+		t.Fatalf("expected reentry after loss to be allowed, got %s", reason)
 	}
 }
 
@@ -584,19 +587,19 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 		SetupType:             "opening-range-breakout",
 	}
 
-	for i, ts := range []time.Time{at.Add(-3 * time.Hour), at.Add(-2 * time.Hour)} {
+	for i := 0; i < 5; i++ {
 		next := candidate
-		next.Timestamp = ts
+		next.Timestamp = at.Add(time.Duration(-150+i*30) * time.Minute)
 		if _, ok, reason := strat.EvaluateCandidateDetailed(next); !ok {
 			t.Fatalf("expected entry %d to pass, got %s", i+1, reason)
 		}
 	}
 
-	third := candidate
-	third.Timestamp = at
-	_, ok, reason := strat.EvaluateCandidateDetailed(third)
+	sixth := candidate
+	sixth.Timestamp = at
+	_, ok, reason := strat.EvaluateCandidateDetailed(sixth)
 	if ok {
-		t.Fatal("expected third same-day signal for symbol to be blocked")
+		t.Fatal("expected sixth same-day signal for symbol to be blocked")
 	}
 	if reason != "symbol-daily-cap" {
 		t.Fatalf("unexpected block reason: %s", reason)
@@ -710,6 +713,8 @@ func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 
 func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	cfg := testStrategyConfig()
+	cfg.MaxExposurePct = 1.0
+	cfg.MaxOpenPositions = 1
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50500)
@@ -775,8 +780,8 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 	if !ok {
 		t.Fatal("expected conservative premarket setup to pass")
 	}
-	if signal.Quantity != 630 {
-		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 630 shares, got %d", signal.Quantity)
+	if signal.Quantity != 1875 {
+		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 1875 shares, got %d", signal.Quantity)
 	}
 }
 
@@ -789,11 +794,11 @@ func TestStrategyUsesHardProfitTargetOnMassiveSpike(t *testing.T) {
 	book.MarkPriceAt("RKLB", 10.00, at.Add(-2*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
-	// Spike to 13.50 (7.0R if R is 0.50)
+	// Spike to 16.00 (12.0R if R is 0.50)
 	spikeTick := domain.Tick{
 		Symbol:    "RKLB",
-		Price:     13.50,
-		HighOfDay: 13.50,
+		Price:     16.00,
+		HighOfDay: 16.00,
 		Timestamp: at,
 	}
 	signal, ok := strat.evaluateExit(spikeTick)
