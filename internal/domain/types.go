@@ -54,6 +54,7 @@ type Candidate struct {
 	DistanceFromHighPct   float64   `json:"distanceFromHighPct"`
 	OneMinuteReturnPct    float64   `json:"oneMinuteReturnPct"`
 	ThreeMinuteReturnPct  float64   `json:"threeMinuteReturnPct"`
+	FifteenMinuteReturnPct float64  `json:"fifteenMinuteReturnPct"`
 	VolumeRate            float64   `json:"volumeRate"`
 	VolumeLeaderPct       float64   `json:"volumeLeaderPct"`
 	LeaderRank            int       `json:"leaderRank"`

@@ -19,6 +19,7 @@ type TradingConfig struct {
 	MinEntryScore                   float64
 	MinOneMinuteReturnPct           float64
 	MinThreeMinuteReturnPct         float64
+	MinFifteenMinuteReturnPct       float64
 	MinVolumeRate                   float64
 	MaxPriceVsOpenPct               float64
 	BreakoutFailureWindowMin        int
@@ -57,10 +58,11 @@ func DefaultTradingConfig() TradingConfig {
 		ExitCooldownSec:                 5,
 		EntryModelEnabled:               true,
 		EntryModelMinPredictedReturnPct: 0.15,
-		MinEntryScore:                   10.0,
+		MinEntryScore:                   5.0,
 		MinOneMinuteReturnPct:           0.05,
 		MinThreeMinuteReturnPct:         0.15,
-		MinVolumeRate:                   1.05,
+		MinFifteenMinuteReturnPct:       0.50,
+		MinVolumeRate:                   0.5,
 		MaxPriceVsOpenPct:               50.0,
 		BreakoutFailureWindowMin:        15,
 		BreakoutFailureLossPct:          0.008,

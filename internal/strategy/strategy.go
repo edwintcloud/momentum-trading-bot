@@ -169,6 +169,9 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if symbolState.lossExits > 0 {
 		return CandidateDecision{Reason: "symbol-loss-lockout", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
+	if symbolState.entrySignals >= 2 {
+		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -564,10 +567,10 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 		!strongSqueeze {
 		return false, "too-extended-from-open"
 	}
-	if candidate.OneMinuteReturnPct < -0.35 && candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
+	if candidate.FifteenMinuteReturnPct < s.config.MinFifteenMinuteReturnPct && candidate.OneMinuteReturnPct < -0.35 && candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
 		return false, "weak-one-minute-return"
 	}
-	if candidate.ThreeMinuteReturnPct < -0.20 && candidate.VolumeRate < s.config.MinVolumeRate {
+	if candidate.FifteenMinuteReturnPct < s.config.MinFifteenMinuteReturnPct && candidate.ThreeMinuteReturnPct < -0.20 && candidate.VolumeRate < s.config.MinVolumeRate {
 		return false, "weak-three-minute-return"
 	}
 
@@ -719,10 +722,10 @@ func (s *Strategy) isLateSession(at time.Time) bool {
 }
 
 func (s *Strategy) isParabolicEntry(candidate domain.Candidate) bool {
-	if candidate.OneMinuteReturnPct >= 12 || candidate.ThreeMinuteReturnPct >= 20 {
+	if candidate.FifteenMinuteReturnPct < 15 && (candidate.OneMinuteReturnPct >= 12 || candidate.ThreeMinuteReturnPct >= 20) {
 		return true
 	}
-	if s.isEarlyPremarket(candidate.Timestamp) && (candidate.OneMinuteReturnPct >= 5 || candidate.ThreeMinuteReturnPct >= 8) {
+	if s.isEarlyPremarket(candidate.Timestamp) && candidate.FifteenMinuteReturnPct < 6 && (candidate.OneMinuteReturnPct >= 5 || candidate.ThreeMinuteReturnPct >= 8) {
 		return true
 	}
 	if s.isPremarket(candidate.Timestamp) &&

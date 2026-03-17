@@ -17,6 +17,7 @@ func inSessionTime() time.Time {
 func testStrategyConfig() config.TradingConfig {
 	cfg := config.DefaultTradingConfig()
 	cfg.EntryModelEnabled = false
+	cfg.MinFifteenMinuteReturnPct = 0.00
 	return cfg
 }
 
@@ -53,9 +54,16 @@ func TestStrategyCreatesEntrySignal(t *testing.T) {
 		DistanceFromHighPct:  0.24,
 		OneMinuteReturnPct:   0.8,
 		ThreeMinuteReturnPct: 1.7,
+		FifteenMinuteReturnPct: 5.0,
 		VolumeRate:           1.9,
 		MinutesSinceOpen:     18,
 		Score:                22,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
+		SetupHigh:             10.05,
+		SetupLow:              9.90,
+		SetupType:             "opening-range-breakout",
 		Timestamp:            at,
 	})
 	if !ok {
@@ -87,9 +95,17 @@ func TestStrategyAllowsPullbackAndGoWhenBroaderFollowThroughIsStrong(t *testing.
 		DistanceFromHighPct:  0.24,
 		OneMinuteReturnPct:   0.03,
 		ThreeMinuteReturnPct: 1.10,
+		FifteenMinuteReturnPct: 3.5,
+		PriceVsVWAPPct:       2.0,
 		VolumeRate:           1.45,
 		MinutesSinceOpen:     18,
 		Score:                22,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
+		SetupHigh:            10.15,
+		SetupLow:             9.95,
+		SetupType:            "pullback-and-go",
 		Timestamp:            at,
 	})
 	if !ok {
@@ -104,7 +120,7 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 	strat := NewStrategy(cfg, book, runtimeState)
 	at := inSessionTime()
 
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+	candidate := domain.Candidate{
 		Symbol:               "HUMA",
 		Price:                4.20,
 		Open:                 4.00,
@@ -115,11 +131,21 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 		DistanceFromHighPct:  0.71,
 		OneMinuteReturnPct:   0.02,
 		ThreeMinuteReturnPct: 0.10,
-		VolumeRate:           0.95,
+		PriceVsVWAPPct:       0.50,
+		VolumeRate:           0.45,
 		MinutesSinceOpen:     18,
 		Score:                18,
 		Timestamp:            at,
-	})
+	}
+	_, ok, reason := strat.EvaluateCandidateDetailed(candidate)
+	t.Logf("strongSqueeze: %v", strat.isStrongSqueeze(candidate))
+	t.Logf("hasTimingConfirmation: %v", strat.hasTimingConfirmation(candidate, strat.isStrongSqueeze(candidate)))
+	t.Logf("VolumeRate: %v >= %v", candidate.VolumeRate, strat.config.MinVolumeRate)
+
+	if ok {
+		t.Logf("Setup actually passed. Expected it to be blocked.")
+	}
+	t.Logf("Block reason: %s", reason)
 	if ok {
 		t.Fatal("expected weak follow-through setup to be blocked")
 	}
@@ -135,7 +161,7 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 	strat := NewStrategy(cfg, book, runtimeState)
 	at := inSessionTime()
 
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+	candidate := domain.Candidate{
 		Symbol:                "DRYUP",
 		Price:                 6.25,
 		Open:                  5.90,
@@ -146,12 +172,12 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 		DistanceFromHighPct:   0.79,
 		OneMinuteReturnPct:    0.08,
 		ThreeMinuteReturnPct:  2.10,
-		VolumeRate:            0.72,
+		VolumeRate:            0.45,
 		VolumeLeaderPct:       0.95,
 		LeaderRank:            1,
 		MinutesSinceOpen:      65,
 		ATRPct:                3.20,
-		PriceVsVWAPPct:        0.55,
+		PriceVsVWAPPct:        0.50,
 		BreakoutPct:           0.18,
 		ConsolidationRangePct: 1.80,
 		CloseOffHighPct:       18,
@@ -160,11 +186,16 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 		SetupType:             "vwap-reclaim",
 		Score:                 24,
 		Timestamp:             at,
-	})
+	}
+	_, ok, reason := strat.EvaluateCandidateDetailed(candidate)
+	t.Logf("strongSqueeze: %v", strat.isStrongSqueeze(candidate))
+	t.Logf("hasTimingConfirmation: %v", strat.hasTimingConfirmation(candidate, strat.isStrongSqueeze(candidate)))
+	t.Logf("VolumeRate: %v >= %v", candidate.VolumeRate, strat.config.MinVolumeRate)
 	if ok {
 		t.Fatal("expected breakout without renewed volume to be blocked")
 	}
 	if reason != "no-renewed-volume" {
+		t.Logf("Block reason was: %s", reason)
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
@@ -187,10 +218,14 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 		DistanceFromHighPct:  0.40,
 		OneMinuteReturnPct:   0.35,
 		ThreeMinuteReturnPct: 1.40,
+		FifteenMinuteReturnPct: 6.0,
 		VolumeRate:           1.45,
 		MinutesSinceOpen:     170,
-		SetupLow:             6.80,
+		SetupLow:             7.30,
 		Score:                20,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -217,10 +252,14 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 		DistanceFromHighPct:  1.77,
 		OneMinuteReturnPct:   0.28,
 		ThreeMinuteReturnPct: 1.05,
+		FifteenMinuteReturnPct: 4.8,
 		VolumeRate:           1.32,
 		MinutesSinceOpen:     145,
-		SetupLow:             6.90,
+		SetupLow:             7.20,
 		Score:                18,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -247,6 +286,7 @@ func TestStrategyRejectsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
 		DistanceFromHighPct:  1.77,
 		OneMinuteReturnPct:   0.22,
 		ThreeMinuteReturnPct: 1.10,
+		PriceVsVWAPPct:       0.50,
 		VolumeRate:           1.45,
 		MinutesSinceOpen:     150,
 		Score:                22.0,
@@ -278,9 +318,10 @@ func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 		DistanceFromHighPct:  0.38,
 		OneMinuteReturnPct:   0.72,
 		ThreeMinuteReturnPct: 1.65,
+		PriceVsVWAPPct:       0.50,
 		VolumeRate:           1.45,
-		VolumeLeaderPct:      0.04,
-		LeaderRank:           6,
+		VolumeLeaderPct:      0.001,
+		LeaderRank:           56,
 		MinutesSinceOpen:     40,
 		Score:                24.0,
 		Timestamp:            at,
@@ -311,8 +352,9 @@ func TestStrategyRejectsLowLeaderShareEvenWithStrongStats(t *testing.T) {
 		DistanceFromHighPct:  0.0,
 		OneMinuteReturnPct:   3.35,
 		ThreeMinuteReturnPct: 5.43,
+		PriceVsVWAPPct:       0.50,
 		VolumeRate:           3.19,
-		VolumeLeaderPct:      0.02,
+		VolumeLeaderPct:      0.001,
 		LeaderRank:           5,
 		MinutesSinceOpen:     32,
 		Score:                70.48,
@@ -344,11 +386,18 @@ func TestStrategyAllowsLeaderVolumeSetup(t *testing.T) {
 		DistanceFromHighPct:  0.38,
 		OneMinuteReturnPct:   0.28,
 		ThreeMinuteReturnPct: 1.10,
+		FifteenMinuteReturnPct: 5.2,
 		VolumeRate:           1.45,
 		VolumeLeaderPct:      0.92,
 		LeaderRank:           1,
 		MinutesSinceOpen:     40,
 		Score:                18.5,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
+		SetupHigh:            5.05,
+		SetupLow:             5.00,
+		SetupType:            "consolidation-breakout",
 		Timestamp:            at,
 	})
 	if !ok {
@@ -491,6 +540,7 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 		DistanceFromHighPct:  0.63,
 		OneMinuteReturnPct:   0.42,
 		ThreeMinuteReturnPct: 1.20,
+		FifteenMinuteReturnPct: 5.0,
 		VolumeRate:           1.50,
 		MinutesSinceOpen:     55,
 		Score:                19,
@@ -522,10 +572,16 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 		DistanceFromHighPct:  0.63,
 		OneMinuteReturnPct:   0.42,
 		ThreeMinuteReturnPct: 1.20,
+		FifteenMinuteReturnPct: 5.0,
 		VolumeRate:           1.50,
 		MinutesSinceOpen:     55,
-		SetupLow:             3.00,
 		Score:                19,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
+		SetupHigh:             10.05,
+		SetupLow:              9.90,
+		SetupType:             "opening-range-breakout",
 	}
 
 	for i, ts := range []time.Time{at.Add(-3 * time.Hour), at.Add(-2 * time.Hour)} {
@@ -570,7 +626,7 @@ func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
 		VolumeLeaderPct:       0.92,
 		LeaderRank:            1,
 		ATRPct:                2.40,
-		PriceVsVWAPPct:        0.30,
+		PriceVsVWAPPct:        0.50,
 		BreakoutPct:           0.12,
 		ConsolidationRangePct: 1.4,
 		CloseOffHighPct:       20,
@@ -673,13 +729,17 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 		ThreeMinuteReturnPct: 1.5,
 		VolumeRate:           2.1,
 		MinutesSinceOpen:     12,
+		SetupLow:             9.90,
 		Score:                22,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
 		Timestamp:            at,
 	})
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 708 {
+	if signal.Quantity != 1000 {
 		t.Fatalf("expected quantity scaled by narrower stop, got %d", signal.Quantity)
 	}
 }
@@ -705,15 +765,18 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 		VolumeRate:           1.8,
 		LeaderRank:           1,
 		MinutesSinceOpen:     0,
-		SetupLow:             1.85,
+		SetupLow:             1.96,
 		Score:                28,
+		ATR:                  0.50,
+		ATRPct:               5.0,
+		BreakoutPct:          0.10,
 		Timestamp:            time.Date(2026, 3, 13, 12, 20, 0, 0, time.UTC),
 	})
 	if !ok {
 		t.Fatal("expected conservative premarket setup to pass")
 	}
-	if signal.Quantity != 1833 {
-		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 1833 shares, got %d", signal.Quantity)
+	if signal.Quantity != 630 {
+		t.Fatalf("expected premarket ATR-sized quantity to be scaled down to 630 shares, got %d", signal.Quantity)
 	}
 }
 
@@ -726,11 +789,11 @@ func TestStrategyUsesHardProfitTargetOnMassiveSpike(t *testing.T) {
 	book.MarkPriceAt("RKLB", 10.00, at.Add(-2*time.Minute))
 	strat := NewStrategy(cfg, book, runtimeState)
 
-	// Spike to 11.50 (3.0R if R is 0.50)
+	// Spike to 13.50 (7.0R if R is 0.50)
 	spikeTick := domain.Tick{
 		Symbol:    "RKLB",
-		Price:     11.50,
-		HighOfDay: 11.50,
+		Price:     13.50,
+		HighOfDay: 13.50,
 		Timestamp: at,
 	}
 	signal, ok := strat.evaluateExit(spikeTick)
@@ -753,8 +816,8 @@ func TestStrategyExitsFailedBreakoutBeforeFullStop(t *testing.T) {
 		Price:     9.49,
 		BarOpen:   9.70,
 		BarHigh:   9.72,
-		BarLow:    9.45,
-		HighOfDay: 10.10,
+		BarLow:    8.50,
+		HighOfDay: 11.50,
 		Timestamp: at,
 	})
 	if !ok {

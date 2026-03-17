@@ -14,7 +14,7 @@ const (
 	profitTargetR         = 5.00
 	trailActivationR      = 1.00
 	trailATRMultiplier    = 1.50
-	tightTrailTriggerR    = 2.00
+	tightTrailTriggerR    = 1.50
 	tightTrailATRMultiple = 0.75
 	failedBreakoutCutR    = 2.00
 	structureConfirmR     = 0.00
@@ -118,7 +118,7 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	// Time-based break-even: if open long enough with confirmed positive
 	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 1.50 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 1.00 && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop
