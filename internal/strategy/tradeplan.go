@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 )
 
@@ -11,10 +12,10 @@ const (
 	minATRPercentFallback = 0.020
 	stopATRMultiplier     = 1.00
 	maxRiskATRMultiplier  = 1.00
-	profitTargetR         = 5.00
+	profitTargetR         = 10.00
 	trailActivationR      = 1.00
 	trailATRMultiplier    = 1.50
-	tightTrailTriggerR    = 2.00
+	tightTrailTriggerR    = 1.50
 	tightTrailATRMultiple = 0.75
 	failedBreakoutCutR    = 2.00
 	structureConfirmR     = 0.00
@@ -29,11 +30,11 @@ type EntryPlan struct {
 }
 
 // BuildEntryPlan derives the volatility-aware stop and risk basis for a candidate.
-func BuildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
-	return buildEntryPlan(candidate)
+func BuildEntryPlan(candidate domain.Candidate, cfg config.TradingConfig) (EntryPlan, bool, string) {
+	return buildEntryPlan(candidate, cfg)
 }
 
-func buildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
+func buildEntryPlan(candidate domain.Candidate, cfg config.TradingConfig) (EntryPlan, bool, string) {
 	if candidate.Price <= 0 {
 		return EntryPlan{}, false, "invalid-price"
 	}
@@ -54,12 +55,22 @@ func buildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
 		stopPrice = atrStop
 	}
 	riskPerShare := candidate.Price - stopPrice
+	minRisk := candidate.Price * 0.04
+	maxRisk := candidate.Price * cfg.StopLossPct
+	if riskPerShare < minRisk {
+		riskPerShare = minRisk
+	}
+	if riskPerShare > maxRisk {
+		riskPerShare = maxRisk
+	}
+	stopPrice = candidate.Price - riskPerShare
+
 	if riskPerShare <= 0 {
 		return EntryPlan{}, false, "invalid-risk"
 	}
-	if riskPerShare > atr*maxRiskATRMultiplier {
-		return EntryPlan{}, false, "wide-risk"
-	}
+	// Removing the strict ATR cap, because our new minRisk floor effectively guarantees
+	// we will violate it during very tight squeezes. As long as it's within cfg.StopLossPct
+	// we want to take the trade.
 	return EntryPlan{
 		StopPrice:    roundPrice(stopPrice),
 		RiskPerShare: roundPrice(riskPerShare),
@@ -118,7 +129,7 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	// Time-based break-even: if open long enough with confirmed positive
 	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 1.50 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 0.50 && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop
@@ -164,16 +175,7 @@ func FailedBreakoutPrice(position domain.Position) float64 {
 	return failedBreakoutPrice(position)
 }
 
-func shouldTimeStop(position domain.Position, at time.Time, cfgBreakoutFailureWindowMin, cfgStagnationWindowMin int) bool {
-	holdingTime := at.Sub(position.OpenedAt)
-	if holdingTime < time.Duration(cfgStagnationWindowMin)*time.Minute {
-		return false
-	}
-	if holdingTime < time.Duration(cfgBreakoutFailureWindowMin)*time.Minute {
-		return false
-	}
-	return true
-}
+
 
 func roundPrice(price float64) float64 {
 	return math.Round(price*100) / 100

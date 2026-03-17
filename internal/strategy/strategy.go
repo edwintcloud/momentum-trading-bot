@@ -19,9 +19,10 @@ type Strategy struct {
 	runtime      *runtime.State
 	seedModel    LinearModel
 	entryModel   LinearModel
-	lastEntryAt  map[string]time.Time
-	lastExitAt   map[string]time.Time
-	symbolStates map[string]symbolTradeState
+	lastEntryAt         map[string]time.Time
+	lastExitAt          map[string]time.Time
+	symbolStates        map[string]symbolTradeState
+	reallocationTargets map[string]bool
 }
 
 // CandidateDecision captures the strategy's entry decision and supporting metrics.
@@ -61,9 +62,10 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		runtime:      runtimeState,
 		seedModel:    seedModel,
 		entryModel:   entryModel,
-		lastEntryAt:  make(map[string]time.Time),
-		lastExitAt:   make(map[string]time.Time),
-		symbolStates: make(map[string]symbolTradeState),
+		lastEntryAt:         make(map[string]time.Time),
+		lastExitAt:          make(map[string]time.Time),
+		symbolStates:        make(map[string]symbolTradeState),
+		reallocationTargets: make(map[string]bool),
 	}
 }
 
@@ -125,6 +127,45 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 	return s.evaluateCandidateDecision(candidate)
 }
 
+func (s *Strategy) evaluateOpportunitySwap(candidate domain.Candidate) bool {
+	positions := s.portfolio.Positions()
+	if len(positions) == 0 {
+		return false
+	}
+	decisionAt := decisionTime(candidate.Timestamp)
+
+	var weakestSymbol string
+	weakestR := 999.0
+	longestHold := time.Duration(0)
+
+	for _, p := range positions {
+		holdingTime := decisionAt.Sub(p.OpenedAt)
+		if holdingTime < 5*time.Minute {
+			continue // Give new positions time to breathe
+		}
+
+		currentR := currentRMultiple(p, p.LastPrice)
+		// We only swap if the position is not already crushing it
+		if currentR < 0.5 {
+			// Prioritize swapping losers or the ones held longest with no progress
+			score := currentR - (holdingTime.Minutes() * 0.05)
+			if score < weakestR {
+				weakestR = score
+				weakestSymbol = p.Symbol
+				longestHold = holdingTime
+			}
+		}
+	}
+
+	if weakestSymbol != "" {
+		s.reallocationTargets[weakestSymbol] = true
+		s.runtime.RecordLog("info", "strategy", fmt.Sprintf("flagged %s for reallocation swap (held %.0f m, currentR %.2f) to capture %s (score %.2f)", weakestSymbol, longestHold.Minutes(), currentRMultiple(s.portfolio.Positions()[0], s.portfolio.Positions()[0].LastPrice), candidate.Symbol, candidate.Score))
+		return true
+	}
+
+	return false
+}
+
 // EvaluateExit applies the managed exit rules to a market tick.
 func (s *Strategy) EvaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	signal, ok, _ := s.evaluateExitDetailed(tick)
@@ -166,8 +207,8 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		}
 	}
 	symbolState := s.symbolState(candidate.Symbol, decisionAt)
-	if symbolState.lossExits > 0 {
-		return CandidateDecision{Reason: "symbol-loss-lockout", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	if symbolState.entrySignals >= 5 {
+		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
@@ -178,9 +219,19 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if s.config.EntryModelEnabled && predictedReturn < requiredReturn {
 		return CandidateDecision{Reason: "model-threshold", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	plan, ok, reason := buildEntryPlan(candidate)
+	plan, ok, reason := buildEntryPlan(candidate, s.config)
 	if !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
+
+	maxExposure := s.portfolio.EffectiveCapital() * s.config.MaxExposurePct
+	if s.portfolio.OpenPositionCount() >= s.config.MaxOpenPositions || s.portfolio.Exposure() >= maxExposure {
+		if candidate.Score >= 16.0 {
+			if s.evaluateOpportunitySwap(candidate) {
+				return CandidateDecision{Reason: "reallocation-swap-pending", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+			}
+		}
+		return CandidateDecision{Reason: "max-capacity-reached", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 
 	quantity := int64(0)
@@ -189,6 +240,22 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		quantity = int64(riskAmount / plan.RiskPerShare)
 	}
 	quantity = int64(float64(quantity) * s.positionSizeMultiplier(candidate))
+	
+	maxExposurePct := s.config.MaxExposurePct
+	if maxExposurePct <= 0 {
+		maxExposurePct = 0.25
+	}
+	openPos := s.config.MaxOpenPositions
+	if openPos <= 0 {
+		openPos = 4
+	}
+	maxAllowedValue := s.portfolio.EffectiveCapital() * (maxExposurePct / float64(openPos))
+	
+	if float64(quantity)*candidate.Price > maxAllowedValue {
+		quantity = int64(maxAllowedValue / candidate.Price)
+		s.runtime.RecordLog("info", "strategy", fmt.Sprintf("clipped entry size for %s to portfolio limit of %d shares ($%.0f)", candidate.Symbol, quantity, maxAllowedValue))
+	}
+	
 	if quantity < 1 {
 		quantity = 1
 	}
@@ -299,6 +366,14 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	case minutes >= 15*60+55:
 		reason = "end-of-day-liquidation"
 		tick.Price = barClose
+	case s.reallocationTargets[position.Symbol]:
+		delete(s.reallocationTargets, position.Symbol)
+		reason = "opportunity-reallocation"
+		tick.Price = barOpen
+		if tick.Price == 0 {
+			tick.Price = barClose
+		}
+		fmt.Printf("DEBUG STRATEGY: %s opportunity-reallocation barOpen=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
 		reason = previousReason
 		tick.Price = barOpen
@@ -311,6 +386,12 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(position)
 		fmt.Printf("DEBUG STRATEGY: %s failed-breakout fbp=%.2f barLow=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, barLow, holdingTime.Minutes(), peakReturn)
+	case sameDayHold &&
+		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
+		peakReturn < s.config.StagnationMinPeakPct:
+		reason = "stagnation-time-stop"
+		tick.Price = barClose
+		fmt.Printf("DEBUG STRATEGY: %s stagnation-time-stop barClose=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case func() bool {
 		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
@@ -465,9 +546,6 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	if s.isOpeningSession(candidate.Timestamp) {
 		threshold += 0.20
 	}
-	if candidate.MinutesSinceOpen > 180 && !strongSqueeze {
-		threshold += 0.15
-	}
 	if volumeLeaderPct < 0.20 {
 		threshold += 0.15
 	}
@@ -488,7 +566,10 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 		threshold -= 0.20
 	}
 
-	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.75
+	minThreshold := s.config.EntryModelMinPredictedReturnPct
+	if candidate.VolumeRate >= 5.0 && !s.isPremarket(candidate.Timestamp) {
+		minThreshold = maxFloat(minThreshold-0.05, 0.10)
+	}
 	if strongSqueeze {
 		minThreshold = maxFloat(minThreshold, 0.20)
 	}
@@ -504,20 +585,55 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	return threshold
 }
 
+var knownLeveragedETFs = map[string]bool{
+	"UVIX": true, "UVXY": true, "SQQQ": true, "TQQQ": true, "SOXL": true, "SOXS": true,
+	"SPXL": true, "SPXS": true, "UPRO": true, "SPXU": true, "UDOW": true, "SDOW": true,
+	"TNA":  true, "TZA":  true, "FAS":  true, "FAZ":  true, "NUGT": true, "DUST": true,
+	"JNUG": true, "JDST": true, "UGL":  true, "GLL":  true, "AGQ":  true, "ZSL":  true,
+	"BOIL": true, "KOLD": true, "UCO":  true, "SCO":  true, "YINN": true, "YANG": true,
+	"CWEB": true, "KORU": true, "EURL": true, "EDC":  true, "EDZ":  true, "INDL": true,
+	"LBJ":  true, "GUSH": true, "DRIP": true, "NRGU": true, "NRGD": true, "UAMY": true,
+	"BITX": true, "BITI": true, "MSTU": true, "TSLL": true, "TSLQ": true, "CONL": true,
+	"GDXD": true, "GDXU": true, "AAPU": true, "AAPD": true, "AMZU": true, "AMZD": true,
+	"NVDL": true, "NVDD": true, "NVDU": true, "MSFU": true, "MSFD": true, "GOOU": true,
+	"GOOD": true, "COINU": true, "COIND": true, "DPST": true, "LABU": true, "LABD": true,
+	"WTIU": true, "MSTZ": true, "SUPX": true, "DXD": true,
+}
+
+func isLeveragedETF(symbol string) bool {
+	return knownLeveragedETFs[symbol]
+}
+
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
+	if candidate.Price < s.config.MinPrice {
+		return false, "low-price"
+	}
+	if isLeveragedETF(candidate.Symbol) {
+		return false, "leveraged-etf"
+	}
+	if candidate.MinutesSinceOpen > float64(s.config.MaxEntryMinutesSinceOpen) {
+		return false, "late-session-entry"
+	}
+	if s.config.MaxPriceVsVWAPPct > 0 && candidate.PriceVsVWAPPct > s.config.MaxPriceVsVWAPPct {
+		return false, "vwap-overextended"
+	}
+
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
-	minLeaderPct := 0.002
+	minLeaderPct := 0.01
 	maxLeaderRank := 50
 	if strongSqueeze {
-		minLeaderPct -= 0.02
+		minLeaderPct -= 0.008 // Floor of 0.002 for strong squeezes
 		maxLeaderRank += 2
 	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
 	}
-	if s.isEarlyPremarket(candidate.Timestamp) && entryDollarVolume(candidate) < 2_000_000 {
-		return false, "thin-premarket"
+	if s.isEarlyPremarket(candidate.Timestamp) {
+		return false, "early-premarket-banned"
+	}
+	if s.config.MaxOneMinuteReturnPct > 0 && candidate.OneMinuteReturnPct > s.config.MaxOneMinuteReturnPct {
+		return false, "one-minute-flash-spike"
 	}
 	if s.isOpeningSession(candidate.Timestamp) &&
 		candidate.RelativeVolume >= 40 &&
@@ -554,8 +670,11 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.PriceVsVWAPPct > 12.0 && !strongSqueeze {
 		return false, "vwap-extension"
 	}
-	if candidate.DistanceFromHighPct > 8.0 && !strongSqueeze {
+	if candidate.DistanceFromHighPct > 4.5 && !strongSqueeze {
 		return false, "distance-from-high"
+	}
+	if candidate.BreakoutPct > 2.0 && !strongSqueeze {
+		return false, "breakout-too-extended"
 	}
 	if candidate.PriceVsOpenPct > maxFloat(s.config.MaxPriceVsOpenPct, candidate.ATRPct*6.5) &&
 		candidate.BreakoutPct < -0.10 &&
@@ -564,10 +683,10 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 		!strongSqueeze {
 		return false, "too-extended-from-open"
 	}
-	if candidate.OneMinuteReturnPct < -0.35 && candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
+	if candidate.FifteenMinuteReturnPct < s.config.MinFifteenMinuteReturnPct && candidate.OneMinuteReturnPct < -0.35 && candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
 		return false, "weak-one-minute-return"
 	}
-	if candidate.ThreeMinuteReturnPct < -0.20 && candidate.VolumeRate < s.config.MinVolumeRate {
+	if candidate.FifteenMinuteReturnPct < s.config.MinFifteenMinuteReturnPct && candidate.ThreeMinuteReturnPct < -0.20 && candidate.VolumeRate < s.config.MinVolumeRate {
 		return false, "weak-three-minute-return"
 	}
 
@@ -619,9 +738,9 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 }
 
 func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSqueeze bool) bool {
-	minVolumeRate := maxFloat(s.config.MinVolumeRate, 0.70)
+	minVolumeRate := s.config.MinVolumeRate
 	if strongSqueeze {
-		minVolumeRate = maxFloat(0.50, s.config.MinVolumeRate)
+		minVolumeRate -= 0.20
 	}
 
 	switch candidate.SetupType {
@@ -719,10 +838,10 @@ func (s *Strategy) isLateSession(at time.Time) bool {
 }
 
 func (s *Strategy) isParabolicEntry(candidate domain.Candidate) bool {
-	if candidate.OneMinuteReturnPct >= 12 || candidate.ThreeMinuteReturnPct >= 20 {
+	if candidate.FifteenMinuteReturnPct < 15 && (candidate.OneMinuteReturnPct >= 12 || candidate.ThreeMinuteReturnPct >= 20) {
 		return true
 	}
-	if s.isEarlyPremarket(candidate.Timestamp) && (candidate.OneMinuteReturnPct >= 5 || candidate.ThreeMinuteReturnPct >= 8) {
+	if s.isEarlyPremarket(candidate.Timestamp) && candidate.FifteenMinuteReturnPct < 6 && (candidate.OneMinuteReturnPct >= 5 || candidate.ThreeMinuteReturnPct >= 8) {
 		return true
 	}
 	if s.isPremarket(candidate.Timestamp) &&

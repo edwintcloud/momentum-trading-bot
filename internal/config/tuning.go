@@ -17,46 +17,52 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 		cfg.DailyLossLimitPct = 0.015
 		cfg.MaxTradesPerDay = 6
 		cfg.MaxOpenPositions = 2
-		cfg.MinPrice = 2.0
+		cfg.MinPrice = 5.00
+		cfg.MaxExposurePct = 0.25
 	case equity < 100_000:
-		cfg.RiskPerTradePct = 0.015
-		cfg.DailyLossLimitPct = 0.200
+		cfg.RiskPerTradePct = 0.050
+		cfg.DailyLossLimitPct = 0.020
 		cfg.MaxTradesPerDay = 500
 		cfg.MaxOpenPositions = 10
-		cfg.MinPrice = 1.00
+		cfg.MinPrice = 5.00
+		cfg.MaxExposurePct = 0.48
 	default:
 		cfg.RiskPerTradePct = 0.015
 		cfg.DailyLossLimitPct = 0.080
 		cfg.MaxTradesPerDay = 500
 		cfg.MaxOpenPositions = 10
-		cfg.MinPrice = 1.00
+		cfg.MinPrice = 5.00
+		cfg.MaxExposurePct = 0.45
 	}
 
-	cfg.StopLossPct = 0.05
-	cfg.TrailingStopPct = 0.06
-	cfg.TrailingStopActivationPct = 0.02
-	cfg.EntryCooldownSec = 60
+	cfg.StopLossPct = 0.03
+	cfg.TrailingStopPct = 0.05
+	cfg.TrailingStopActivationPct = 0.01
+	cfg.EntryCooldownSec = 30
 	cfg.ExitCooldownSec = 5
 	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 0.00
-	cfg.MinEntryScore = 5.0
+	cfg.EntryModelMinPredictedReturnPct = 0.20
+	cfg.MinEntryScore = 15.0
 	cfg.MinOneMinuteReturnPct = 0.10
-	cfg.MinThreeMinuteReturnPct = 0.20
-	cfg.MinVolumeRate = 0.70
+	cfg.MaxOneMinuteReturnPct = 3.00
+	cfg.MinThreeMinuteReturnPct = 0.20 
+	cfg.MinFifteenMinuteReturnPct = 0.00 
+	cfg.MinVolumeRate = 3.00
 	cfg.MaxPriceVsOpenPct = 30.0
+	cfg.MaxPriceVsVWAPPct = 0
 	cfg.BreakoutFailureWindowMin = 5
 	cfg.BreakoutFailureLossPct = 0.0150
 	cfg.BreakEvenActivationPct = 0.015
 	cfg.BreakEvenFloorPct = 0.001
-	cfg.StagnationWindowMin = 5
-	cfg.StagnationMinPeakPct = 0.005
-	cfg.MinGapPercent = 1.0
-	cfg.MaxPrice = 50.0
-	cfg.MinRelativeVolume = 1.0
-	cfg.MinPremarketVolume = 80_000
+	cfg.StagnationWindowMin = 3
+	cfg.StagnationMinPeakPct = 0.003
+	cfg.MinGapPercent = 0.0
+	cfg.MaxPrice = 30.0
+	cfg.MaxEntryMinutesSinceOpen = 330
+	cfg.MinRelativeVolume = 2.0
+	cfg.MinPremarketVolume = 0
 	cfg.ScannerWorkers = 4
 	cfg.LimitOrderSlippageDollars = 0.03
-	cfg.MaxExposurePct = 3.50
 
 	if historicalRateLimitPerMin > 0 {
 		budget := int(float64(historicalRateLimitPerMin) * 0.60)

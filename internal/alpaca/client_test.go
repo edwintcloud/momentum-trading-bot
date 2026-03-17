@@ -34,6 +34,22 @@ func TestAvailableQuantityFromError(t *testing.T) {
 	}
 }
 
+func TestIsInsufficientBuyingPowerError(t *testing.T) {
+	err := &APIError{
+		StatusCode: 403,
+		Status:     "403 Forbidden",
+		Code:       40310000,
+		Message:    "insufficient buying power",
+	}
+
+	if !IsInsufficientBuyingPowerError(err) {
+		t.Fatal("expected insufficient buying power error to be detected")
+	}
+	if IsInsufficientQuantityError(err) {
+		t.Fatal("expected insufficient qty error to NOT trigger on buying power payload")
+	}
+}
+
 func TestParseShareQuantity(t *testing.T) {
 	quantity, err := ParseShareQuantity("170.0000")
 	if err != nil {
