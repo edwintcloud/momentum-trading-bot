@@ -163,14 +163,23 @@ func ParseShareQuantity(value string) (int64, error) {
 func IsInsufficientQuantityError(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		if apiErr.Code == 40310000 {
-			return true
-		}
 		message := strings.ToLower(apiErr.Message)
-		return strings.Contains(message, "insufficient qty available for order")
+		return strings.Contains(message, "insufficient qty")
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "insufficient qty available for order") || strings.Contains(message, "40310000")
+	return strings.Contains(message, "insufficient qty")
+}
+
+// IsInsufficientBuyingPowerError reports whether Alpaca rejected an order because
+// the account lacks sufficient equity to cover the requested quantity.
+func IsInsufficientBuyingPowerError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		message := strings.ToLower(apiErr.Message)
+		return strings.Contains(message, "insufficient buying power")
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "insufficient buying power")
 }
 
 // StreamMessage is a normalized market-data stream event.
@@ -507,6 +516,21 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (Order, error) {
 	var order Order
 	err := c.getJSON(ctx, c.cfg.TradingBaseURL+"/v2/orders/"+url.PathEscape(orderID), &order)
 	return order, err
+}
+
+// CancelOrder attempts to delete an open broker order.
+func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.cfg.TradingBaseURL+"/v2/orders/"+url.PathEscape(orderID), nil)
+	if err != nil {
+		return err
+	}
+	c.addHeaders(request)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	return decodeResponse(response, nil)
 }
 
 // StreamMarketData consumes Alpaca's stock websocket and normalizes messages.
