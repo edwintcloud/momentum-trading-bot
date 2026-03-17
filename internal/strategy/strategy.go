@@ -314,6 +314,12 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(position)
 		fmt.Printf("DEBUG STRATEGY: %s failed-breakout fbp=%.2f barLow=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, barLow, holdingTime.Minutes(), peakReturn)
+	case sameDayHold &&
+		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
+		peakReturn < s.config.StagnationMinPeakPct:
+		reason = "stagnation-time-stop"
+		tick.Price = barClose
+		fmt.Printf("DEBUG STRATEGY: %s stagnation-time-stop barClose=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case func() bool {
 		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {

@@ -164,16 +164,7 @@ func FailedBreakoutPrice(position domain.Position) float64 {
 	return failedBreakoutPrice(position)
 }
 
-func shouldTimeStop(position domain.Position, at time.Time, cfgBreakoutFailureWindowMin, cfgStagnationWindowMin int) bool {
-	holdingTime := at.Sub(position.OpenedAt)
-	if holdingTime < time.Duration(cfgStagnationWindowMin)*time.Minute {
-		return false
-	}
-	if holdingTime < time.Duration(cfgBreakoutFailureWindowMin)*time.Minute {
-		return false
-	}
-	return true
-}
+
 
 func roundPrice(price float64) float64 {
 	return math.Round(price*100) / 100
