@@ -154,12 +154,12 @@ func TestTrainingTargetPenalizesFailedBreakouts(t *testing.T) {
 	}
 
 	goodRecords := []record{
-		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00, Volume: 1000000}, candidate: &candidate},
+		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00, Volume: 1000000}, candidate: candidate, hasCandidate: true},
 		{bar: bar{Timestamp: start.Add(time.Minute), Symbol: "TEST", Open: 10.01, High: 10.70, Low: 9.98, Close: 10.55, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 10.55, BarOpen: 10.01, BarHigh: 10.70, BarLow: 9.98, Timestamp: start.Add(time.Minute)}},
 		{bar: bar{Timestamp: start.Add(2 * time.Minute), Symbol: "TEST", Open: 10.56, High: 11.10, Low: 10.40, Close: 10.95, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 10.95, BarOpen: 10.56, BarHigh: 11.10, BarLow: 10.40, Timestamp: start.Add(2 * time.Minute)}},
 	}
 	badRecords := []record{
-		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00, Volume: 1000000}, candidate: &candidate},
+		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00, Volume: 1000000}, candidate: candidate, hasCandidate: true},
 		{bar: bar{Timestamp: start.Add(time.Minute), Symbol: "TEST", Open: 10.01, High: 10.12, Low: 9.55, Close: 9.62, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 9.62, BarOpen: 10.01, BarHigh: 10.12, BarLow: 9.55, Timestamp: start.Add(time.Minute)}},
 		{bar: bar{Timestamp: start.Add(2 * time.Minute), Symbol: "TEST", Open: 9.60, High: 9.68, Low: 9.35, Close: 9.40, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 9.40, BarOpen: 9.60, BarHigh: 9.68, BarLow: 9.35, Timestamp: start.Add(2 * time.Minute)}},
 	}
