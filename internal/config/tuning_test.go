@@ -25,7 +25,7 @@ func TestTuneTradingConfigUsesBrokerScaleForLargerAccount(t *testing.T) {
 	if cfg.RiskPerTradePct != 0.015 {
 		t.Fatalf("expected standard risk per trade for larger account, got %.4f", cfg.RiskPerTradePct)
 	}
-	if cfg.MaxExposurePct != 0.45 {
+	if cfg.MaxExposurePct != 0.48 {
 		t.Fatalf("expected exposure cap to stay aligned with risk-based sizing, got %.2f", cfg.MaxExposurePct)
 	}
 	if cfg.HydrationRequestsPerMin != 2400 {

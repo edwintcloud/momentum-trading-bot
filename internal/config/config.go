@@ -7,7 +7,6 @@ type TradingConfig struct {
 	DailyLossLimitPct               float64
 	MaxTradesPerDay                 int
 	MaxOpenPositions                int
-	MaxEntryMinutesSinceOpen        int
 	MaxExposurePct                  float64
 	StopLossPct                     float64
 	TrailingStopPct                 float64
@@ -19,12 +18,9 @@ type TradingConfig struct {
 	EntryModelMinPredictedReturnPct float64
 	MinEntryScore                   float64
 	MinOneMinuteReturnPct           float64
-	MaxOneMinuteReturnPct           float64
 	MinThreeMinuteReturnPct         float64
-	MinFifteenMinuteReturnPct       float64
 	MinVolumeRate                   float64
 	MaxPriceVsOpenPct               float64
-	MaxPriceVsVWAPPct               float64
 	BreakoutFailureWindowMin        int
 	BreakoutFailureLossPct          float64
 	BreakEvenActivationPct          float64
@@ -53,7 +49,6 @@ func DefaultTradingConfig() TradingConfig {
 		DailyLossLimitPct:               0.03,
 		MaxTradesPerDay:                 8,
 		MaxOpenPositions:                4,
-		MaxEntryMinutesSinceOpen:        390,
 		MaxExposurePct:                  0.30,
 		StopLossPct:                     0.07,
 		TrailingStopPct:                 0.08,
@@ -62,12 +57,10 @@ func DefaultTradingConfig() TradingConfig {
 		ExitCooldownSec:                 5,
 		EntryModelEnabled:               true,
 		EntryModelMinPredictedReturnPct: 0.15,
-		MinEntryScore:                   5.0,
+		MinEntryScore:                   10.0,
 		MinOneMinuteReturnPct:           0.05,
-		MaxOneMinuteReturnPct:           10.0,
 		MinThreeMinuteReturnPct:         0.15,
-		MinFifteenMinuteReturnPct:       0.50,
-		MinVolumeRate:                   0.5,
+		MinVolumeRate:                   1.05,
 		MaxPriceVsOpenPct:               50.0,
 		BreakoutFailureWindowMin:        15,
 		BreakoutFailureLossPct:          0.008,

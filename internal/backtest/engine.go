@@ -113,7 +113,6 @@ type EntrySample struct {
 	AllowedDistanceHighPct  float64
 	OneMinuteReturnPct      float64
 	ThreeMinuteReturnPct    float64
-	FifteenMinuteReturnPct  float64
 	VolumeRate              float64
 	VolumeLeaderPct         float64
 	LeaderRank              int
@@ -658,7 +657,7 @@ func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbol
 				continue
 			}
 			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
-			plan, ok, _ := strategy.BuildEntryPlan(*rec.candidate, cfg)
+			plan, ok, _ := strategy.BuildEntryPlan(*rec.candidate)
 			if !ok {
 				continue
 			}
@@ -1147,13 +1146,13 @@ func incrementReason(counts map[string]int, reason string) {
 }
 
 func rememberEntrySignalSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
+	if len(diag.EntrySignalSamples) >= 3 {
+		return
+	}
 	diag.EntrySignalSamples = append(diag.EntrySignalSamples, buildEntrySample(candidate, decision))
 }
 
 func rememberEntryRejectSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
-	if candidate.Symbol == "CUK" || candidate.Symbol == "SMCX" || candidate.Symbol == "RDW" || candidate.Symbol == "NAMM" {
-		diag.EntryRejectSamples[fmt.Sprintf("%s-%s-%s", candidate.Symbol, decision.Reason, candidate.Timestamp.Format(time.RFC3339))] = buildEntrySample(candidate, decision)
-	}
 	if _, exists := diag.EntryRejectSamples[decision.Reason]; exists {
 		return
 	}
@@ -1173,7 +1172,6 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		AllowedDistanceHighPct:  round2(decision.AllowedDistanceHighPct),
 		OneMinuteReturnPct:      round2(candidate.OneMinuteReturnPct),
 		ThreeMinuteReturnPct:    round2(candidate.ThreeMinuteReturnPct),
-		FifteenMinuteReturnPct:  round2(candidate.FifteenMinuteReturnPct),
 		VolumeRate:              round2(candidate.VolumeRate),
 		VolumeLeaderPct:         candidate.VolumeLeaderPct,
 		LeaderRank:              candidate.LeaderRank,
