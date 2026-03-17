@@ -58,10 +58,6 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 
 	submitted, err := e.client.SubmitOrder(submissionCtx, order)
 	if err != nil {
-		if order.Side == "buy" && alpaca.IsInsufficientBuyingPowerError(err) {
-			e.runtime.RecordLog("warn", "execution", fmt.Sprintf("insufficient buying power to place entry for %s", order.Symbol))
-			return nil
-		}
 		if order.Side == "sell" && alpaca.IsInsufficientQuantityError(err) {
 			if availableQty, ok := alpaca.AvailableQuantityFromError(err); ok {
 				adjustedOrder, changed, adjustErr := e.applyAvailableSellQuantity(order, availableQty, portfolioManager)
@@ -147,14 +143,6 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 			return ctx.Err()
 		case <-time.After(time.Duration(e.config.OrderPollIntervalSec) * time.Second):
 		}
-	}
-
-	cancelCtx, cancelCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelCancel()
-	if cancelErr := e.client.CancelOrder(cancelCtx, submitted.ID); cancelErr != nil {
-		e.runtime.RecordLog("warn", "execution", fmt.Sprintf("failed to cancel timed out order %s %s: %v", order.Side, order.Symbol, cancelErr))
-	} else {
-		e.runtime.RecordLog("info", "execution", fmt.Sprintf("cancelled timed out order %s %s", order.Side, order.Symbol))
 	}
 
 	if appliedQty > 0 {

@@ -7,5 +7,3 @@ web/dist/
 logs/
 progress.txt
 tasks.md
-.gotmp/
-*.log

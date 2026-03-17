@@ -33,7 +33,6 @@ type symbolState struct {
 type scanMetrics struct {
 	oneMinuteReturn       float64
 	threeMinuteReturn     float64
-	fifteenMinuteReturn   float64
 	volumeRate            float64
 	atr                   float64
 	vwap                  float64
@@ -164,7 +163,6 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		DistanceFromHighPct:   round2(scoreOrZero(distanceFromHighPct)),
 		OneMinuteReturnPct:    round2(scoreOrZero(metrics.oneMinuteReturn)),
 		ThreeMinuteReturnPct:  round2(scoreOrZero(metrics.threeMinuteReturn)),
-		FifteenMinuteReturnPct: round2(scoreOrZero(metrics.fifteenMinuteReturn)),
 		VolumeRate:            round2(scoreOrZero(metrics.volumeRate)),
 		VolumeLeaderPct:       clampFloat(scoreOrZero(volumeLeaderPct), 0, 1),
 		LeaderRank:            leaderRank,
@@ -234,10 +232,10 @@ func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct floa
 	if priceVsOpenPct < maxFloat(2.5, s.config.MinGapPercent*0.25) {
 		return false
 	}
-	if metrics.fifteenMinuteReturn < s.config.MinFifteenMinuteReturnPct && metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
+	if metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
 		return false
 	}
-	if metrics.volumeRate < maxFloat(0.50, s.config.MinVolumeRate-0.05) {
+	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
 		return false
 	}
 	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25
@@ -310,7 +308,6 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	metrics := scanMetrics{
 		oneMinuteReturn:   lookbackReturn(bars, 1),
 		threeMinuteReturn: lookbackReturn(bars, 3),
-		fifteenMinuteReturn: lookbackReturn(bars, 15),
 		volumeRate:        recentVolumeRate(bars),
 		atr:               averageTrueRange(bars, 14),
 		vwap:              current.vwap,

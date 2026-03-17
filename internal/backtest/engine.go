@@ -7,7 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -113,7 +113,6 @@ type EntrySample struct {
 	AllowedDistanceHighPct  float64
 	OneMinuteReturnPct      float64
 	ThreeMinuteReturnPct    float64
-	FifteenMinuteReturnPct  float64
 	VolumeRate              float64
 	VolumeLeaderPct         float64
 	LeaderRank              int
@@ -141,9 +140,10 @@ type bar struct {
 }
 
 type record struct {
-	bar       bar
-	tick      domain.Tick
-	candidate *domain.Candidate
+	bar          bar
+	tick         domain.Tick
+	candidate    domain.Candidate
+	hasCandidate bool
 }
 
 type pendingEntry struct {
@@ -203,8 +203,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 
 	runtimeState := runtime.NewState()
 	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
-	runCfg.Bars = nil
-	bars = nil
 	corpus := trainingCorpus{}
 	if !runCfg.TrainStart.IsZero() {
 		cacheKey := trainingCorpusCacheKey(cfg, runCfg, records, symbolIndices)
@@ -540,11 +538,11 @@ func loadBars(path string, start, end, trainStart, trainEnd time.Time) ([]bar, e
 		bars = append(bars, entry)
 	}
 
-	slices.SortFunc(bars, func(a, b bar) int {
-		if cmp := a.Timestamp.Compare(b.Timestamp); cmp != 0 {
-			return cmp
+	sort.Slice(bars, func(i, j int) bool {
+		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
+			return bars[i].Symbol < bars[j].Symbol
 		}
-		return strings.Compare(a.Symbol, b.Symbol)
+		return bars[i].Timestamp.Before(bars[j].Timestamp)
 	})
 	return bars, nil
 }
@@ -569,11 +567,11 @@ func convertInputBars(input []InputBar, start, end, trainStart, trainEnd time.Ti
 		}
 		bars = append(bars, entry)
 	}
-	slices.SortFunc(bars, func(a, b bar) int {
-		if cmp := a.Timestamp.Compare(b.Timestamp); cmp != 0 {
-			return cmp
+	sort.Slice(bars, func(i, j int) bool {
+		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
+			return bars[i].Symbol < bars[j].Symbol
 		}
-		return strings.Compare(a.Symbol, b.Symbol)
+		return bars[i].Timestamp.Before(bars[j].Timestamp)
 	})
 	return bars
 }
@@ -631,14 +629,11 @@ func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []
 	for _, item := range bars {
 		tick := normalizeBar(item, normalizerState)
 		candidate, ok := scan.EvaluateTick(tick)
-		var ptr *domain.Candidate
-		if ok {
-			ptr = &candidate
-		}
 		rec := record{
-			bar:       item,
-			tick:      tick,
-			candidate: ptr,
+			bar:          item,
+			tick:         tick,
+			candidate:    candidate,
+			hasCandidate: ok,
 		}
 		records = append(records, rec)
 		symbolIndices[item.Symbol] = append(symbolIndices[item.Symbol], len(records)-1)
@@ -654,11 +649,11 @@ func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbol
 	for _, indices := range symbolIndices {
 		for pos, idx := range indices {
 			rec := records[idx]
-			if rec.candidate == nil || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.End) {
+			if !rec.hasCandidate || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.End) {
 				continue
 			}
 			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
-			plan, ok, _ := strategy.BuildEntryPlan(*rec.candidate, cfg)
+			plan, ok, _ := strategy.BuildEntryPlan(rec.candidate)
 			if !ok {
 				continue
 			}
@@ -670,7 +665,7 @@ func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbol
 				candidateAt: rec.bar.Timestamp,
 				availableAt: availableAt,
 				sample: strategy.TrainingSample{
-					Candidate:        *rec.candidate,
+					Candidate:        rec.candidate,
 					ForwardReturnPct: forwardReturn,
 				},
 			})
@@ -1147,13 +1142,13 @@ func incrementReason(counts map[string]int, reason string) {
 }
 
 func rememberEntrySignalSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
+	if len(diag.EntrySignalSamples) >= 3 {
+		return
+	}
 	diag.EntrySignalSamples = append(diag.EntrySignalSamples, buildEntrySample(candidate, decision))
 }
 
 func rememberEntryRejectSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
-	if candidate.Symbol == "CUK" || candidate.Symbol == "SMCX" || candidate.Symbol == "RDW" || candidate.Symbol == "NAMM" {
-		diag.EntryRejectSamples[fmt.Sprintf("%s-%s-%s", candidate.Symbol, decision.Reason, candidate.Timestamp.Format(time.RFC3339))] = buildEntrySample(candidate, decision)
-	}
 	if _, exists := diag.EntryRejectSamples[decision.Reason]; exists {
 		return
 	}
@@ -1173,7 +1168,6 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		AllowedDistanceHighPct:  round2(decision.AllowedDistanceHighPct),
 		OneMinuteReturnPct:      round2(candidate.OneMinuteReturnPct),
 		ThreeMinuteReturnPct:    round2(candidate.ThreeMinuteReturnPct),
-		FifteenMinuteReturnPct:  round2(candidate.FifteenMinuteReturnPct),
 		VolumeRate:              round2(candidate.VolumeRate),
 		VolumeLeaderPct:         candidate.VolumeLeaderPct,
 		LeaderRank:              candidate.LeaderRank,

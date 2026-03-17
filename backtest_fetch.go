@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,11 +191,11 @@ func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []s
 			}
 		case result, ok := <-resultCh:
 			if !ok {
-				slices.SortFunc(inputBars, func(a, b backtest.InputBar) int {
-					if cmp := a.Timestamp.Compare(b.Timestamp); cmp != 0 {
-						return cmp
+				sort.Slice(inputBars, func(i, j int) bool {
+					if inputBars[i].Timestamp.Equal(inputBars[j].Timestamp) {
+						return inputBars[i].Symbol < inputBars[j].Symbol
 					}
-					return strings.Compare(a.Symbol, b.Symbol)
+					return inputBars[i].Timestamp.Before(inputBars[j].Timestamp)
 				})
 				log.Printf("Historical cache summary hits=%d misses=%d dir=%s", cacheHits.Load(), cacheMisses.Load(), historicalCacheRoot)
 				return inputBars, nil
