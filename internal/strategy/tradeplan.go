@@ -10,13 +10,13 @@ import (
 const (
 	minATRPercentFallback = 0.020
 	stopATRMultiplier     = 1.00
-	maxRiskATRMultiplier  = 4.00
-	profitTargetR         = 2.00
-	trailActivationR      = 0.70
+	maxRiskATRMultiplier  = 1.00
+	profitTargetR         = 5.00
+	trailActivationR      = 1.00
 	trailATRMultiplier    = 1.50
-	tightTrailTriggerR    = 1.20
-	tightTrailATRMultiple = 0.60
-	failedBreakoutCutR    = 0.05
+	tightTrailTriggerR    = 2.00
+	tightTrailATRMultiple = 0.75
+	failedBreakoutCutR    = 2.00
 	structureConfirmR     = 0.00
 )
 
@@ -118,14 +118,14 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	// Time-based break-even: if open long enough with confirmed positive
 	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 0.50 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 1.50 && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop
 			reason = "break-even-stop"
 		}
 	}
-	
+
 	// Hard Profit Target: Momentum stocks spike and crash. Take the money.
 	if peakR >= profitTargetR {
 		// Set stop right at current price to force immediate exit
@@ -137,15 +137,9 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 		if peakR >= tightTrailTriggerR {
 			trailWidth = math.Max(position.EntryATR*tightTrailATRMultiple, riskPerShare*0.75)
 		}
-		// Graduated trail floor: don't lock in break-even until the trade
-		// has moved enough in our favor.
-		trailFloor := position.AvgPrice - (riskPerShare * 0.30)
-		if peakR >= 1.00 {
-			trailFloor = position.AvgPrice
-		}
-		if peakR >= 1.50 {
-			trailFloor = position.AvgPrice + (riskPerShare * 0.50)
-		}
+		
+		trailFloor := position.AvgPrice
+		
 		stopPrice = math.Max(stopPrice, trailFloor)
 		stopPrice = math.Max(stopPrice, highWatermark-trailWidth)
 		reason = "trailing-stop"

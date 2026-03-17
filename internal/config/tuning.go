@@ -19,16 +19,16 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 		cfg.MaxOpenPositions = 2
 		cfg.MinPrice = 2.0
 	case equity < 100_000:
-		cfg.RiskPerTradePct = 0.035
+		cfg.RiskPerTradePct = 0.015
 		cfg.DailyLossLimitPct = 0.200
-		cfg.MaxTradesPerDay = 30
-		cfg.MaxOpenPositions = 5
+		cfg.MaxTradesPerDay = 500
+		cfg.MaxOpenPositions = 10
 		cfg.MinPrice = 1.00
 	default:
 		cfg.RiskPerTradePct = 0.015
 		cfg.DailyLossLimitPct = 0.080
-		cfg.MaxTradesPerDay = 20
-		cfg.MaxOpenPositions = 5
+		cfg.MaxTradesPerDay = 500
+		cfg.MaxOpenPositions = 10
 		cfg.MinPrice = 1.00
 	}
 
@@ -38,25 +38,25 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
 	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 0.16
-	cfg.MinEntryScore = 18.0
-	cfg.MinOneMinuteReturnPct = 0.40
-	cfg.MinThreeMinuteReturnPct = 0.80
-	cfg.MinVolumeRate = 1.40
+	cfg.EntryModelMinPredictedReturnPct = 0.00
+	cfg.MinEntryScore = 5.0
+	cfg.MinOneMinuteReturnPct = 0.10
+	cfg.MinThreeMinuteReturnPct = 0.20
+	cfg.MinVolumeRate = 0.70
 	cfg.MaxPriceVsOpenPct = 30.0
-	cfg.BreakoutFailureWindowMin = 3
-	cfg.BreakoutFailureLossPct = 0.0050
+	cfg.BreakoutFailureWindowMin = 5
+	cfg.BreakoutFailureLossPct = 0.0150
 	cfg.BreakEvenActivationPct = 0.015
 	cfg.BreakEvenFloorPct = 0.001
-	cfg.StagnationWindowMin = 3
+	cfg.StagnationWindowMin = 5
 	cfg.StagnationMinPeakPct = 0.005
 	cfg.MinGapPercent = 1.0
 	cfg.MaxPrice = 50.0
-	cfg.MinRelativeVolume = 1.2
-	cfg.MinPremarketVolume = 60_000
+	cfg.MinRelativeVolume = 1.0
+	cfg.MinPremarketVolume = 80_000
 	cfg.ScannerWorkers = 4
-	cfg.LimitOrderSlippageDollars = 0.02
-	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
+	cfg.LimitOrderSlippageDollars = 0.03
+	cfg.MaxExposurePct = 3.50
 
 	if historicalRateLimitPerMin > 0 {
 		budget := int(float64(historicalRateLimitPerMin) * 0.60)

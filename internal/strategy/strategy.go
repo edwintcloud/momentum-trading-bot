@@ -166,9 +166,6 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		}
 	}
 	symbolState := s.symbolState(candidate.Symbol, decisionAt)
-	if symbolState.entrySignals >= 2 {
-		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
-	}
 	if symbolState.lossExits > 0 {
 		return CandidateDecision{Reason: "symbol-loss-lockout", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -427,7 +424,7 @@ func (s *Strategy) normalizeCandidate(candidate domain.Candidate) domain.Candida
 			candidate.CloseOffHighPct = 55
 		}
 	}
-	if candidate.SetupType == "" && candidate.Volume == 0 {
+	if candidate.SetupType == "" {
 		switch {
 		case candidate.PriceVsVWAPPct >= -0.10 && candidate.BreakoutPct >= -0.20:
 			candidate.SetupType = "consolidation-breakout"
@@ -435,7 +432,7 @@ func (s *Strategy) normalizeCandidate(candidate domain.Candidate) domain.Candida
 			candidate.SetupType = "vwap-reclaim"
 		}
 	}
-	if candidate.LeaderRank <= 0 && candidate.Volume == 0 {
+	if candidate.LeaderRank <= 0 {
 		candidate.LeaderRank = 1
 	}
 	return candidate
@@ -491,7 +488,7 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 		threshold -= 0.20
 	}
 
-	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.30
+	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.75
 	if strongSqueeze {
 		minThreshold = maxFloat(minThreshold, 0.20)
 	}
@@ -510,18 +507,11 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
-	minLeaderPct := 0.05
-	maxLeaderRank := 10
-	if s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp) {
-		minLeaderPct = 0.10
-		maxLeaderRank = 5
-	}
+	minLeaderPct := 0.002
+	maxLeaderRank := 50
 	if strongSqueeze {
 		minLeaderPct -= 0.02
 		maxLeaderRank += 2
-	}
-	if minLeaderPct < 0.04 {
-		minLeaderPct = 0.04
 	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
@@ -551,7 +541,7 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if !s.hasTimingConfirmation(candidate, strongSqueeze) {
 		return false, "no-renewed-volume"
 	}
-	if candidate.PriceVsVWAPPct < -0.35 {
+	if candidate.PriceVsVWAPPct < 0.25 {
 		return false, "below-vwap"
 	}
 	// Hard caps that apply even for squeeze entries — extreme extension is never safe.
@@ -580,17 +570,7 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.ThreeMinuteReturnPct < -0.20 && candidate.VolumeRate < s.config.MinVolumeRate {
 		return false, "weak-three-minute-return"
 	}
-	if candidate.OneMinuteReturnPct < s.config.MinOneMinuteReturnPct &&
-		candidate.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct &&
-		candidate.VolumeRate < s.config.MinVolumeRate &&
-		candidate.BreakoutPct < -0.20 {
-		return false, "weak-follow-through"
-	}
-	if candidate.VolumeRate < s.config.MinVolumeRate &&
-		candidate.RelativeVolume < s.config.MinRelativeVolume+1 &&
-		candidate.Score < s.config.MinEntryScore+2 {
-		return false, "weak-volume-rate"
-	}
+
 	if candidate.CloseOffHighPct > 38 {
 		return false, "weak-close"
 	}
@@ -639,20 +619,14 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 }
 
 func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSqueeze bool) bool {
-	minVolumeRate := maxFloat(s.config.MinVolumeRate, 1.10)
+	minVolumeRate := maxFloat(s.config.MinVolumeRate, 0.70)
 	if strongSqueeze {
-		minVolumeRate = maxFloat(0.95, s.config.MinVolumeRate)
+		minVolumeRate = maxFloat(0.50, s.config.MinVolumeRate)
 	}
 
 	switch candidate.SetupType {
 	case "consolidation-breakout", "opening-range-breakout":
-		if candidate.VolumeRate < maxFloat(minVolumeRate, 1.15) {
-			return false
-		}
-		if candidate.OneMinuteReturnPct < 0.10 && candidate.BreakoutPct < 0 {
-			return false
-		}
-		if candidate.CloseOffHighPct > 35 {
+		if candidate.VolumeRate < minVolumeRate {
 			return false
 		}
 		return true

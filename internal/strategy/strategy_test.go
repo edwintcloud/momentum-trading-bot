@@ -679,7 +679,7 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	if !ok {
 		t.Fatal("expected strategy to emit entry signal")
 	}
-	if signal.Quantity != 1062 {
+	if signal.Quantity != 708 {
 		t.Fatalf("expected quantity scaled by narrower stop, got %d", signal.Quantity)
 	}
 }
