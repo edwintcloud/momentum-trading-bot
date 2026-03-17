@@ -13,9 +13,7 @@ type TradingConfig struct {
 	TrailingStopActivationPct       float64
 	EntryCooldownSec                int
 	ExitCooldownSec                 int
-	EntryModelEnabled               bool
-	EntryModelPath                  string
-	EntryModelMinPredictedReturnPct float64
+
 	MinEntryScore                   float64
 	MinOneMinuteReturnPct           float64
 	MinThreeMinuteReturnPct         float64
@@ -56,11 +54,10 @@ func DefaultTradingConfig() TradingConfig {
 		TrailingStopActivationPct:       0.03,
 		EntryCooldownSec:                45,
 		ExitCooldownSec:                 5,
-		EntryModelEnabled:               true,
-		EntryModelMinPredictedReturnPct: 0.15,
+
 		MinEntryScore:                   5.0,
 		MinOneMinuteReturnPct:           0.05,
-		MinThreeMinuteReturnPct:         0.15,
+		MinThreeMinuteReturnPct:         0.20,
 		MinFifteenMinuteReturnPct:       0.50,
 		MinVolumeRate:                   0.5,
 		MaxPriceVsOpenPct:               50.0,

@@ -59,6 +59,12 @@ type Candidate struct {
 	VolumeLeaderPct       float64   `json:"volumeLeaderPct"`
 	LeaderRank            int       `json:"leaderRank"`
 	MinutesSinceOpen      float64   `json:"minutesSinceOpen"`
+	EMA9                  float64   `json:"ema9"`
+	EMA21                 float64   `json:"ema21"`
+	MACD                  float64   `json:"macd"`
+	MACDSignal            float64   `json:"macdSignal"`
+	MACDHistogram         float64   `json:"macdHistogram"`
+	RSI                   float64   `json:"rsi"`
 	ATR                   float64   `json:"atr"`
 	ATRPct                float64   `json:"atrPct"`
 	VWAP                  float64   `json:"vwap"`

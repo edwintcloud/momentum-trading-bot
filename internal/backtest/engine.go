@@ -171,21 +171,6 @@ type symbolState struct {
 	lastClose     float64
 }
 
-type trainingStats struct {
-	candidateBars int
-	samples       int
-}
-
-type trainingRow struct {
-	candidateAt time.Time
-	availableAt time.Time
-	sample      strategy.TrainingSample
-}
-
-type trainingCorpus struct {
-	candidateTimestamps []time.Time
-	rows                []trainingRow
-}
 
 // Run executes a CSV-driven backtest using the live strategy/risk/portfolio components.
 func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Result, error) {
@@ -202,45 +187,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	runtimeState := runtime.NewState()
-	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
+	records, _ := buildRecords(cfg, runtimeState, bars)
 	runCfg.Bars = nil
 	bars = nil
-	corpus := trainingCorpus{}
-	if !runCfg.TrainStart.IsZero() {
-		cacheKey := trainingCorpusCacheKey(cfg, runCfg, records, symbolIndices)
-		loadedCorpus := false
-		if cached, ok, err := loadTrainingCorpusCache(cacheKey); err != nil {
-			runtimeState.RecordLog("warn", "backtest", "could not load training corpus cache: "+err.Error())
-		} else if ok {
-			corpus = cached
-			loadedCorpus = true
-			runtimeState.RecordLog(
-				"info",
-				"backtest",
-				fmt.Sprintf(
-					"loaded training corpus cache rows=%d candidates=%d",
-					len(corpus.rows),
-					len(corpus.candidateTimestamps),
-				),
-			)
-		}
-		if !loadedCorpus {
-			corpus = precomputeTrainingCorpus(cfg, records, symbolIndices, runCfg)
-			if err := saveTrainingCorpusCache(cacheKey, corpus); err != nil {
-				runtimeState.RecordLog("warn", "backtest", "could not save training corpus cache: "+err.Error())
-			} else {
-				runtimeState.RecordLog(
-					"info",
-					"backtest",
-					fmt.Sprintf(
-						"saved training corpus cache rows=%d candidates=%d",
-						len(corpus.rows),
-						len(corpus.candidateTimestamps),
-					),
-				)
-			}
-		}
-	}
+
 	diagnostics := Diagnostics{
 		BarsLoaded:         len(records),
 		ScannerRejects:     make(map[string]int),
@@ -251,18 +201,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		EntryRejectSamples: make(map[string]EntrySample),
 	}
 
-	model := strategy.DefaultEntryModel()
-	trainingWarning := ""
-
 	book := portfolio.NewManager(cfg, runtimeState)
 	scan := scanner.NewScanner(cfg, runtimeState)
 	strat := strategy.NewStrategy(cfg, book, runtimeState)
-	strat.SetEntryModel(model)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
 	pendingEntries := make(map[string]pendingEntry)
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)
-	lastTrainingDay := ""
 
 	equityCurve := make([]float64, 0, len(records))
 	for _, rec := range records {
@@ -275,28 +220,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			continue
 		}
 		diagnostics.BarsInWindow++
-		if !runCfg.TrainStart.IsZero() {
-			trainingDay := tradingDayKey(rec.bar.Timestamp)
-			if trainingDay != lastTrainingDay {
-				windowStart, windowEnd, ok := walkForwardTrainWindow(runCfg, rec.bar.Timestamp)
-				if ok {
-					trainCfg := runCfg
-					trainCfg.TrainStart = windowStart
-					trainCfg.TrainEnd = windowEnd
-					trained, stats, trainErr := trainModel(corpus, trainCfg.TrainStart, trainCfg.TrainEnd)
-					diagnostics.TrainingRuns++
-					diagnostics.TrainingCandidates += stats.candidateBars
-					diagnostics.TrainingSamples += stats.samples
-					if trainErr != nil {
-						trainingWarning = trainErr.Error()
-					} else {
-						model = trained
-						strat.SetEntryModel(model)
-					}
-				}
-				lastTrainingDay = trainingDay
-			}
-		}
 
 		if pending, exists := pendingEntries[rec.bar.Symbol]; exists {
 			if fill, updatedPending, filled, expired := maybeFillPendingEntry(pending, rec.bar); filled {
@@ -458,15 +381,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	if stopMinutesCount > 0 {
 		avgTimeToStopMin = stopMinutesTotal / float64(stopMinutesCount)
 	}
-	if runCfg.ModelOutputPath != "" {
-		if err := strategy.SaveLinearModel(runCfg.ModelOutputPath, model); err != nil {
-			return Result{}, err
-		}
-	}
+
 
 	return Result{
-		ModelName:            model.Name,
-		ModelTrainingWarning: trainingWarning,
 		StartingCapital:      cfg.StartingCapital,
 		RealizedPnL:          round2(realizedPnL),
 		UnrealizedPnL:        round2(unrealizedPnL),
@@ -646,127 +563,7 @@ func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []
 	return records, symbolIndices
 }
 
-func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbolIndices map[string][]int, runCfg RunConfig) trainingCorpus {
-	corpus := trainingCorpus{
-		candidateTimestamps: make([]time.Time, 0),
-		rows:                make([]trainingRow, 0),
-	}
-	for _, indices := range symbolIndices {
-		for pos, idx := range indices {
-			rec := records[idx]
-			if rec.candidate == nil || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.End) {
-				continue
-			}
-			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
-			plan, ok, _ := strategy.BuildEntryPlan(*rec.candidate)
-			if !ok {
-				continue
-			}
-			forwardReturn, availableAt, ok := trainingTargetOutcome(cfg, rec, indices, pos, records, runCfg.LabelLookaheadBars, plan)
-			if !ok {
-				continue
-			}
-			corpus.rows = append(corpus.rows, trainingRow{
-				candidateAt: rec.bar.Timestamp,
-				availableAt: availableAt,
-				sample: strategy.TrainingSample{
-					Candidate:        *rec.candidate,
-					ForwardReturnPct: forwardReturn,
-				},
-			})
-		}
-	}
-	return corpus
-}
 
-func trainModel(corpus trainingCorpus, trainStart, trainEnd time.Time) (strategy.LinearModel, trainingStats, error) {
-	stats := trainingStats{}
-	samples := make([]strategy.TrainingSample, 0)
-	for _, timestamp := range corpus.candidateTimestamps {
-		if withinWindow(timestamp, trainStart, trainEnd) {
-			stats.candidateBars++
-		}
-	}
-	for _, row := range corpus.rows {
-		if !withinWindow(row.candidateAt, trainStart, trainEnd) {
-			continue
-		}
-		if row.availableAt.After(trainEnd) {
-			continue
-		}
-		samples = append(samples, row.sample)
-		stats.samples++
-	}
-	if len(samples) == 0 {
-		return strategy.LinearModel{}, stats, fmt.Errorf("no training samples produced from the requested train window")
-	}
-	model, err := strategy.TrainLinearModel(samples)
-	return model, stats, err
-}
-
-func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, runCfg RunConfig, plan strategy.EntryPlan) (float64, bool) {
-	target, _, ok := trainingTargetOutcome(cfg, rec, indices, pos, records, runCfg.LabelLookaheadBars, plan)
-	return target, ok
-}
-
-func trainingTargetOutcome(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, lookaheadBars int, plan strategy.EntryPlan) (float64, time.Time, bool) {
-	entryOrder := domain.OrderRequest{
-		Symbol:       rec.candidate.Symbol,
-		Side:         "buy",
-		Price:        backtestLimitPrice(rec.candidate.Price, "buy", cfg.LimitOrderSlippageDollars),
-		Quantity:     1,
-		StopPrice:    plan.StopPrice,
-		RiskPerShare: plan.RiskPerShare,
-		EntryATR:     plan.EntryATR,
-		SetupType:    plan.SetupType,
-		Reason:       "training-entry",
-		Timestamp:    rec.candidate.Timestamp,
-	}
-	pending := pendingEntry{order: entryOrder, barsRemaining: 2}
-	position := domain.Position{}
-	filled := false
-	if lookaheadBars < 20 {
-		lookaheadBars = 20
-	}
-	for lookahead := 1; lookahead <= lookaheadBars && pos+lookahead < len(indices); lookahead++ {
-		future := records[indices[pos+lookahead]]
-		if !filled {
-			if fill, updatedPending, didFill, expired := maybeFillPendingEntry(pending, future.bar); didFill {
-				filled = true
-				position = domain.Position{
-					Symbol:           fill.Symbol,
-					Quantity:         fill.Quantity,
-					AvgPrice:         fill.Price,
-					StopPrice:        fill.StopPrice,
-					InitialStopPrice: fill.StopPrice,
-					RiskPerShare:     fill.RiskPerShare,
-					EntryATR:         fill.EntryATR,
-					SetupType:        fill.SetupType,
-					LastPrice:        fill.Price,
-					HighestPrice:     fill.Price,
-					OpenedAt:         future.bar.Timestamp.UTC(),
-					UpdatedAt:        future.bar.Timestamp.UTC(),
-				}
-			} else if expired {
-				return 0, time.Time{}, false
-			} else {
-				pending = updatedPending
-				continue
-			}
-		}
-
-		if exitPrice, _, exited := simulateManagedExit(position, future.tick, cfg); exited {
-			return strategy.CurrentRMultiple(position, exitPrice), future.tick.Timestamp.UTC(), true
-		}
-		position.HighestPrice = maxFloat(position.HighestPrice, future.tick.BarHigh, future.tick.Price)
-		position.LastPrice = future.tick.Price
-		position.UpdatedAt = future.tick.Timestamp.UTC()
-	}
-	if !filled {
-		return 0, time.Time{}, false
-	}
-	return strategy.CurrentRMultiple(position, position.LastPrice), position.UpdatedAt.UTC(), true
-}
 
 func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 	state := states[item.Symbol]
@@ -1182,8 +979,6 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		BreakoutPct:             round2(candidate.BreakoutPct),
 		SetupType:               candidate.SetupType,
 		Score:                   round2(candidate.Score),
-		PredictedReturnPct:      round2(decision.PredictedReturnPct),
-		RequiredPredictedRetPct: round2(decision.RequiredReturnPct),
 		StrongSqueeze:           decision.StrongSqueeze,
 	}
 }

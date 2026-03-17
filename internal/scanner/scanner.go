@@ -45,6 +45,12 @@ type scanMetrics struct {
 	setupHigh             float64
 	setupLow              float64
 	setupType             string
+	ema9                  float64
+	ema21                 float64
+	macd                  float64
+	macdSignal            float64
+	macdHistogram         float64
+	rsi                   float64
 }
 
 // Scanner scans market ticks for momentum candidates.
@@ -181,6 +187,12 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		SetupLow:              round2(scoreOrZero(metrics.setupLow)),
 		SetupType:             metrics.setupType,
 		Score:                 round2(scoreOrZero(score)),
+		EMA9:                  round2(scoreOrZero(metrics.ema9)),
+		EMA21:                 round2(scoreOrZero(metrics.ema21)),
+		MACD:                  round2(metrics.macd),
+		MACDSignal:            round2(metrics.macdSignal),
+		MACDHistogram:         round2(metrics.macdHistogram),
+		RSI:                   round2(scoreOrZero(metrics.rsi)),
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
@@ -316,7 +328,14 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 		vwap:              current.vwap,
 		priceVsVWAPPct:    percentChange(current.vwap, current.close),
 		closeOffHighPct:   closeOffHighPct(current),
+		ema9:              computeEMA(bars, 9),
+		ema21:             computeEMA(bars, 21),
+		rsi:               computeRSI(bars, 14),
 	}
+	macdL, macdS, macdH := computeMACD(bars)
+	metrics.macd = macdL
+	metrics.macdSignal = macdS
+	metrics.macdHistogram = macdH
 
 	if len(bars) < 4 {
 		return metrics
@@ -598,4 +617,96 @@ func mustLoadLocation(name string) *time.Location {
 		panic(err)
 	}
 	return location
+}
+
+func computeEMA(bars []symbolBar, period int) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	if len(bars) == 1 {
+		return bars[0].close
+	}
+
+	multiplier := 2.0 / (float64(period) + 1.0)
+	ema := bars[0].close
+
+	for i := 1; i < len(bars); i++ {
+		ema = (bars[i].close-ema)*multiplier + ema
+	}
+	return ema
+}
+
+func computeMACD(bars []symbolBar) (macd, signal, histogram float64) {
+	if len(bars) < 26 {
+		return 0, 0, 0
+	}
+
+	macds := make([]float64, 0, len(bars))
+	ema12 := bars[0].close
+	ema26 := bars[0].close
+	m12 := 2.0 / 13.0
+	m26 := 2.0 / 27.0
+
+	for i := 1; i < len(bars); i++ {
+		ema12 = (bars[i].close-ema12)*m12 + ema12
+		ema26 = (bars[i].close-ema26)*m26 + ema26
+		macds = append(macds, ema12-ema26)
+	}
+
+	if len(macds) == 0 {
+		return 0, 0, 0
+	}
+
+	signalEMA := macds[0]
+	m9 := 2.0 / 10.0
+	for i := 1; i < len(macds); i++ {
+		signalEMA = (macds[i]-signalEMA)*m9 + signalEMA
+	}
+
+	lastMACD := macds[len(macds)-1]
+	return lastMACD, signalEMA, lastMACD - signalEMA
+}
+
+func computeRSI(bars []symbolBar, period int) float64 {
+	if len(bars) <= period {
+		return 50.0 // Default center point when there's no data
+	}
+
+	sumGain := 0.0
+	sumLoss := 0.0
+
+	for i := 1; i <= period; i++ {
+		change := bars[i].close - bars[i-1].close
+		if change > 0 {
+			sumGain += change
+		} else {
+			sumLoss -= change
+		}
+	}
+
+	avgGain := sumGain / float64(period)
+	avgLoss := sumLoss / float64(period)
+
+	for i := period + 1; i < len(bars); i++ {
+		change := bars[i].close - bars[i-1].close
+		gain := 0.0
+		loss := 0.0
+		if change > 0 {
+			gain = change
+		} else {
+			loss = -change
+		}
+		avgGain = (avgGain*float64(period-1) + gain) / float64(period)
+		avgLoss = (avgLoss*float64(period-1) + loss) / float64(period)
+	}
+
+	if avgLoss == 0 {
+		if avgGain == 0 {
+			return 50.0
+		}
+		return 100.0
+	}
+
+	rs := avgGain / avgLoss
+	return 100.0 - (100.0 / (1.0 + rs))
 }

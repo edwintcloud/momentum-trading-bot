@@ -16,7 +16,6 @@ func inSessionTime() time.Time {
 
 func testStrategyConfig() config.TradingConfig {
 	cfg := config.DefaultTradingConfig()
-	cfg.EntryModelEnabled = false
 	cfg.MinFifteenMinuteReturnPct = 0.00
 	return cfg
 }
@@ -64,6 +63,11 @@ func TestStrategyCreatesEntrySignal(t *testing.T) {
 		SetupHigh:             10.05,
 		SetupLow:              9.90,
 		SetupType:             "opening-range-breakout",
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -106,6 +110,11 @@ func TestStrategyAllowsPullbackAndGoWhenBroaderFollowThroughIsStrong(t *testing.
 		SetupHigh:            10.15,
 		SetupLow:             9.95,
 		SetupType:            "pullback-and-go",
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -135,6 +144,11 @@ func TestStrategyRejectsWhenAllFollowThroughSignalsAreWeak(t *testing.T) {
 		VolumeRate:           0.45,
 		MinutesSinceOpen:     18,
 		Score:                18,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	}
 	_, ok, reason := strat.EvaluateCandidateDetailed(candidate)
@@ -185,6 +199,11 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 		SetupLow:              5.92,
 		SetupType:             "vwap-reclaim",
 		Score:                 24,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:             at,
 	}
 	_, ok, reason := strat.EvaluateCandidateDetailed(candidate)
@@ -226,6 +245,11 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 		ATR:                  0.50,
 		ATRPct:               5.0,
 		BreakoutPct:          0.10,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -235,7 +259,6 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 
 func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	cfg := testStrategyConfig()
-	cfg.EntryModelEnabled = false
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -260,6 +283,11 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 		ATR:                  0.50,
 		ATRPct:               5.0,
 		BreakoutPct:          0.10,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -267,38 +295,6 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	}
 }
 
-func TestStrategyRejectsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
-	runtimeState := runtime.NewState()
-	book := portfolio.NewManager(cfg, runtimeState)
-	strat := NewStrategy(cfg, book, runtimeState)
-	strat.SetEntryModel(LinearModel{Name: "flat-test", Weights: map[string]float64{}})
-	at := inSessionTime()
-
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:               "SQUEEZE",
-		Price:                7.35,
-		Open:                 5.40,
-		HighOfDay:            7.48,
-		GapPercent:           2.0,
-		RelativeVolume:       9.0,
-		PriceVsOpenPct:       36.11,
-		DistanceFromHighPct:  1.77,
-		OneMinuteReturnPct:   0.22,
-		ThreeMinuteReturnPct: 1.10,
-		PriceVsVWAPPct:       0.50,
-		VolumeRate:           1.45,
-		MinutesSinceOpen:     150,
-		Score:                22.0,
-		Timestamp:            at,
-	})
-	if ok {
-		t.Fatal("expected flat-model strong squeeze to remain blocked by model gate")
-	}
-	if reason != "model-threshold" {
-		t.Fatalf("unexpected block reason: %s", reason)
-	}
-}
 
 func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 	cfg := testStrategyConfig()
@@ -324,6 +320,11 @@ func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 		LeaderRank:           56,
 		MinutesSinceOpen:     40,
 		Score:                24.0,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if ok {
@@ -358,6 +359,11 @@ func TestStrategyRejectsLowLeaderShareEvenWithStrongStats(t *testing.T) {
 		LeaderRank:           5,
 		MinutesSinceOpen:     32,
 		Score:                70.48,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if ok {
@@ -398,6 +404,11 @@ func TestStrategyAllowsLeaderVolumeSetup(t *testing.T) {
 		SetupHigh:            5.05,
 		SetupLow:             5.00,
 		SetupType:            "consolidation-breakout",
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -428,6 +439,11 @@ func TestStrategyRejectsParabolicEarlyPremarketSpike(t *testing.T) {
 		MinutesSinceOpen:     0,
 		Score:                471.36,
 		Volume:               250_000,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if ok {
@@ -461,6 +477,11 @@ func TestStrategyRejectsThinEarlyPremarketSetup(t *testing.T) {
 		MinutesSinceOpen:     0,
 		Score:                25.0,
 		Volume:               300_000,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if ok {
@@ -492,6 +513,11 @@ func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
 		VolumeRate:           2.10,
 		MinutesSinceOpen:     1,
 		Score:                48.0,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if ok {
@@ -544,6 +570,11 @@ func TestStrategyBlocksImmediateReentryAfterLoss(t *testing.T) {
 		VolumeRate:           1.50,
 		MinutesSinceOpen:     55,
 		Score:                19,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at.Add(-5 * time.Minute),
 	})
 	if ok {
@@ -582,6 +613,11 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 		SetupHigh:             10.05,
 		SetupLow:              9.90,
 		SetupType:             "opening-range-breakout",
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 	}
 
 	for i, ts := range []time.Time{at.Add(-3 * time.Hour), at.Add(-2 * time.Hour)} {
@@ -603,47 +639,6 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 	}
 }
 
-func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
-	runtimeState := runtime.NewState()
-	book := portfolio.NewManager(cfg, runtimeState)
-	strat := NewStrategy(cfg, book, runtimeState)
-	strat.SetEntryModel(LinearModel{Name: "flat-test", Weights: map[string]float64{}})
-	at := inSessionTime()
-
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:                "WEAK",
-		Price:                 4.20,
-		Open:                  4.00,
-		HighOfDay:             4.21,
-		GapPercent:            14,
-		RelativeVolume:        5.8,
-		PriceVsOpenPct:        5.0,
-		DistanceFromHighPct:   0.24,
-		OneMinuteReturnPct:    0.12,
-		ThreeMinuteReturnPct:  0.52,
-		VolumeRate:            1.30,
-		VolumeLeaderPct:       0.92,
-		LeaderRank:            1,
-		ATRPct:                2.40,
-		PriceVsVWAPPct:        0.50,
-		BreakoutPct:           0.12,
-		ConsolidationRangePct: 1.4,
-		CloseOffHighPct:       20,
-		SetupHigh:             4.18,
-		SetupLow:              4.02,
-		SetupType:             "vwap-reclaim",
-		MinutesSinceOpen:      45,
-		Score:                 16,
-		Timestamp:             at,
-	})
-	if ok {
-		t.Fatal("expected marginal setup to remain blocked by model gate")
-	}
-	if reason != "model-threshold" {
-		t.Fatalf("unexpected block reason: %s", reason)
-	}
-}
 
 func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 	cfg := testStrategyConfig()
@@ -676,6 +671,11 @@ func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 		SetupType:             "vwap-reclaim",
 		MinutesSinceOpen:      160,
 		Score:                 16,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:             at,
 	})
 	if ok {
@@ -734,6 +734,11 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 		ATR:                  0.50,
 		ATRPct:               5.0,
 		BreakoutPct:          0.10,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            at,
 	})
 	if !ok {
@@ -770,6 +775,11 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 		ATR:                  0.50,
 		ATRPct:               5.0,
 		BreakoutPct:          0.10,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            time.Date(2026, 3, 13, 12, 20, 0, 0, time.UTC),
 	})
 	if !ok {
@@ -871,6 +881,11 @@ func TestStrategyBlocksEntriesOutsideTradableSession(t *testing.T) {
 		VolumeRate:           1.9,
 		MinutesSinceOpen:     18,
 		Score:                22,
+		EMA9:                  0.5,
+		EMA21:                 0.1,
+		MACD:                 0.5,
+		MACDHistogram:         0.2,
+		RSI:                   70.0,
 		Timestamp:            time.Date(2026, 3, 13, 6, 30, 0, 0, time.UTC),
 	})
 	if ok {

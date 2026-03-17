@@ -30,7 +30,4 @@ func TestLoadUsesSimpleDefaults(t *testing.T) {
 	if !cfg.Alpaca.SubscribeAllBars {
 		t.Fatal("expected wildcard subscriptions when no symbols are provided")
 	}
-	if cfg.Trading.EntryModelPath != "" {
-		t.Fatalf("expected empty optional entry model path by default, got %q", cfg.Trading.EntryModelPath)
-	}
 }

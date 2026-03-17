@@ -40,8 +40,7 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.TrailingStopActivationPct = 0.02
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
-	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 0.00
+
 	cfg.MinEntryScore = 5.0
 	cfg.MinOneMinuteReturnPct = 0.10
 	cfg.MinThreeMinuteReturnPct = 0.20 // Slightly looser 3m to catch bases

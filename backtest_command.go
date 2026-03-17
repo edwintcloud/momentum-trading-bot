@@ -283,7 +283,7 @@ func formatLogTime(value time.Time) string {
 
 func logBacktestConfig(cfg config.TradingConfig) {
 	log.Printf(
-		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%.0f min_score=%.2f min_1m=%.2f min_3m=%.2f min_15m=%.2f min_volume_rate=%.2f max_vs_open=%.2f model_threshold=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trailing_stop=%.2f trailing_activation=%.2f",
+		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%.0f min_score=%.2f min_1m=%.2f min_3m=%.2f min_15m=%.2f min_volume_rate=%.2f max_vs_open=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trailing_stop=%.2f trailing_activation=%.2f",
 		cfg.MinPrice,
 		cfg.MinGapPercent,
 		cfg.MinRelativeVolume,
@@ -294,7 +294,6 @@ func logBacktestConfig(cfg config.TradingConfig) {
 		cfg.MinFifteenMinuteReturnPct,
 		cfg.MinVolumeRate,
 		cfg.MaxPriceVsOpenPct,
-		cfg.EntryModelMinPredictedReturnPct,
 		cfg.RiskPerTradePct,
 		cfg.MaxTradesPerDay,
 		cfg.MaxOpenPositions,

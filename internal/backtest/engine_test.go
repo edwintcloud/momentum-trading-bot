@@ -4,14 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
-	"github.com/edwincloud/momentum-trading-bot/internal/domain"
-	"github.com/edwincloud/momentum-trading-bot/internal/strategy"
 )
 
 func TestRunExecutesHistoricalReplay(t *testing.T) {
@@ -117,142 +114,3 @@ func TestRunMarksOpenPositionsToMarketAtBacktestEnd(t *testing.T) {
 	}
 }
 
-func TestTrainingTargetPenalizesFailedBreakouts(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
-	start := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
-	candidate := domain.Candidate{
-		Symbol:                "TEST",
-		Price:                 10.00,
-		Open:                  9.70,
-		HighOfDay:             10.05,
-		GapPercent:            12.0,
-		RelativeVolume:        8.0,
-		Volume:                500_000,
-		PriceVsOpenPct:        3.09,
-		DistanceFromHighPct:   0.50,
-		OneMinuteReturnPct:    1.2,
-		ThreeMinuteReturnPct:  2.4,
-		VolumeRate:            1.8,
-		VolumeLeaderPct:       0.65,
-		MinutesSinceOpen:      30,
-		ATR:                   0.50,
-		ATRPct:                5.0,
-		PriceVsVWAPPct:        0.8,
-		BreakoutPct:           0.4,
-		ConsolidationRangePct: 2.2,
-		PullbackDepthPct:      1.6,
-		CloseOffHighPct:       18,
-		SetupHigh:             9.96,
-		SetupLow:              9.80,
-		SetupType:             "consolidation-breakout",
-		Score:                 26,
-		Timestamp:             start,
-	}
-	plan, ok, reason := strategy.BuildEntryPlan(candidate)
-	if !ok {
-		t.Fatalf("expected valid entry plan, got %s", reason)
-	}
-
-	goodRecords := []record{
-		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00, Volume: 1000000}, candidate: &candidate},
-		{bar: bar{Timestamp: start.Add(time.Minute), Symbol: "TEST", Open: 10.01, High: 10.70, Low: 9.98, Close: 10.55, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 10.55, BarOpen: 10.01, BarHigh: 10.70, BarLow: 9.98, Timestamp: start.Add(time.Minute)}},
-		{bar: bar{Timestamp: start.Add(2 * time.Minute), Symbol: "TEST", Open: 10.56, High: 11.10, Low: 10.40, Close: 10.95, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 10.95, BarOpen: 10.56, BarHigh: 11.10, BarLow: 10.40, Timestamp: start.Add(2 * time.Minute)}},
-	}
-	badRecords := []record{
-		{bar: bar{Timestamp: start, Symbol: "TEST", Open: 9.95, High: 10.05, Low: 9.92, Close: 10.00, Volume: 1000000}, candidate: &candidate},
-		{bar: bar{Timestamp: start.Add(time.Minute), Symbol: "TEST", Open: 10.01, High: 10.12, Low: 9.55, Close: 9.62, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 9.62, BarOpen: 10.01, BarHigh: 10.12, BarLow: 9.55, Timestamp: start.Add(time.Minute)}},
-		{bar: bar{Timestamp: start.Add(2 * time.Minute), Symbol: "TEST", Open: 9.60, High: 9.68, Low: 9.35, Close: 9.40, Volume: 500000}, tick: domain.Tick{Symbol: "TEST", Price: 9.40, BarOpen: 9.60, BarHigh: 9.68, BarLow: 9.35, Timestamp: start.Add(2 * time.Minute)}},
-	}
-
-	good, ok := trainingTarget(cfg, goodRecords[0], []int{0, 1, 2}, 0, goodRecords, RunConfig{
-		LabelLookaheadBars: 2,
-		TrainStart:         start,
-		TrainEnd:           start.Add(2 * time.Minute),
-	}, plan)
-	if !ok {
-		t.Fatal("expected good continuation training sample to produce a target")
-	}
-	bad, ok := trainingTarget(cfg, badRecords[0], []int{0, 1, 2}, 0, badRecords, RunConfig{
-		LabelLookaheadBars: 2,
-		TrainStart:         start,
-		TrainEnd:           start.Add(2 * time.Minute),
-	}, plan)
-	if !ok {
-		t.Fatal("expected failed breakout training sample to produce a target")
-	}
-
-	if good <= bad {
-		t.Fatalf("expected continuation target %.2fR to exceed failed breakout target %.2fR", good, bad)
-	}
-	if bad >= 0 {
-		t.Fatalf("expected failed breakout target to be negative, got %.2fR", bad)
-	}
-}
-
-func TestTrainingCorpusCacheRoundTrip(t *testing.T) {
-	originalRoot := trainingCorpusCacheRoot
-	trainingCorpusCacheRoot = filepath.Join(t.TempDir(), "training-corpus")
-	defer func() {
-		trainingCorpusCacheRoot = originalRoot
-	}()
-
-	expected := trainingCorpus{
-		candidateTimestamps: []time.Time{
-			time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
-		},
-		rows: []trainingRow{
-			{
-				candidateAt: time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
-				availableAt: time.Date(2026, 3, 10, 14, 5, 0, 0, time.UTC),
-				sample: strategy.TrainingSample{
-					Candidate: domain.Candidate{
-						Symbol:    "TEST",
-						Price:     5.25,
-						SetupType: "consolidation-breakout",
-					},
-					ForwardReturnPct: 1.25,
-				},
-			},
-		},
-	}
-
-	if err := saveTrainingCorpusCache("cache-key", expected); err != nil {
-		t.Fatalf("expected training corpus cache save to succeed, got %v", err)
-	}
-
-	loaded, ok, err := loadTrainingCorpusCache("cache-key")
-	if err != nil {
-		t.Fatalf("expected training corpus cache load to succeed, got %v", err)
-	}
-	if !ok {
-		t.Fatal("expected training corpus cache hit")
-	}
-	if !reflect.DeepEqual(expected, loaded) {
-		t.Fatalf("expected cached corpus %+v, got %+v", expected, loaded)
-	}
-}
-
-func TestTrainingCorpusCacheKeyIncludesTradingConfig(t *testing.T) {
-	cfgA := config.DefaultTradingConfig()
-	cfgB := config.DefaultTradingConfig()
-	cfgB.MinRelativeVolume = cfgA.MinRelativeVolume + 1
-
-	runCfg := RunConfig{
-		Start:              time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC),
-		End:                time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC),
-		TrainStart:         time.Date(2026, 3, 9, 14, 0, 0, 0, time.UTC),
-		TrainEnd:           time.Date(2026, 3, 9, 20, 0, 0, 0, time.UTC),
-		LabelLookaheadBars: 24,
-	}
-	records := []record{
-		{bar: bar{Timestamp: time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC), Symbol: "TEST"}},
-		{bar: bar{Timestamp: time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC), Symbol: "TEST"}},
-	}
-	symbolIndices := map[string][]int{"TEST": []int{0, 1}}
-
-	keyA := trainingCorpusCacheKey(cfgA, runCfg, records, symbolIndices)
-	keyB := trainingCorpusCacheKey(cfgB, runCfg, records, symbolIndices)
-	if keyA == keyB {
-		t.Fatal("expected training corpus cache key to change when trading config changes")
-	}
-}
