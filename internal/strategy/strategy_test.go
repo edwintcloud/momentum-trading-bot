@@ -880,3 +880,87 @@ func TestStrategyBlocksEntriesOutsideTradableSession(t *testing.T) {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
+
+func TestStrategyDynamicReallocationOpportunitySwap(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.MaxOpenPositions = 2
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	// Fill two positions so we are at capacity
+	book.ApplyExecution(testExecutionReport("STAG", 5.0, 100, at.Add(-10*time.Minute))) // Holder, doing nothing
+	book.ApplyExecution(testExecutionReport("WINR", 10.0, 100, at.Add(-10*time.Minute))) // Winner, doing well
+	
+	// Mark latest prices. STAG is weak (0.1R), WINR is strong (2.0R)
+	book.MarkPriceAt("STAG", 5.02, at)
+	book.MarkPriceAt("WINR", 11.00, at)
+
+	// Here comes a massive A+ setup that we want, but we are full
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "STAR",
+		Price:                8.20,
+		Open:                 8.00,
+		HighOfDay:            8.21,
+		GapPercent:           31,
+		RelativeVolume:       12.4,
+		PriceVsOpenPct:       15.0,
+		DistanceFromHighPct:  0.10,
+		OneMinuteReturnPct:   1.8,
+		ThreeMinuteReturnPct: 4.7,
+		FifteenMinuteReturnPct: 8.0,
+		VolumeRate:           3.9,
+		MinutesSinceOpen:     30,
+		Score:                22, // Exceptional score overrides
+		ATR:                  0.80,
+		ATRPct:               5.0,
+		BreakoutPct:          0.50,
+		SetupHigh:             8.10,
+		SetupLow:              7.90,
+		SetupType:             "consolidation-breakout",
+		Timestamp:            at,
+	})
+
+	if ok {
+		t.Fatal("expected candidate to be blocked due to capacity")
+	}
+	if reason != "reallocation-swap-pending" {
+		t.Fatalf("unexpected block reason, wanted reallocation-swap-pending: %s", reason)
+	}
+
+	// The flag should be set for the weaker position (STAG)
+	if !strat.reallocationTargets["STAG"] {
+		t.Fatal("expected STAG to be flagged for reallocation swap targets")
+	}
+
+	// When STAG ticks next, it should be liquidated immediately to free capacity
+	exitSignal, exitOk := strat.evaluateExit(domain.Tick{
+		Symbol:    "STAG",
+		Price:     5.01,
+		BarOpen:   5.05,
+		BarHigh:   5.05,
+		BarLow:    5.00,
+		HighOfDay: 5.50,
+		Timestamp: at.Add(1 * time.Second),
+	})
+
+	if !exitOk {
+		t.Fatal("expected STAG to emit an exit signal")
+	}
+	if exitSignal.Reason != "opportunity-reallocation" {
+		t.Fatalf("expected opportunity-reallocation reason, got: %s", exitSignal.Reason)
+	}
+
+	// Winner continues unbothered
+	winnerExitSignal, winnerExitOk := strat.evaluateExit(domain.Tick{
+		Symbol:    "WINR",
+		Price:     10.90,
+		HighOfDay: 11.50,
+		Timestamp: at.Add(1 * time.Second),
+	})
+
+	if winnerExitOk {
+		t.Fatalf("expected WINR to hold its position, but got exit: %s", winnerExitSignal.Reason)
+	}
+}
