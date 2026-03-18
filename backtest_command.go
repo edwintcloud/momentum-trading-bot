@@ -102,29 +102,7 @@ func runBacktest(args []string) error {
 		return err
 	}
 	logBacktestDiagnostics(result.Diagnostics)
-
-	log.Printf(
-		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f avg_win_pnl=%.2f avg_loss_pnl=%.2f avg_win_r=%.2f avg_loss_r=%.2f avg_mfe_r=%.2f avg_mae_r=%.2f trailing_exit_pct=%.2f%% avg_time_to_stop_min=%.2f realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%%",
-		result.Trades,
-		result.Wins,
-		result.Losses,
-		result.WinRate,
-		result.ProfitFactor,
-		result.AvgWinPnL,
-		result.AvgLossPnL,
-		result.AvgWinR,
-		result.AvgLossR,
-		result.AvgMFER,
-		result.AvgMAER,
-		result.TrailingStopExitPct,
-		result.AvgTimeToStopMin,
-		result.RealizedPnL,
-		result.UnrealizedPnL,
-		result.NetPnL,
-		result.EndingEquity,
-		result.OpenPositionsAtEnd,
-		result.MaxDrawdownPct,
-	)
+	logBacktestSummary(start, end, result)
 	logClosedTradeSamples(result.ClosedTrades)
 	return nil
 }
@@ -255,6 +233,46 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	logEntryRejectSamples(diag)
 }
 
+func logBacktestSummary(start, end time.Time, result backtest.Result) {
+	for _, line := range backtestSummaryLines(start, end, result) {
+		log.Print(line)
+	}
+}
+
+func backtestSummaryLines(start, end time.Time, result backtest.Result) []string {
+	return []string{
+		"Backtest Summary",
+		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
+		fmt.Sprintf("  PnL          net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
+			formatMoney(result.NetPnL),
+			formatMoney(result.RealizedPnL),
+			formatMoney(result.UnrealizedPnL),
+			formatMoney(result.EndingEquity),
+			result.MaxDrawdownPct,
+		),
+		fmt.Sprintf("  Trades       total=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f open_positions=%d",
+			result.Trades,
+			result.Wins,
+			result.Losses,
+			result.WinRate,
+			result.ProfitFactor,
+			result.OpenPositionsAtEnd,
+		),
+		fmt.Sprintf("  Avg PnL/R    avg_win=%s avg_loss=%s avg_win_r=%.2f avg_loss_r=%.2f",
+			formatMoney(result.AvgWinPnL),
+			formatMoney(result.AvgLossPnL),
+			result.AvgWinR,
+			result.AvgLossR,
+		),
+		fmt.Sprintf("  Exit Stats   avg_mfe_r=%.2f avg_mae_r=%.2f trailing_exit_pct=%.2f%% avg_time_to_stop_min=%.2f",
+			result.AvgMFER,
+			result.AvgMAER,
+			result.TrailingStopExitPct,
+			result.AvgTimeToStopMin,
+		),
+	}
+}
+
 func logReasonCounts(label string, counts map[string]int, total int) {
 	if len(counts) == 0 {
 		return
@@ -370,25 +388,28 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 
 func logClosedTradeSamples(trades []domain.ClosedTrade) {
 	if len(trades) == 0 {
+		log.Print("Closed trades: none")
 		return
 	}
-	limit := len(trades)
-	if limit > 5 {
-		limit = 5
-	}
-	parts := make([]string, 0, limit)
-	for _, trade := range trades[:limit] {
-		parts = append(parts, fmt.Sprintf(
-			"%s qty=%d entry=%.2f exit=%.2f pnl=%.2f reason=%s opened=%s closed=%s",
+	log.Printf("Closed trades (%d):", len(trades))
+	for _, trade := range trades {
+		log.Printf("  %s qty=%d entry=%s exit=%s pnl=%s reason=%s opened=%s closed=%s",
 			trade.Symbol,
 			trade.Quantity,
-			trade.EntryPrice,
-			trade.ExitPrice,
-			trade.PnL,
+			formatMoney(trade.EntryPrice),
+			formatMoney(trade.ExitPrice),
+			formatMoney(trade.PnL),
 			trade.ExitReason,
 			trade.OpenedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
 			trade.ClosedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
-		))
+		)
 	}
-	log.Printf("Backtest closed trades %s", strings.Join(parts, " | "))
+}
+
+func formatMoney(value float64) string {
+	sign := ""
+	if value > 0 {
+		sign = "+"
+	}
+	return fmt.Sprintf("%s%.2f", sign, value)
 }
