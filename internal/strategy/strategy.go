@@ -14,14 +14,15 @@ import (
 
 // Strategy implements breakout entries and managed exits.
 type Strategy struct {
-	config       config.TradingConfig
-	portfolio    *portfolio.Manager
-	runtime      *runtime.State
-	seedModel    LinearModel
-	entryModel   LinearModel
-	lastEntryAt  map[string]time.Time
-	lastExitAt   map[string]time.Time
-	symbolStates map[string]symbolTradeState
+	config              config.TradingConfig
+	portfolio           *portfolio.Manager
+	runtime             *runtime.State
+	seedModel           LinearModel
+	entryModel          LinearModel
+	lastEntryAt         map[string]time.Time
+	lastExitAt          map[string]time.Time
+	symbolStates        map[string]symbolTradeState
+	reallocationTargets map[string]bool
 }
 
 // CandidateDecision captures the strategy's entry decision and supporting metrics.
@@ -56,14 +57,15 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		}
 	}
 	return &Strategy{
-		config:       cfg,
-		portfolio:    portfolioManager,
-		runtime:      runtimeState,
-		seedModel:    seedModel,
-		entryModel:   entryModel,
-		lastEntryAt:  make(map[string]time.Time),
-		lastExitAt:   make(map[string]time.Time),
-		symbolStates: make(map[string]symbolTradeState),
+		config:              cfg,
+		portfolio:           portfolioManager,
+		runtime:             runtimeState,
+		seedModel:           seedModel,
+		entryModel:          entryModel,
+		lastEntryAt:         make(map[string]time.Time),
+		lastExitAt:          make(map[string]time.Time),
+		symbolStates:        make(map[string]symbolTradeState),
+		reallocationTargets: make(map[string]bool),
 	}
 }
 
@@ -123,6 +125,45 @@ func (s *Strategy) EvaluateCandidateDetailed(candidate domain.Candidate) (domain
 // EvaluateCandidateDecision applies the entry rules and returns supporting metrics.
 func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) CandidateDecision {
 	return s.evaluateCandidateDecision(candidate)
+}
+
+func (s *Strategy) evaluateOpportunitySwap(candidate domain.Candidate) bool {
+	positions := s.portfolio.Positions()
+	if len(positions) == 0 {
+		return false
+	}
+	decisionAt := decisionTime(candidate.Timestamp)
+
+	var weakestSymbol string
+	weakestR := 999.0
+	longestHold := time.Duration(0)
+
+	for _, p := range positions {
+		holdingTime := decisionAt.Sub(p.OpenedAt)
+		if holdingTime < 5*time.Minute {
+			continue // Give new positions time to breathe
+		}
+
+		currentR := currentRMultiple(p, p.LastPrice)
+		// We only swap if the position is not already crushing it
+		if currentR < 0.5 {
+			// Prioritize swapping losers or the ones held longest with no progress
+			score := currentR - (holdingTime.Minutes() * 0.05)
+			if score < weakestR {
+				weakestR = score
+				weakestSymbol = p.Symbol
+				longestHold = holdingTime
+			}
+		}
+	}
+
+	if weakestSymbol != "" {
+		s.reallocationTargets[weakestSymbol] = true
+		s.runtime.RecordLog("info", "strategy", fmt.Sprintf("flagged %s for reallocation swap (held %.0f m, currentR %.2f) to capture %s (score %.2f)", weakestSymbol, longestHold.Minutes(), currentRMultiple(s.portfolio.Positions()[0], s.portfolio.Positions()[0].LastPrice), candidate.Symbol, candidate.Score))
+		return true
+	}
+
+	return false
 }
 
 // EvaluateExit applies the managed exit rules to a market tick.
@@ -186,6 +227,16 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 
+	maxExposure := s.portfolio.EffectiveCapital() * s.config.MaxExposurePct
+	if s.portfolio.OpenPositionCount() >= s.config.MaxOpenPositions || s.portfolio.Exposure() >= maxExposure {
+		if candidate.Score >= 16.0 {
+			if s.evaluateOpportunitySwap(candidate) {
+				return CandidateDecision{Reason: "reallocation-swap-pending", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+			}
+		}
+		return CandidateDecision{Reason: "max-capacity-reached", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
+
 	quantity := int64(0)
 	riskAmount := s.portfolio.EffectiveCapital() * s.config.RiskPerTradePct
 	if plan.RiskPerShare > 0 {
@@ -220,33 +271,33 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 			SignalType: "entry",
 			Reason:     "entry-signal",
 			Indicators: map[string]float64{
-				"price":                   candidate.Price,
-				"open":                    candidate.Open,
-				"gapPercent":              candidate.GapPercent,
-				"relativeVolume":          candidate.RelativeVolume,
-				"preMarketVolume":         float64(candidate.PreMarketVolume),
-				"volume":                  float64(candidate.Volume),
-				"highOfDay":               candidate.HighOfDay,
-				"priceVsOpenPct":          candidate.PriceVsOpenPct,
-				"distanceFromHighPct":     candidate.DistanceFromHighPct,
-				"oneMinuteReturnPct":      candidate.OneMinuteReturnPct,
-				"threeMinuteReturnPct":    candidate.ThreeMinuteReturnPct,
-				"volumeRate":              candidate.VolumeRate,
-				"volumeLeaderPct":         candidate.VolumeLeaderPct,
-				"minutesSinceOpen":        candidate.MinutesSinceOpen,
-				"atr":                     candidate.ATR,
-				"atrPct":                  candidate.ATRPct,
-				"vwap":                    candidate.VWAP,
-				"priceVsVwapPct":          candidate.PriceVsVWAPPct,
-				"breakoutPct":             candidate.BreakoutPct,
-				"consolidationRangePct":   candidate.ConsolidationRangePct,
-				"pullbackDepthPct":        candidate.PullbackDepthPct,
-				"closeOffHighPct":         candidate.CloseOffHighPct,
-				"setupHigh":               candidate.SetupHigh,
-				"setupLow":                candidate.SetupLow,
-				"score":                   candidate.Score,
-				"predictedReturn":         predictedReturn,
-				"requiredReturn":          requiredReturn,
+				"price":                 candidate.Price,
+				"open":                  candidate.Open,
+				"gapPercent":            candidate.GapPercent,
+				"relativeVolume":        candidate.RelativeVolume,
+				"preMarketVolume":       float64(candidate.PreMarketVolume),
+				"volume":                float64(candidate.Volume),
+				"highOfDay":             candidate.HighOfDay,
+				"priceVsOpenPct":        candidate.PriceVsOpenPct,
+				"distanceFromHighPct":   candidate.DistanceFromHighPct,
+				"oneMinuteReturnPct":    candidate.OneMinuteReturnPct,
+				"threeMinuteReturnPct":  candidate.ThreeMinuteReturnPct,
+				"volumeRate":            candidate.VolumeRate,
+				"volumeLeaderPct":       candidate.VolumeLeaderPct,
+				"minutesSinceOpen":      candidate.MinutesSinceOpen,
+				"atr":                   candidate.ATR,
+				"atrPct":                candidate.ATRPct,
+				"vwap":                  candidate.VWAP,
+				"priceVsVwapPct":        candidate.PriceVsVWAPPct,
+				"breakoutPct":           candidate.BreakoutPct,
+				"consolidationRangePct": candidate.ConsolidationRangePct,
+				"pullbackDepthPct":      candidate.PullbackDepthPct,
+				"closeOffHighPct":       candidate.CloseOffHighPct,
+				"setupHigh":             candidate.SetupHigh,
+				"setupLow":              candidate.SetupLow,
+				"score":                 candidate.Score,
+				"predictedReturn":       predictedReturn,
+				"requiredReturn":        requiredReturn,
 			},
 		})
 	}
@@ -302,6 +353,14 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	case minutes >= 15*60+55:
 		reason = "end-of-day-liquidation"
 		tick.Price = barClose
+	case s.reallocationTargets[position.Symbol]:
+		delete(s.reallocationTargets, position.Symbol)
+		reason = "opportunity-reallocation"
+		tick.Price = barOpen
+		if tick.Price == 0 {
+			tick.Price = barClose
+		}
+		fmt.Printf("DEBUG STRATEGY: %s opportunity-reallocation barOpen=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
 		reason = previousReason
 		tick.Price = barOpen
@@ -314,6 +373,12 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(position)
 		fmt.Printf("DEBUG STRATEGY: %s failed-breakout fbp=%.2f barLow=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, barLow, holdingTime.Minutes(), peakReturn)
+	case sameDayHold &&
+		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
+		peakReturn < s.config.StagnationMinPeakPct:
+		reason = "stagnation-time-stop"
+		tick.Price = barClose
+		fmt.Printf("DEBUG STRATEGY: %s stagnation-time-stop barClose=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case func() bool {
 		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
@@ -343,21 +408,21 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 			SignalType: "exit",
 			Reason:     reason,
 			Indicators: map[string]float64{
-				"tickPrice":           tick.Price,
-				"tickBarOpen":         tick.BarOpen,
-				"tickBarHigh":         tick.BarHigh,
-				"tickBarLow":          tick.BarLow,
-				"tickVolume":          float64(tick.Volume),
-				"positionQuantity":    float64(position.Quantity),
-				"positionAvgPrice":    position.AvgPrice,
+				"tickPrice":            tick.Price,
+				"tickBarOpen":          tick.BarOpen,
+				"tickBarHigh":          tick.BarHigh,
+				"tickBarLow":           tick.BarLow,
+				"tickVolume":           float64(tick.Volume),
+				"positionQuantity":     float64(position.Quantity),
+				"positionAvgPrice":     position.AvgPrice,
 				"positionLastPrice":    position.LastPrice,
 				"positionHighestPrice": position.HighestPrice,
-				"positionRisk":        position.RiskPerShare,
-				"positionATR":         position.EntryATR,
-				"highWatermark":       highWatermark,
-				"previousStop":        previousStop,
-				"peakReturn":          peakReturn,
-				"holdingTimeMin":      holdingTime.Minutes(),
+				"positionRisk":         position.RiskPerShare,
+				"positionATR":          position.EntryATR,
+				"highWatermark":        highWatermark,
+				"previousStop":         previousStop,
+				"peakReturn":           peakReturn,
+				"holdingTimeMin":       holdingTime.Minutes(),
 			},
 		})
 	}
@@ -507,7 +572,32 @@ func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
 	return threshold
 }
 
+var knownLeveragedETFs = map[string]bool{
+	"UVIX": true, "UVXY": true, "SQQQ": true, "TQQQ": true, "SOXL": true, "SOXS": true,
+	"SPXL": true, "SPXS": true, "UPRO": true, "SPXU": true, "UDOW": true, "SDOW": true,
+	"TNA": true, "TZA": true, "FAS": true, "FAZ": true, "NUGT": true, "DUST": true,
+	"JNUG": true, "JDST": true, "UGL": true, "GLL": true, "AGQ": true, "ZSL": true,
+	"BOIL": true, "KOLD": true, "UCO": true, "SCO": true, "YINN": true, "YANG": true,
+	"CWEB": true, "KORU": true, "EURL": true, "EDC": true, "EDZ": true, "INDL": true,
+	"LBJ": true, "GUSH": true, "DRIP": true, "NRGU": true, "NRGD": true, "UAMY": true,
+	"BITX": true, "BITI": true, "MSTU": true, "TSLL": true, "TSLQ": true, "CONL": true,
+	"GDXD": true, "GDXU": true, "AAPU": true, "AAPD": true, "AMZU": true, "AMZD": true,
+	"NVDL": true, "NVDD": true, "NVDU": true, "MSFU": true, "MSFD": true, "GOOU": true,
+	"GOOD": true, "COINU": true, "COIND": true, "DPST": true, "LABU": true, "LABD": true,
+	"WTIU": true, "MSTZ": true, "SUPX": true, "DXD": true,
+}
+
+func isLeveragedETF(symbol string) bool {
+	return knownLeveragedETFs[symbol]
+}
+
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
+	if candidate.Price < s.config.MinPrice {
+		return false, "low-price"
+	}
+	if isLeveragedETF(candidate.Symbol) {
+		return false, "leveraged-etf"
+	}
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
 	minLeaderPct := 0.05

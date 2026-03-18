@@ -347,6 +347,17 @@ func (m *Manager) Position(symbol string) (domain.Position, bool) {
 	return position, exists
 }
 
+// Positions returns a slice of all currently open positions.
+func (m *Manager) Positions() []domain.Position {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]domain.Position, 0, len(m.positions))
+	for _, p := range m.positions {
+		out = append(out, p)
+	}
+	return out
+}
+
 // OpenPositionCount returns the current number of open positions.
 func (m *Manager) OpenPositionCount() int {
 	m.mu.RLock()
