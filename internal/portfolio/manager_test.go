@@ -125,6 +125,9 @@ func TestStatusSnapshotUsesActualTradeCount(t *testing.T) {
 	if status.TradesToday != 2 {
 		t.Fatalf("expected status trades today to count both fills, got %d", status.TradesToday)
 	}
+	if status.EntriesToday != 1 {
+		t.Fatalf("expected status entries today to count only entries, got %d", status.EntriesToday)
+	}
 	if manager.EntriesToday() != 1 {
 		t.Fatalf("expected entries today to remain entry-only, got %d", manager.EntriesToday())
 	}
@@ -159,6 +162,9 @@ func TestStatusSnapshotPrefersBrokerTradeCountWhenAvailable(t *testing.T) {
 	status := manager.StatusSnapshot()
 	if status.TradesToday != 7 {
 		t.Fatalf("expected status trades today to prefer broker count, got %d", status.TradesToday)
+	}
+	if status.EntriesToday != 1 {
+		t.Fatalf("expected status entries today to remain entry-only, got %d", status.EntriesToday)
 	}
 	if manager.TradesToday() != 2 {
 		t.Fatalf("expected local trade counter to remain available for internal bookkeeping, got %d", manager.TradesToday())

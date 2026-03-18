@@ -175,6 +175,7 @@ type StatusSnapshot struct {
 	Exposure         float64   `json:"exposure"`
 	OpenPositions    int       `json:"openPositions"`
 	TradesToday      int       `json:"tradesToday"`
+	EntriesToday     int       `json:"entriesToday"`
 	DailyLossLimit   float64   `json:"dailyLossLimit"`
 	MaxOpenPositions int       `json:"maxOpenPositions"`
 	MaxTradesPerDay  int       `json:"maxTradesPerDay"`

@@ -525,6 +525,7 @@ func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
 		Exposure:         round2(exposure),
 		OpenPositions:    len(m.positions),
 		TradesToday:      m.tradesToday,
+		EntriesToday:     m.entriesToday,
 		DailyLossLimit:   round2(m.effectiveCapitalLocked() * m.config.DailyLossLimitPct),
 		MaxOpenPositions: m.config.MaxOpenPositions,
 		MaxTradesPerDay:  m.config.MaxTradesPerDay,

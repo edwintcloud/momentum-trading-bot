@@ -14,6 +14,7 @@ const emptySnapshot = {
     exposure: 0,
     openPositions: 0,
     tradesToday: 0,
+    entriesToday: 0,
     dailyLossLimit: 0,
     maxOpenPositions: 0,
     maxTradesPerDay: 0,
@@ -141,6 +142,7 @@ export function App() {
   }, []);
 
   const statusTone = snapshot.status.emergencyStop ? 'danger' : snapshot.status.paused ? 'warn' : 'good';
+  const closedTradesToday = snapshot.closedTrades.length;
 
   return (
     <main className="app-shell">
@@ -169,7 +171,7 @@ export function App() {
         <StatCard label="Today's PnL" value={money.format(snapshot.status.dayPnL)} tone={snapshot.status.dayPnL >= 0 ? 'good' : 'danger'} />
         <StatCard label="Exposure" value={money.format(snapshot.status.exposure)} />
         <StatCard label="Open Positions" value={number.format(snapshot.status.openPositions)} />
-        <StatCard label="Trades Today" value={number.format(snapshot.status.tradesToday)} />
+        <StatCard label="Closed Trades" value={number.format(closedTradesToday)} />
         <StatCard label="Daily Loss Limit" value={money.format(snapshot.status.dailyLossLimit)} tone="warn" />
       </section>
 
@@ -204,8 +206,12 @@ export function App() {
             <strong>{snapshot.status.openPositions}/{snapshot.status.maxOpenPositions}</strong>
           </div>
           <div>
-            <span>Trade Limit</span>
-            <strong>{snapshot.status.tradesToday}/{snapshot.status.maxTradesPerDay}</strong>
+            <span>Entry Limit</span>
+            <strong>{snapshot.status.entriesToday}/{snapshot.status.maxTradesPerDay}</strong>
+          </div>
+          <div>
+            <span>Broker Fills Today</span>
+            <strong>{number.format(snapshot.status.tradesToday)}</strong>
           </div>
           <div>
             <span>Emergency Stop</span>
