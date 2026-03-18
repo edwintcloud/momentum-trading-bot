@@ -653,7 +653,7 @@ func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbol
 				continue
 			}
 			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
-			plan, ok, _ := strategy.BuildEntryPlan(rec.candidate)
+			plan, ok, _ := strategy.BuildEntryPlan(cfg, rec.candidate)
 			if !ok {
 				continue
 			}
@@ -892,9 +892,9 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.TradingConfig) (float64, string, bool) {
 	decisionAt := tick.Timestamp.UTC()
 	highWatermark := maxFloat(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := strategy.ProtectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
+	previousStop, previousReason := strategy.ProtectiveStop(cfg, position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
 	if previousStop <= 0 {
-		previousStop, previousReason = strategy.ProtectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
+		previousStop, previousReason = strategy.ProtectiveStop(cfg, position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
@@ -918,23 +918,23 @@ func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.
 		return fillPrice, "end-of-day-liquidation", true
 	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
 		fillPrice := math.Max(0.01, round2(barOpen-penalty))
-		fmt.Printf("DEBUG EXIT: %s open-stop previousStop=%.2f barOpen=%.2f penalty=%.2f\n", position.Symbol, previousStop, barOpen, penalty)
+		// fmt.Printf("DEBUG EXIT: %s open-stop previousStop=%.2f barOpen=%.2f penalty=%.2f\n", position.Symbol, previousStop, barOpen, penalty)
 		return fillPrice, previousReason, true
 	case sameDayHold &&
 		holdingTime >= time.Duration(cfg.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
 		barLow > 0 &&
-		barLow <= strategy.FailedBreakoutPrice(position):
-		fillPrice := math.Max(0.01, round2(strategy.FailedBreakoutPrice(position)-penalty))
-		fmt.Printf("DEBUG EXIT: %s failed-breakout fbp=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f\n", position.Symbol, strategy.FailedBreakoutPrice(position), barLow, penalty, peakReturn)
+		barLow <= strategy.FailedBreakoutPrice(cfg, position):
+		fillPrice := math.Max(0.01, round2(strategy.FailedBreakoutPrice(cfg, position)-penalty))
+		// fmt.Printf("DEBUG EXIT: %s failed-breakout fbp=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f\n", position.Symbol, strategy.FailedBreakoutPrice(cfg, position), barLow, penalty, peakReturn)
 		return fillPrice, "failed-breakout", true
 	case func() bool {
-		stopPrice, _ := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
+		stopPrice, _ := strategy.ProtectiveStop(cfg, position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
 		return stopPrice > 0 && barLow > 0 && barLow <= stopPrice
 	}():
-		stopPrice, reason := strategy.ProtectiveStop(position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
+		stopPrice, reason := strategy.ProtectiveStop(cfg, position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
 		fillPrice := math.Max(0.01, round2(stopPrice-penalty))
-		fmt.Printf("DEBUG EXIT: %s %s stopPrice=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f initialStop=%.2f\n", position.Symbol, reason, stopPrice, barLow, penalty, peakReturn, position.InitialStopPrice)
+		// fmt.Printf("DEBUG EXIT: %s %s stopPrice=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f initialStop=%.2f\n", position.Symbol, reason, stopPrice, barLow, penalty, peakReturn, position.InitialStopPrice)
 		return fillPrice, reason, true
 	default:
 		return 0, "", false

@@ -4,20 +4,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
-)
-
-const (
-	minATRPercentFallback = 0.020
-	stopATRMultiplier     = 1.00
-	maxRiskATRMultiplier  = 4.00
-	profitTargetR         = 2.00
-	trailActivationR      = 0.70
-	trailATRMultiplier    = 1.50
-	tightTrailTriggerR    = 1.20
-	tightTrailATRMultiple = 0.60
-	failedBreakoutCutR    = 0.05
-	structureConfirmR     = 0.00
 )
 
 // EntryPlan captures the volatility-aware stop and sizing basis for a setup.
@@ -29,11 +17,11 @@ type EntryPlan struct {
 }
 
 // BuildEntryPlan derives the volatility-aware stop and risk basis for a candidate.
-func BuildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
-	return buildEntryPlan(candidate)
+func BuildEntryPlan(cfg config.TradingConfig, candidate domain.Candidate) (EntryPlan, bool, string) {
+	return buildEntryPlan(cfg, candidate)
 }
 
-func buildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
+func buildEntryPlan(cfg config.TradingConfig, candidate domain.Candidate) (EntryPlan, bool, string) {
 	if candidate.Price <= 0 {
 		return EntryPlan{}, false, "invalid-price"
 	}
@@ -42,13 +30,13 @@ func buildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
 	}
 	atr := candidate.ATR
 	if atr <= 0 {
-		atr = candidate.Price * minATRPercentFallback
+		atr = candidate.Price * cfg.EntryATRPercentFallback
 	}
 	setupLow := candidate.SetupLow
 	if setupLow <= 0 || setupLow >= candidate.Price {
-		setupLow = candidate.Price - (atr * stopATRMultiplier)
+		setupLow = candidate.Price - (atr * cfg.EntryStopATRMultiplier)
 	}
-	atrStop := candidate.Price - (atr * stopATRMultiplier)
+	atrStop := candidate.Price - (atr * cfg.EntryStopATRMultiplier)
 	stopPrice := math.Min(setupLow, atrStop)
 	if stopPrice >= candidate.Price {
 		stopPrice = atrStop
@@ -57,7 +45,7 @@ func buildEntryPlan(candidate domain.Candidate) (EntryPlan, bool, string) {
 	if riskPerShare <= 0 {
 		return EntryPlan{}, false, "invalid-risk"
 	}
-	if riskPerShare > atr*maxRiskATRMultiplier {
+	if riskPerShare > atr*cfg.MaxRiskATRMultiplier {
 		return EntryPlan{}, false, "wide-risk"
 	}
 	return EntryPlan{
@@ -93,7 +81,7 @@ func PeakRMultiple(position domain.Position, highWatermark float64) float64 {
 	return peakRMultiple(position, highWatermark)
 }
 
-func protectiveStop(position domain.Position, highWatermark, currentPrice float64, at time.Time) (float64, string) {
+func protectiveStop(cfg config.TradingConfig, position domain.Position, highWatermark, currentPrice float64, at time.Time) (float64, string) {
 	stopPrice := position.InitialStopPrice
 	reason := "stop-loss"
 	if stopPrice <= 0 {
@@ -101,7 +89,7 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	}
 	riskPerShare := position.RiskPerShare
 	if stopPrice <= 0 && position.AvgPrice > 0 {
-		fallbackRisk := math.Max(position.EntryATR*stopATRMultiplier, position.AvgPrice*0.05)
+		fallbackRisk := math.Max(position.EntryATR*cfg.EntryStopATRMultiplier, position.AvgPrice*cfg.StopLossPct)
 		stopPrice = position.AvgPrice - fallbackRisk
 		riskPerShare = fallbackRisk
 	}
@@ -118,24 +106,22 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 	// Time-based break-even: if open long enough with confirmed positive
 	// excursion, move stop to entry to prevent winners from becoming losses.
 	holdingTime := at.Sub(position.OpenedAt)
-	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= 5*time.Minute && peakR >= 0.50 && currentR >= 0 {
+	if !position.OpenedAt.IsZero() && !at.IsZero() && holdingTime >= time.Duration(cfg.BreakEvenHoldMinutes)*time.Minute && peakR >= cfg.BreakEvenMinR && currentR >= 0 {
 		breakEvenStop := position.AvgPrice
 		if breakEvenStop > stopPrice {
 			stopPrice = breakEvenStop
 			reason = "break-even-stop"
 		}
 	}
-	
-	// Hard Profit Target: Momentum stocks spike and crash. Take the money.
-	if peakR >= profitTargetR {
-		// Set stop right at current price to force immediate exit
+
+	if peakR >= cfg.ProfitTargetR {
 		return currentPrice, "profit-target"
 	}
 
-	if peakR >= trailActivationR && currentR >= structureConfirmR {
-		trailWidth := math.Max(position.EntryATR*trailATRMultiplier, riskPerShare*1.25)
-		if peakR >= tightTrailTriggerR {
-			trailWidth = math.Max(position.EntryATR*tightTrailATRMultiple, riskPerShare*0.75)
+	if peakR >= cfg.TrailActivationR && currentR >= cfg.StructureConfirmR {
+		trailWidth := math.Max(position.EntryATR*cfg.TrailATRMultiplier, riskPerShare*1.25)
+		if peakR >= cfg.TightTrailTriggerR {
+			trailWidth = math.Max(position.EntryATR*cfg.TightTrailATRMultiplier, riskPerShare*0.75)
 		}
 		// Graduated trail floor: don't lock in break-even until the trade
 		// has moved enough in our favor.
@@ -154,20 +140,20 @@ func protectiveStop(position domain.Position, highWatermark, currentPrice float6
 }
 
 // ProtectiveStop returns the active managed stop price and the exit reason it implies.
-func ProtectiveStop(position domain.Position, highWatermark, currentPrice float64, at time.Time) (float64, string) {
-	return protectiveStop(position, highWatermark, currentPrice, at)
+func ProtectiveStop(cfg config.TradingConfig, position domain.Position, highWatermark, currentPrice float64, at time.Time) (float64, string) {
+	return protectiveStop(cfg, position, highWatermark, currentPrice, at)
 }
 
-func failedBreakoutPrice(position domain.Position) float64 {
+func failedBreakoutPrice(cfg config.TradingConfig, position domain.Position) float64 {
 	if position.RiskPerShare <= 0 {
 		return 0
 	}
-	return roundPrice(position.AvgPrice - (position.RiskPerShare * failedBreakoutCutR))
+	return roundPrice(position.AvgPrice - (position.RiskPerShare * cfg.FailedBreakoutCutR))
 }
 
 // FailedBreakoutPrice returns the early-cut price used for non-follow-through setups.
-func FailedBreakoutPrice(position domain.Position) float64 {
-	return failedBreakoutPrice(position)
+func FailedBreakoutPrice(cfg config.TradingConfig, position domain.Position) float64 {
+	return failedBreakoutPrice(cfg, position)
 }
 
 func shouldTimeStop(position domain.Position, at time.Time, cfgBreakoutFailureWindowMin, cfgStagnationWindowMin int) bool {

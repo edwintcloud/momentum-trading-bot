@@ -39,6 +39,20 @@ type TradingConfig struct {
 	// LimitOrderSlippageDollars caps the adaptive limit-order buffer used to
 	// improve fill probability without over-penalizing low-priced names.
 	LimitOrderSlippageDollars float64
+	EntryATRPercentFallback   float64
+	EntryStopATRMultiplier    float64
+	MaxRiskATRMultiplier      float64
+	BreakEvenHoldMinutes      int
+	BreakEvenMinR             float64
+	TrailActivationR          float64
+	TrailATRMultiplier        float64
+	TightTrailTriggerR        float64
+	TightTrailATRMultiplier   float64
+	ProfitTargetR             float64
+	ProfitTrailActivationR    float64
+	ProfitTrailPct            float64
+	FailedBreakoutCutR        float64
+	StructureConfirmR         float64
 }
 
 // DefaultTradingConfig returns a simulation-safe baseline.
@@ -50,9 +64,9 @@ func DefaultTradingConfig() TradingConfig {
 		MaxTradesPerDay:                 8,
 		MaxOpenPositions:                4,
 		MaxExposurePct:                  0.30,
-		StopLossPct:                     0.07,
-		TrailingStopPct:                 0.08,
-		TrailingStopActivationPct:       0.03,
+		StopLossPct:                     0.07, // not currently used
+		TrailingStopPct:                 0.08, // not currently used
+		TrailingStopActivationPct:       0.03, // not currently used
 		EntryCooldownSec:                45,
 		ExitCooldownSec:                 5,
 		EntryModelEnabled:               true,
@@ -69,8 +83,8 @@ func DefaultTradingConfig() TradingConfig {
 		StagnationWindowMin:             30,
 		StagnationMinPeakPct:            0.012,
 		ScannerWorkers:                  6,
-		MinPrice:                        1.0,
-		MaxPrice:                        20.0,
+		MinPrice:                        2.0,
+		MaxPrice:                        40.0,
 		MinGapPercent:                   10.0,
 		MinRelativeVolume:               6.0,
 		MinPremarketVolume:              500_000,
@@ -78,5 +92,18 @@ func DefaultTradingConfig() TradingConfig {
 		HydrationRetrySec:               300,
 		HydrationQueueSize:              512,
 		LimitOrderSlippageDollars:       0.10,
+		EntryATRPercentFallback:         0.02,
+		EntryStopATRMultiplier:          1.00, // used
+		MaxRiskATRMultiplier:            4.00,
+		BreakEvenHoldMinutes:            5,
+		BreakEvenMinR:                   0.50,
+		TrailActivationR:                0.70,
+		TrailATRMultiplier:              1.50,
+		TightTrailTriggerR:              1.20,
+		TightTrailATRMultiplier:         0.60,
+		ProfitTrailActivationR:          1.50,
+		ProfitTrailPct:                  0.03,
+		FailedBreakoutCutR:              0.05,
+		StructureConfirmR:               0.00,
 	}
 }

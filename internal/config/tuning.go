@@ -11,29 +11,35 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	}
 	cfg.StartingCapital = round2(equity)
 
-	switch {
-	case equity < 25_000:
-		cfg.RiskPerTradePct = 0.005
-		cfg.DailyLossLimitPct = 0.015
-		cfg.MaxTradesPerDay = 6
-		cfg.MaxOpenPositions = 2
-		cfg.MinPrice = 2.0
-	case equity < 100_000:
-		cfg.RiskPerTradePct = 0.035
-		cfg.DailyLossLimitPct = 0.200
-		cfg.MaxTradesPerDay = 30
-		cfg.MaxOpenPositions = 5
-		cfg.MinPrice = 1.00
-	default:
-		cfg.RiskPerTradePct = 0.015
-		cfg.DailyLossLimitPct = 0.080
-		cfg.MaxTradesPerDay = 20
-		cfg.MaxOpenPositions = 5
-		cfg.MinPrice = 1.00
-	}
+	cfg.RiskPerTradePct = 0.035
+	cfg.DailyLossLimitPct = 0.200
+	cfg.MaxTradesPerDay = 30
+	cfg.MaxOpenPositions = 5
+	cfg.MinPrice = 2.0
 
-	cfg.StopLossPct = 0.05
-	cfg.TrailingStopPct = 0.06
+	// switch {
+	// case equity < 25_000:
+	// 	cfg.RiskPerTradePct = 0.005
+	// 	cfg.DailyLossLimitPct = 0.015
+	// 	cfg.MaxTradesPerDay = 6
+	// 	cfg.MaxOpenPositions = 2
+	// 	cfg.MinPrice = 2.0
+	// case equity < 100_000:
+	// 	cfg.RiskPerTradePct = 0.035
+	// 	cfg.DailyLossLimitPct = 0.200
+	// 	cfg.MaxTradesPerDay = 30
+	// 	cfg.MaxOpenPositions = 5
+	// 	cfg.MinPrice = 2.0
+	// default:
+	// 	cfg.RiskPerTradePct = 0.015
+	// 	cfg.DailyLossLimitPct = 0.080
+	// 	cfg.MaxTradesPerDay = 20
+	// 	cfg.MaxOpenPositions = 5
+	// 	cfg.MinPrice = 2.0
+	// }
+
+	cfg.StopLossPct = 0.03
+	cfg.TrailingStopPct = 0.03
 	cfg.TrailingStopActivationPct = 0.02
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
@@ -50,12 +56,26 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.BreakEvenFloorPct = 0.001
 	cfg.StagnationWindowMin = 3
 	cfg.StagnationMinPeakPct = 0.005
-	cfg.MinGapPercent = 1.0
+	cfg.MinGapPercent = 0.0
 	cfg.MaxPrice = 50.0
-	cfg.MinRelativeVolume = 1.2
-	cfg.MinPremarketVolume = 60_000
+	cfg.MinRelativeVolume = 5.0
+	cfg.MinPremarketVolume = 10_000
 	cfg.ScannerWorkers = 4
 	cfg.LimitOrderSlippageDollars = 0.02
+	cfg.EntryATRPercentFallback = 0.02
+	cfg.EntryStopATRMultiplier = 2.00
+	cfg.MaxRiskATRMultiplier = 4.00
+	cfg.BreakEvenHoldMinutes = 5
+	cfg.BreakEvenMinR = 0.50
+	cfg.TrailActivationR = 0.70
+	cfg.TrailATRMultiplier = 1.50
+	cfg.TightTrailTriggerR = 1.20
+	cfg.TightTrailATRMultiplier = 0.70
+	cfg.ProfitTargetR = 1.20
+	cfg.ProfitTrailActivationR = 1.50 
+	cfg.ProfitTrailPct = 0.03 
+	cfg.FailedBreakoutCutR = 0.05
+	cfg.StructureConfirmR = 0.00
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 
 	if historicalRateLimitPerMin > 0 {

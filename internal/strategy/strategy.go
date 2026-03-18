@@ -222,7 +222,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if s.config.EntryModelEnabled && predictedReturn < requiredReturn {
 		return CandidateDecision{Reason: "model-threshold", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
-	plan, ok, reason := buildEntryPlan(candidate)
+	plan, ok, reason := buildEntryPlan(s.config, candidate)
 	if !ok {
 		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -334,9 +334,9 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	}
 
 	highWatermark := maxPrice(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := protectiveStop(position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
+	previousStop, previousReason := protectiveStop(s.config, position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
 	if previousStop <= 0 {
-		previousStop, previousReason = protectiveStop(position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
+		previousStop, previousReason = protectiveStop(s.config, position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
@@ -369,9 +369,9 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		holdingTime >= time.Duration(s.config.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
 		barLow > 0 &&
-		barLow <= failedBreakoutPrice(position):
+		barLow <= failedBreakoutPrice(s.config, position):
 		reason = "failed-breakout"
-		tick.Price = failedBreakoutPrice(position)
+		tick.Price = failedBreakoutPrice(s.config, position)
 		fmt.Printf("DEBUG STRATEGY: %s failed-breakout fbp=%.2f barLow=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, barLow, holdingTime.Minutes(), peakReturn)
 	case sameDayHold &&
 		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
@@ -380,7 +380,7 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		tick.Price = barClose
 		fmt.Printf("DEBUG STRATEGY: %s stagnation-time-stop barClose=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case func() bool {
-		stopPrice, stopReason := protectiveStop(position, highWatermark, barClose, decisionAt)
+		stopPrice, stopReason := protectiveStop(s.config, position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
 			return false
 		}
