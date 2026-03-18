@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -10,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -179,11 +183,16 @@ func (s *Server) requireControlPlaneAuth(next http.HandlerFunc) http.HandlerFunc
 			s.unauthorized(w)
 			return
 		}
+		if s.hasValidControlPlaneSession(r) {
+			next(w, r)
+			return
+		}
 		username, password, ok := r.BasicAuth()
 		if !ok || username != "operator" || subtle.ConstantTimeCompare([]byte(password), []byte(s.authToken)) != 1 {
 			s.unauthorized(w)
 			return
 		}
+		s.setControlPlaneSession(w, r)
 		next(w, r)
 	}
 }
@@ -197,6 +206,9 @@ const (
 	wsWriteTimeout = 5 * time.Second
 	wsPingInterval = 25 * time.Second
 	wsPongTimeout  = 60 * time.Second
+
+	controlPlaneSessionCookieName = "mtb_control_plane_session"
+	controlPlaneSessionTTL        = 30 * 24 * time.Hour
 )
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -310,4 +322,45 @@ func sameOriginRequest(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(originURL.Host, r.Host)
+}
+
+func (s *Server) hasValidControlPlaneSession(r *http.Request) bool {
+	cookie, err := r.Cookie(controlPlaneSessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return false
+	}
+
+	expiresAt, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().UTC().Unix() > expiresAt {
+		return false
+	}
+
+	expected := s.signControlPlaneSession(parts[0])
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expected)) == 1
+}
+
+func (s *Server) setControlPlaneSession(w http.ResponseWriter, r *http.Request) {
+	expiresAt := time.Now().UTC().Add(controlPlaneSessionTTL)
+	payload := strconv.FormatInt(expiresAt.Unix(), 10)
+	http.SetCookie(w, &http.Cookie{
+		Name:     controlPlaneSessionCookieName,
+		Value:    payload + "." + s.signControlPlaneSession(payload),
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   int(controlPlaneSessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+}
+
+func (s *Server) signControlPlaneSession(payload string) string {
+	mac := hmac.New(sha256.New, []byte(s.authToken))
+	_, _ = mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

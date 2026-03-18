@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -45,6 +46,21 @@ func TestServerRequiresAuthForOperatorRoutes(t *testing.T) {
 	if authed.Code != http.StatusOK {
 		t.Fatalf("expected authorized dashboard request to succeed, got %d", authed.Code)
 	}
+	sessionCookie := findCookie(t, authed.Result().Cookies(), controlPlaneSessionCookieName)
+	if !sessionCookie.HttpOnly {
+		t.Fatal("expected control-plane session cookie to be HttpOnly")
+	}
+	if sessionCookie.MaxAge < int((24 * time.Hour).Seconds()) {
+		t.Fatalf("expected a long-lived session cookie, got max-age=%d", sessionCookie.MaxAge)
+	}
+
+	cookieOnly := httptest.NewRecorder()
+	cookieOnlyReq := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	cookieOnlyReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(cookieOnly, cookieOnlyReq)
+	if cookieOnly.Code != http.StatusOK {
+		t.Fatalf("expected session cookie to authorize dashboard request, got %d", cookieOnly.Code)
+	}
 }
 
 func TestServerRequiresSameOriginForWebSocket(t *testing.T) {
@@ -64,6 +80,19 @@ func TestServerRequiresSameOriginForWebSocket(t *testing.T) {
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 		if err != nil {
 			t.Fatalf("expected websocket upgrade to succeed, got %v", err)
+		}
+		conn.Close()
+	})
+
+	t.Run("accepts same-origin with session cookie", func(t *testing.T) {
+		sessionCookie := issueSessionCookie(t, httptestServer.URL)
+		header := http.Header{}
+		header.Set("Cookie", sessionCookie.String())
+		header.Set("Origin", httptestServer.URL)
+
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		if err != nil {
+			t.Fatalf("expected websocket upgrade with session cookie to succeed, got %v", err)
 		}
 		conn.Close()
 	})
@@ -120,4 +149,37 @@ func newSandboxAwareServer(t *testing.T, handler http.Handler) (server *httptest
 		}
 	}()
 	return httptest.NewServer(handler)
+}
+
+func issueSessionCookie(t *testing.T, baseURL string) *http.Cookie {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/dashboard", nil)
+	if err != nil {
+		t.Fatalf("failed to build session bootstrap request: %v", err)
+	}
+	req.Header.Set("Authorization", basicAuthHeader("operator", "secret"))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed to bootstrap session cookie: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected bootstrap request to succeed, got %d", resp.StatusCode)
+	}
+
+	return findCookie(t, resp.Cookies(), controlPlaneSessionCookieName)
+}
+
+func findCookie(t *testing.T, cookies []*http.Cookie, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("expected cookie %q to be set", name)
+	return nil
 }
