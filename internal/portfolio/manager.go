@@ -457,10 +457,7 @@ func (m *Manager) DayPnL() float64 {
 func (m *Manager) EffectiveCapital() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.brokerEquity > 0 {
-		return round2(m.brokerEquity)
-	}
-	return round2(m.startingCapital)
+	return m.effectiveCapitalLocked()
 }
 
 // TradesToday returns the count of fills processed today.
@@ -503,7 +500,10 @@ func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.statusSnapshotLocked()
+}
 
+func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
 	var exposure float64
 	var unrealized float64
 	for _, position := range m.positions {
@@ -525,10 +525,17 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		Exposure:         round2(exposure),
 		OpenPositions:    len(m.positions),
 		TradesToday:      m.tradesToday,
-		DailyLossLimit:   round2(m.EffectiveCapital() * m.config.DailyLossLimitPct),
+		DailyLossLimit:   round2(m.effectiveCapitalLocked() * m.config.DailyLossLimitPct),
 		MaxOpenPositions: m.config.MaxOpenPositions,
 		MaxTradesPerDay:  m.config.MaxTradesPerDay,
 	}
+	optimizerStatus := m.runtime.OptimizerStatus()
+	status.ActiveProfile = optimizerStatus.ActiveProfileName
+	status.ActiveVersion = optimizerStatus.ActiveProfileVersion
+	status.PendingProfile = optimizerStatus.PendingProfileName
+	status.PendingVersion = optimizerStatus.PendingProfileVersion
+	status.LastOptimizerRun = optimizerStatus.LastOptimizerRun
+	status.PaperValidation = optimizerStatus.LastPaperValidationResult
 	if m.brokerEquity > 0 {
 		status.DayPnL = round2(m.dayPnL)
 	}
@@ -536,6 +543,13 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		status.TradesToday = m.brokerTradesToday
 	}
 	return status
+}
+
+func (m *Manager) effectiveCapitalLocked() float64 {
+	if m.brokerEquity > 0 {
+		return round2(m.brokerEquity)
+	}
+	return round2(m.startingCapital)
 }
 
 func round2(value float64) float64 {

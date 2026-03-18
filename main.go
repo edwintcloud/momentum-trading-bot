@@ -35,6 +35,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "optimize") {
+		if err := runOptimize(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	log.Println("Starting Momentum Trading Bot")
 	appConfig, err := config.Load()
@@ -102,8 +108,16 @@ func main() {
 	} else {
 		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, appConfig.Trading.StartingCapital, historicalRateLimit)
 	}
+	profileLabel := ""
+	appConfig.Trading, profileLabel, err = applyConfiguredTradingProfile(appConfig.Trading, appConfig.TradingProfilePath)
+	if err != nil {
+		log.Fatalf("trading profile load failed: %v", err)
+	}
+	runtimeState.SetOptimizerStatus(buildRuntimeOptimizerStatus(appConfig.Trading))
 	runtimeState.RecordLog("info", "risk", fmt.Sprintf(
-		"broker-tuned config risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f min_score=%.1f min_1m=%.2f",
+		"active profile=%s version=%s risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f min_score=%.1f min_1m=%.2f",
+		appConfig.Trading.StrategyProfileName,
+		appConfig.Trading.StrategyProfileVersion,
 		appConfig.Trading.RiskPerTradePct*100,
 		appConfig.Trading.DailyLossLimitPct*100,
 		appConfig.Trading.MaxOpenPositions,
@@ -113,6 +127,9 @@ func main() {
 		appConfig.Trading.MinEntryScore,
 		appConfig.Trading.MinOneMinuteReturnPct,
 	))
+	if profileLabel != "" {
+		runtimeState.RecordLog("info", "optimizer", "loaded trading profile "+profileLabel)
+	}
 	portfolioManager := portfolio.NewManager(appConfig.Trading, runtimeState)
 	portfolioManager.SetRecorder(recorder)
 	runtimeState.SetDependencyStatus("alpaca_trading", true, liveModeLabel(appConfig.Alpaca.Paper))

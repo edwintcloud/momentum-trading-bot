@@ -178,6 +178,12 @@ type StatusSnapshot struct {
 	DailyLossLimit   float64   `json:"dailyLossLimit"`
 	MaxOpenPositions int       `json:"maxOpenPositions"`
 	MaxTradesPerDay  int       `json:"maxTradesPerDay"`
+	ActiveProfile    string    `json:"activeProfile"`
+	ActiveVersion    string    `json:"activeVersion"`
+	PendingProfile   string    `json:"pendingProfile"`
+	PendingVersion   string    `json:"pendingVersion"`
+	LastOptimizerRun time.Time `json:"lastOptimizerRun"`
+	PaperValidation  string    `json:"paperValidation"`
 }
 
 // DashboardSnapshot is streamed to the frontend.

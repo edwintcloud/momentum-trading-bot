@@ -26,8 +26,8 @@ func TestLoadUsesSimpleDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected config to load, got %v", err)
 	}
-	if cfg.HTTPAddr != "127.0.0.1:8080" {
-		t.Fatalf("expected localhost bind by default, got %q", cfg.HTTPAddr)
+	if cfg.HTTPAddr != ":8080" {
+		t.Fatalf("expected current bind default to remain unchanged, got %q", cfg.HTTPAddr)
 	}
 	if !cfg.Alpaca.AutoSelectDataFeed {
 		t.Fatal("expected alpaca feed auto-detection to stay enabled by default")

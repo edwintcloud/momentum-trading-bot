@@ -17,6 +17,12 @@ const emptySnapshot = {
     dailyLossLimit: 0,
     maxOpenPositions: 0,
     maxTradesPerDay: 0,
+    activeProfile: '',
+    activeVersion: '',
+    pendingProfile: '',
+    pendingVersion: '',
+    lastOptimizerRun: '',
+    paperValidation: '',
   },
   candidates: [],
   positions: [],
@@ -204,6 +210,22 @@ export function App() {
           <div>
             <span>Emergency Stop</span>
             <strong>{snapshot.status.emergencyStop ? 'Active' : 'Inactive'}</strong>
+          </div>
+          <div>
+            <span>Active Profile</span>
+            <strong>{snapshot.status.activeProfile ? `${snapshot.status.activeProfile} (${snapshot.status.activeVersion || 'n/a'})` : 'Built-in baseline'}</strong>
+          </div>
+          <div>
+            <span>Pending Candidate</span>
+            <strong>{snapshot.status.pendingProfile ? `${snapshot.status.pendingProfile} (${snapshot.status.pendingVersion || 'n/a'})` : 'None queued'}</strong>
+          </div>
+          <div>
+            <span>Last Optimizer Run</span>
+            <strong>{snapshot.status.lastOptimizerRun ? new Date(snapshot.status.lastOptimizerRun).toLocaleString() : 'Not run yet'}</strong>
+          </div>
+          <div>
+            <span>Paper Validation</span>
+            <strong>{snapshot.status.paperValidation || 'n/a'}</strong>
           </div>
         </div>
       </section>

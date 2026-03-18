@@ -14,6 +14,7 @@ type AppConfig struct {
 	HTTPAddr                   string
 	DatabaseURL                string
 	ControlPlaneAuthToken      string
+	TradingProfilePath         string
 	SnapshotPersistIntervalSec int
 	StartupTimeoutSec          int
 	ShutdownTimeoutSec         int
@@ -59,6 +60,7 @@ func Load() (AppConfig, error) {
 		HTTPAddr:                   ":8080",
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		ControlPlaneAuthToken:      strings.TrimSpace(os.Getenv("CONTROL_PLANE_AUTH_TOKEN")),
+		TradingProfilePath:         strings.TrimSpace(os.Getenv("TRADING_PROFILE_PATH")),
 		SnapshotPersistIntervalSec: 10,
 		StartupTimeoutSec:          30,
 		ShutdownTimeoutSec:         10,
@@ -92,6 +94,11 @@ func Load() (AppConfig, error) {
 	}
 	if cfg.Trading.HydrationQueueSize < 32 {
 		return AppConfig{}, fmt.Errorf("default hydration queue size must be at least 32")
+	}
+	if cfg.TradingProfilePath != "" {
+		if _, err := LoadTradingProfile(cfg.TradingProfilePath); err != nil {
+			return AppConfig{}, err
+		}
 	}
 	if !cfg.Alpaca.Paper && !cfg.Alpaca.LiveTradingEnabled {
 		return AppConfig{}, fmt.Errorf("live trading requires ALPACA_LIVE_TRADING_ENABLED=true")

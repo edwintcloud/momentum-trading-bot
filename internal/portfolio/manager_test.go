@@ -165,6 +165,80 @@ func TestStatusSnapshotPrefersBrokerTradeCountWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestStatusSnapshotIncludesOptimizerMetadata(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	runtimeState.SetOptimizerStatus(runtime.OptimizerStatus{
+		ActiveProfileName:         "baseline_breakout",
+		ActiveProfileVersion:      "built-in",
+		PendingProfileName:        "high_conviction_breakout",
+		PendingProfileVersion:     "20260320-high-conviction_breakout",
+		LastOptimizerRun:          time.Date(2026, time.March, 20, 21, 0, 0, 0, time.UTC),
+		LastPaperValidationResult: "pending-paper-validation",
+	})
+	manager := NewManager(cfg, runtimeState)
+
+	status := manager.StatusSnapshot()
+	if status.ActiveProfile != "baseline_breakout" || status.ActiveVersion != "built-in" {
+		t.Fatalf("expected active optimizer metadata in status, got %+v", status)
+	}
+	if status.PendingProfile != "high_conviction_breakout" || status.PendingVersion == "" {
+		t.Fatalf("expected pending optimizer metadata in status, got %+v", status)
+	}
+	if status.PaperValidation != "pending-paper-validation" {
+		t.Fatalf("expected paper validation status, got %+v", status)
+	}
+}
+
+func TestStatusSnapshotLockedCompletesWithQueuedWriter(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	manager.SyncBrokerAccount(250000, 249000)
+
+	readerHolding := make(chan struct{})
+	proceed := make(chan struct{})
+	result := make(chan domain.StatusSnapshot, 1)
+
+	go func() {
+		manager.mu.RLock()
+		defer manager.mu.RUnlock()
+		close(readerHolding)
+		<-proceed
+		result <- manager.statusSnapshotLocked()
+	}()
+
+	<-readerHolding
+
+	writerAttempting := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		close(writerAttempting)
+		manager.mu.Lock()
+		manager.startingCapital = 123456
+		manager.mu.Unlock()
+		close(writerDone)
+	}()
+
+	<-writerAttempting
+	close(proceed)
+
+	select {
+	case status := <-result:
+		if status.BrokerEquity != 250000 {
+			t.Fatalf("expected broker equity in snapshot, got %+v", status)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("status snapshot blocked with queued writer")
+	}
+
+	select {
+	case <-writerDone:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("writer did not complete after status snapshot released its read lock")
+	}
+}
+
 func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

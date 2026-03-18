@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,7 +51,7 @@ func TestServerRequiresSameOriginForWebSocket(t *testing.T) {
 	t.Setenv("CONTROL_PLANE_AUTH_TOKEN", "secret")
 
 	server := newTestServer()
-	httptestServer := httptest.NewServer(server.handler())
+	httptestServer := newSandboxAwareServer(t, server.handler())
 	defer httptestServer.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(httptestServer.URL, "http") + "/ws"
@@ -105,4 +106,18 @@ func newTestServer() *Server {
 
 func basicAuthHeader(username, password string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+}
+
+func newSandboxAwareServer(t *testing.T, handler http.Handler) (server *httptest.Server) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			message := fmt.Sprint(recovered)
+			if strings.Contains(message, "operation not permitted") {
+				t.Skipf("sandbox does not allow local listener for websocket test: %s", message)
+			}
+			panic(recovered)
+		}
+	}()
+	return httptest.NewServer(handler)
 }

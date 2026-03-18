@@ -3,6 +3,8 @@ package config
 // TradingConfig centralizes strategy and risk parameters.
 type TradingConfig struct {
 	StartingCapital                 float64
+	StrategyProfileName             string
+	StrategyProfileVersion          string
 	RiskPerTradePct                 float64
 	DailyLossLimitPct               float64
 	MaxTradesPerDay                 int

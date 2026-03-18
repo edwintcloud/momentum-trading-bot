@@ -561,6 +561,14 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.SetupType == "" {
 		return false, "no-setup"
 	}
+	if s.isContinuationProfile() {
+		if candidate.MinutesSinceOpen < 8 {
+			return false, "awaiting-continuation-window"
+		}
+		if candidate.SetupType == "opening-range-breakout" && candidate.MinutesSinceOpen < 12 {
+			return false, "awaiting-continuation-window"
+		}
+	}
 	if !s.hasTimingConfirmation(candidate, strongSqueeze) {
 		return false, "no-renewed-volume"
 	}
@@ -659,6 +667,9 @@ func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSquee
 	if strongSqueeze {
 		minVolumeRate = maxFloat(0.95, s.config.MinVolumeRate)
 	}
+	if s.isContinuationProfile() && candidate.MinutesSinceOpen >= 10 {
+		minVolumeRate = maxFloat(1.0, minVolumeRate-0.10)
+	}
 
 	switch candidate.SetupType {
 	case "consolidation-breakout", "opening-range-breakout":
@@ -675,6 +686,15 @@ func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSquee
 	case "higher-low-reclaim", "vwap-reclaim":
 		if candidate.VolumeRate < minVolumeRate {
 			return false
+		}
+		if s.isContinuationProfile() && candidate.MinutesSinceOpen >= 10 {
+			if candidate.PriceVsVWAPPct < 0 {
+				return false
+			}
+			if candidate.OneMinuteReturnPct < -0.05 && candidate.BreakoutPct < -0.20 {
+				return false
+			}
+			return true
 		}
 		if candidate.OneMinuteReturnPct < 0.05 && candidate.PriceVsVWAPPct < 0 && candidate.BreakoutPct < -0.10 {
 			return false
@@ -707,6 +727,9 @@ func (s *Strategy) allowedBreakoutSlack(candidate domain.Candidate) float64 {
 	}
 	if s.volumeLeaderPct(candidate) >= 0.65 {
 		allowance += 0.10
+	}
+	if s.isContinuationProfile() && candidate.MinutesSinceOpen >= 10 {
+		allowance += 0.15
 	}
 	if allowance > 1.85 {
 		allowance = 1.85
@@ -804,10 +827,17 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	if candidate.SetupType == "higher-low-reclaim" {
 		multiplier *= 0.95
 	}
+	if s.isContinuationProfile() {
+		multiplier *= 0.90
+	}
 	if multiplier < 0.55 {
 		multiplier = 0.55
 	}
 	return multiplier
+}
+
+func (s *Strategy) isContinuationProfile() bool {
+	return s.config.StrategyProfileName == string(config.StrategyProfileContinuation)
 }
 
 func (s *Strategy) volumeLeaderPct(candidate domain.Candidate) float64 {

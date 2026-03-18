@@ -23,6 +23,7 @@ type State struct {
 	logs          []domain.LogEntry
 	recorder      domain.EventRecorder
 	dependencies  map[string]DependencyStatus
+	optimizer     OptimizerStatus
 }
 
 var tradingDayLocation = mustLoadLocation("America/New_York")
@@ -32,6 +33,17 @@ type DependencyStatus struct {
 	Ready       bool      `json:"ready"`
 	Message     string    `json:"message"`
 	LastChecked time.Time `json:"lastChecked"`
+}
+
+// OptimizerStatus tracks which profile is active and what candidate profile is
+// waiting on paper validation or operator review.
+type OptimizerStatus struct {
+	ActiveProfileName         string    `json:"activeProfileName"`
+	ActiveProfileVersion      string    `json:"activeProfileVersion"`
+	PendingProfileName        string    `json:"pendingProfileName"`
+	PendingProfileVersion     string    `json:"pendingProfileVersion"`
+	LastOptimizerRun          time.Time `json:"lastOptimizerRun"`
+	LastPaperValidationResult string    `json:"lastPaperValidationResult"`
 }
 
 // NewState creates runtime state with the trading system marked as running.
@@ -167,6 +179,21 @@ func (s *State) DependencyStatuses() map[string]DependencyStatus {
 		out[name] = status
 	}
 	return out
+}
+
+// SetOptimizerStatus replaces the operator-visible optimizer metadata.
+func (s *State) SetOptimizerStatus(status OptimizerStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.optimizer = status
+	s.lastUpdate = time.Now().UTC()
+}
+
+// OptimizerStatus returns the latest optimizer metadata snapshot.
+func (s *State) OptimizerStatus() OptimizerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.optimizer
 }
 
 // IsReady reports whether all tracked dependencies are healthy.

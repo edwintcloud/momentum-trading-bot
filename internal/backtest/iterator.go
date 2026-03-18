@@ -106,6 +106,12 @@ func loadInputBars(path string, start, end time.Time) ([]InputBar, error) {
 	return bars, nil
 }
 
+// LoadInputBars parses historical bars from CSV using the shared backtest
+// schema and window filtering rules.
+func LoadInputBars(path string, start, end time.Time) ([]InputBar, error) {
+	return loadInputBars(path, start, end)
+}
+
 func parseInputBar(columns map[string]int, row []string) (InputBar, error) {
 	timestamp, err := parseTimestamp(cell(columns, row, "timestamp", "time", "datetime"))
 	if err != nil {
