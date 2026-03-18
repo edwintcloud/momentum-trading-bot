@@ -34,11 +34,6 @@ func main() {
 			log.Fatal(err)
 		}
 		return
-	} else if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "export") {
-		if err := runExport(os.Args[2:]); err != nil {
-			log.Fatal(err)
-		}
-		return
 	}
 
 	log.Println("Starting Momentum Trading Bot")
