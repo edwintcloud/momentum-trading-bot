@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -19,6 +20,41 @@ type Recorder struct {
 // Ping verifies the database connection.
 func (r *Recorder) Ping(ctx context.Context) error {
 	return r.pool.Ping(ctx)
+}
+
+// LoadTodayClosedTrades returns all closed trades whose close time falls on the
+// current calendar day in the America/New_York timezone.
+func (r *Recorder) LoadTodayClosedTrades(ctx context.Context) ([]domain.ClosedTrade, error) {
+	nyLoc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		nyLoc = time.UTC
+	}
+	now := time.Now().In(nyLoc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, nyLoc)
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT payload FROM closed_trades
+		WHERE closed_at >= $1
+		ORDER BY closed_at DESC
+	`, todayStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var trades []domain.ClosedTrade
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var trade domain.ClosedTrade
+		if err := json.Unmarshal(raw, &trade); err != nil {
+			return nil, err
+		}
+		trades = append(trades, trade)
+	}
+	return trades, rows.Err()
 }
 
 // NewRecorder creates the PostgreSQL pool, initializes schema, and starts the writer loop.

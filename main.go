@@ -119,6 +119,7 @@ func main() {
 	runtimeState.SetDependencyStatus("alpaca_trading", true, liveModeLabel(appConfig.Alpaca.Paper))
 	runtimeState.RecordLog("info", "system", "live alpaca mode enabled")
 	seedFromBroker(ctx, alpacaClient, portfolioManager, runtimeState, account)
+	seedClosedTradesFromDB(ctx, pgRecorder, portfolioManager, runtimeState)
 	startBrokerAccountSync(ctx, alpacaClient, portfolioManager, runtimeState)
 
 	// Graceful shutdown on SIGINT/SIGTERM
@@ -308,6 +309,20 @@ func recommendedHydrationBudget(limitPerMinute int) int {
 		budget = 2400
 	}
 	return budget
+}
+
+func seedClosedTradesFromDB(ctx context.Context, recorder *storage.Recorder, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
+	loadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	trades, err := recorder.LoadTodayClosedTrades(loadCtx)
+	if err != nil {
+		runtimeState.RecordLog("warn", "startup", fmt.Sprintf("could not load today's closed trades: %v", err))
+		return
+	}
+	portfolioManager.SeedClosedTrades(trades)
+	if len(trades) > 0 {
+		runtimeState.RecordLog("info", "startup", fmt.Sprintf("restored %d closed trade(s) from today", len(trades)))
+	}
 }
 
 func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State, account alpaca.Account) {

@@ -75,6 +75,36 @@ func (m *Manager) SeedPosition(position domain.Position) {
 	m.positions[position.Symbol] = position
 }
 
+// SeedClosedTrades restores today's closed-trade history after a restart so
+// the dashboard and risk counters reflect fills that already happened today.
+func (m *Manager) SeedClosedTrades(trades []domain.ClosedTrade) {
+	if len(trades) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+	day := now.In(tradingDayLocation).Format("2006-01-02")
+
+	// trades are ordered newest-first from the DB query
+	m.closedTrades = make([]domain.ClosedTrade, len(trades))
+	copy(m.closedTrades, trades)
+
+	var totalPnL float64
+	for _, t := range trades {
+		totalPnL += t.PnL
+	}
+	m.dayRealizedPnL = round2(totalPnL)
+	m.realizedPnL = round2(totalPnL)
+	// Each closed trade represents one entry + one exit.
+	m.entriesToday = len(trades)
+	m.tradesToday = len(trades) * 2
+	if m.currentTradeDay == "" {
+		m.currentTradeDay = day
+	}
+}
+
 // ApplyExecution applies a fill to the portfolio.
 func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	m.mu.Lock()
