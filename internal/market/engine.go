@@ -360,18 +360,30 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 		byDay[dayKey] = append(byDay[dayKey], request.symbol)
 		dayTimestamp[dayKey] = request.timestamp
 	}
+
+	var wg sync.WaitGroup
+	var volumesMu sync.Mutex
+
 	for dayKey, daySymbols := range byDay {
 		if err := e.waitForHydrationSlot(hydrateCtx); err != nil {
 			break
 		}
-		dayVolumes, err := e.client.GetPremarketVolumes(hydrateCtx, daySymbols, dayTimestamp[dayKey])
-		if err != nil {
-			continue
-		}
-		for symbol, volume := range dayVolumes {
-			volumes[symbol] = volume
-		}
+
+		wg.Add(1)
+		go func(symbols []string, ts time.Time) {
+			defer wg.Done()
+			dayVolumes, err := e.client.GetPremarketVolumes(hydrateCtx, symbols, ts)
+			if err != nil {
+				return
+			}
+			volumesMu.Lock()
+			for symbol, volume := range dayVolumes {
+				volumes[symbol] = volume
+			}
+			volumesMu.Unlock()
+		}(daySymbols, dayTimestamp[dayKey])
 	}
+	wg.Wait()
 
 	now := time.Now().UTC()
 	for _, symbol := range symbols {
