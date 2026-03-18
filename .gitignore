@@ -7,3 +7,4 @@ web/dist/
 logs/
 progress.txt
 tasks.md
+*.csv
