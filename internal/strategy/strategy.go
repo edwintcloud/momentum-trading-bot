@@ -117,7 +117,8 @@ func (s *Strategy) evaluateOpportunitySwap(candidate domain.Candidate) bool {
 	longestHold := time.Duration(0)
 
 	for _, p := range positions {
-		holdingTime := decisionAt.Sub(p.OpenedAt)
+		timingPosition := s.timingPosition(p, decisionAt)
+		holdingTime := decisionAt.Sub(timingPosition.OpenedAt)
 		if holdingTime < 5*time.Minute {
 			continue // Give new positions time to breathe
 		}
@@ -296,6 +297,7 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	if !exists {
 		return domain.TradeSignal{}, false, "no-position"
 	}
+	position = s.timingPosition(position, decisionAt)
 	if lastExit, seen := s.lastExitAt[tick.Symbol]; seen {
 		if decisionAt.Sub(lastExit) < time.Duration(s.config.ExitCooldownSec)*time.Second {
 			return domain.TradeSignal{}, false, "exit-cooldown"
@@ -406,6 +408,14 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 	}, true, reason
 }
 
+func (s *Strategy) timingPosition(position domain.Position, at time.Time) domain.Position {
+	if !position.BrokerSeeded {
+		return position
+	}
+	position.OpenedAt = tradingDayStart(at)
+	return position
+}
+
 func (s *Strategy) normalizeCandidate(candidate domain.Candidate) domain.Candidate {
 	if candidate.Price <= 0 {
 		return candidate
@@ -475,6 +485,14 @@ func decisionTime(timestamp time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return timestamp.UTC()
+}
+
+func tradingDayStart(at time.Time) time.Time {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	local := at.In(markethours.Location())
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, markethours.Location()).UTC()
 }
 
 var knownLeveragedETFs = map[string]bool{

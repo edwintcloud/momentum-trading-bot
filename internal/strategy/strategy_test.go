@@ -16,41 +16,41 @@ func inSessionTime() time.Time {
 
 func testConfig() config.TradingConfig {
 	return config.TradingConfig{
-		StartingCapital:           100_000,
-		RiskPerTradePct:           0.01,
-		DailyLossLimitPct:         0.03,
-		MaxTradesPerDay:           8,
-		MaxOpenPositions:          4,
-		MaxExposurePct:            0.30,
-		EntryCooldownSec:          45,
-		ExitCooldownSec:           5,
-		MinEntryScore:             14.0,
-		MinOneMinuteReturnPct:     0.05,
-		MinThreeMinuteReturnPct:   0.15,
-		MinVolumeRate:             1.05,
-		MaxPriceVsOpenPct:         50.0,
-		BreakoutFailureWindowMin:  15,
-		BreakoutFailureLossPct:    0.008,
-		BreakEvenActivationPct:    0.025,
-		BreakEvenFloorPct:         0.0015,
-		StagnationWindowMin:       30,
-		StagnationMinPeakPct:      0.012,
-		MinPrice:                  1.0,
-		MaxPrice:                  100.0,
-		MinRelativeVolume:         1.5,
-		EntryATRPercentFallback:   0.02,
-		EntryStopATRMultiplier:    1.00,
-		MaxRiskATRMultiplier:      4.00,
-		BreakEvenHoldMinutes:      5,
-		BreakEvenMinR:             0.50,
-		TrailActivationR:          0.70,
-		TrailATRMultiplier:        1.50,
-		TightTrailTriggerR:        1.20,
-		TightTrailATRMultiplier:   0.60,
-		ProfitTargetR:             1.20,
-		ProfitTrailActivationR:    1.50,
-		ProfitTrailPct:            0.03,
-		FailedBreakoutCutR:        0.05,
+		StartingCapital:          100_000,
+		RiskPerTradePct:          0.01,
+		DailyLossLimitPct:        0.03,
+		MaxTradesPerDay:          8,
+		MaxOpenPositions:         4,
+		MaxExposurePct:           0.30,
+		EntryCooldownSec:         45,
+		ExitCooldownSec:          5,
+		MinEntryScore:            14.0,
+		MinOneMinuteReturnPct:    0.05,
+		MinThreeMinuteReturnPct:  0.15,
+		MinVolumeRate:            1.05,
+		MaxPriceVsOpenPct:        50.0,
+		BreakoutFailureWindowMin: 15,
+		BreakoutFailureLossPct:   0.008,
+		BreakEvenActivationPct:   0.025,
+		BreakEvenFloorPct:        0.0015,
+		StagnationWindowMin:      30,
+		StagnationMinPeakPct:     0.012,
+		MinPrice:                 1.0,
+		MaxPrice:                 100.0,
+		MinRelativeVolume:        1.5,
+		EntryATRPercentFallback:  0.02,
+		EntryStopATRMultiplier:   1.00,
+		MaxRiskATRMultiplier:     4.00,
+		BreakEvenHoldMinutes:     5,
+		BreakEvenMinR:            0.50,
+		TrailActivationR:         0.70,
+		TrailATRMultiplier:       1.50,
+		TightTrailTriggerR:       1.20,
+		TightTrailATRMultiplier:  0.60,
+		ProfitTargetR:            1.20,
+		ProfitTrailActivationR:   1.50,
+		ProfitTrailPct:           0.03,
+		FailedBreakoutCutR:       0.05,
 	}
 }
 
@@ -208,6 +208,80 @@ func TestStrategyRejectsBreakoutWithoutRenewedVolume(t *testing.T) {
 	}
 }
 
+func TestStrategyUsesBrokerSeedMetadataForTimeBasedExits(t *testing.T) {
+	cfg := testStrategyConfig()
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	book.SeedPosition(domain.Position{
+		Symbol:           "SEEDED",
+		Quantity:         100,
+		AvgPrice:         10.00,
+		StopPrice:        9.50,
+		InitialStopPrice: 9.50,
+		RiskPerShare:     0.50,
+		EntryATR:         0.50,
+		SetupType:        "consolidation-breakout",
+		LastPrice:        10.05,
+		HighestPrice:     10.12,
+		MarketValue:      1005,
+		UnrealizedPnL:    5,
+		BrokerSeeded:     true,
+		OpenedAt:         at,
+		UpdatedAt:        at,
+	})
+
+	seededSignal, seededOK, seededReason := strat.EvaluateExitDetailed(domain.Tick{
+		Symbol:    "SEEDED",
+		Price:     10.04,
+		BarOpen:   10.06,
+		BarHigh:   10.12,
+		BarLow:    9.90,
+		Open:      10.00,
+		HighOfDay: 10.12,
+		Timestamp: at.Add(10 * time.Minute),
+	})
+	if !seededOK {
+		t.Fatalf("expected broker-seeded position to use timing metadata, got %s", seededReason)
+	}
+	if seededSignal.Reason != "failed-breakout" {
+		t.Fatalf("expected seeded position to be eligible for failed-breakout, got %+v", seededSignal)
+	}
+
+	freshBook := portfolio.NewManager(cfg, runtimeState)
+	freshStrat := NewStrategy(cfg, freshBook, runtimeState)
+	freshBook.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "FRESH",
+		Side:         "buy",
+		Price:        10.00,
+		Quantity:     100,
+		StopPrice:    9.50,
+		RiskPerShare: 0.50,
+		EntryATR:     0.50,
+		SetupType:    "consolidation-breakout",
+		FilledAt:     at,
+	})
+
+	freshSignal, freshOK, freshReason := freshStrat.EvaluateExitDetailed(domain.Tick{
+		Symbol:    "FRESH",
+		Price:     10.04,
+		BarOpen:   10.06,
+		BarHigh:   10.12,
+		BarLow:    9.90,
+		Open:      10.00,
+		HighOfDay: 10.12,
+		Timestamp: at.Add(10 * time.Minute),
+	})
+	if freshOK {
+		t.Fatalf("expected fresh position to remain inside the grace period, got %+v", freshSignal)
+	}
+	if freshReason != "hold" {
+		t.Fatalf("unexpected fresh position reason: %s", freshReason)
+	}
+}
+
 func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
@@ -265,8 +339,6 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 		t.Fatalf("expected strong reclaim setup to pass, got %s", reason)
 	}
 }
-
-
 
 func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 	cfg := testStrategyConfig()
@@ -554,8 +626,6 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 		t.Fatalf("unexpected block reason: %s", reason)
 	}
 }
-
-
 
 func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 	cfg := testStrategyConfig()

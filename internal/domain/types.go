@@ -14,10 +14,10 @@ type EventRecorder interface {
 
 // IndicatorSnapshot captures the raw mathematical state of indicators at a point in time.
 type IndicatorSnapshot struct {
-	Symbol     string    `json:"symbol"`
-	Timestamp  time.Time `json:"timestamp"`
-	SignalType string    `json:"signalType"` // e.g., "entry", "exit"
-	Reason     string    `json:"reason"`
+	Symbol     string             `json:"symbol"`
+	Timestamp  time.Time          `json:"timestamp"`
+	SignalType string             `json:"signalType"` // e.g., "entry", "exit"
+	Reason     string             `json:"reason"`
 	Indicators map[string]float64 `json:"indicators"`
 }
 
@@ -134,6 +134,7 @@ type Position struct {
 	HighestPrice     float64   `json:"highestPrice"`
 	MarketValue      float64   `json:"marketValue"`
 	UnrealizedPnL    float64   `json:"unrealizedPnL"`
+	BrokerSeeded     bool      `json:"brokerSeeded"`
 	OpenedAt         time.Time `json:"openedAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 }

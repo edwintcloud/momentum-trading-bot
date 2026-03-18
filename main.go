@@ -48,7 +48,7 @@ func main() {
 	runtimeState.SetDependencyStatus("database", false, "not checked")
 	runtimeState.SetDependencyStatus("alpaca_trading", false, "not checked")
 	runtimeState.SetDependencyStatus("market_data_stream", false, "not connected")
-	
+
 	pgRecorder, err := storage.NewRecorder(ctx, appConfig.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -228,7 +228,7 @@ func main() {
 	}()
 
 	// Start API server
-	apiServer := api.NewServer(portfolioManager, runtimeState, operatorOrders)
+	apiServer := api.NewServer(portfolioManager, runtimeState, operatorOrders, appConfig)
 	go func() {
 		if err := apiServer.Start(ctx, appConfig.HTTPAddr); err != nil {
 			if !errors.Is(err, context.Canceled) {
@@ -355,6 +355,7 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 			HighestPrice:  math.Max(avgPrice, currentPrice),
 			MarketValue:   float64(quantity) * currentPrice,
 			UnrealizedPnL: (currentPrice - avgPrice) * float64(quantity),
+			BrokerSeeded:  true,
 			OpenedAt:      now,
 			UpdatedAt:     now,
 		})

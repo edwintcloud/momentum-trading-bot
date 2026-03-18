@@ -12,7 +12,7 @@ Implemented backend flow:
 
 - market data stream
 - scanner filters for low-float momentum names
-- feature-enriched breakout entries with linear-model timing gate
+- feature-enriched breakout entries
 - stop-loss and trailing-stop exits
 - risk checks before execution
 - Alpaca order submission and fill polling
@@ -36,6 +36,7 @@ Create a local `.env` file from `.env.example` and fill in at least:
 - `ALPACA_API_KEY`
 - `ALPACA_API_SECRET`
 - `DATABASE_URL`
+- `CONTROL_PLANE_AUTH_TOKEN`
 - `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` if you are using `docker compose`
 
 Mode selection:
@@ -48,8 +49,14 @@ The live-trading arm flag is intentional. The service refuses to start in live m
 Optional overrides:
 
 - `ALPACA_SYMBOLS=AAPL,TSLA` limits the stream to a watchlist; leaving it empty subscribes broadly
-- `ENTRY_MODEL_PATH=/path/to/model.json` loads a trained JSON entry model instead of the seeded default
-- `HTTP_ADDR=:8080` changes the bind address
+- `HTTP_ADDR=127.0.0.1:8080` changes the bind address; the default is localhost-only for safety
+
+Control-plane access:
+
+- The dashboard, `/api/*`, and `/ws` require HTTP Basic auth
+- Username is always `operator`
+- Password is the value of `CONTROL_PLANE_AUTH_TOKEN`
+- `GET /healthz` and `GET /readyz` stay public for probes
 
 Everything else is now inferred automatically. On startup the bot probes Alpaca, detects the market-data plan/feed, reads broker equity, and tunes risk/scanner settings toward conservative momentum trading defaults.
 
@@ -84,7 +91,7 @@ Default behavior:
 - Alpaca is the default historical data source
 - `-start` is the only required argument
 - `-end` defaults to the current time
-- the entry model trains on the immediately preceding window of equal length before the backtest start
+- there is no separate training or model-fitting step; the backtest replays the requested window directly
 - the symbol universe defaults to Alpaca's active tradable US equities, which approximates the live wildcard scanner
 - historical Alpaca fetches are cached automatically under `.cache/backtest/historical-bars` so repeat and overlapping runs reuse previously downloaded bar batches
 
@@ -128,6 +135,7 @@ Create a local `.env` file first. At minimum it must include:
 
 - `ALPACA_API_KEY`
 - `ALPACA_API_SECRET`
+- `CONTROL_PLANE_AUTH_TOKEN`
 
 The compose stack provisions PostgreSQL automatically and injects a container-safe `DATABASE_URL` for the app service.
 

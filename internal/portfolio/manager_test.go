@@ -99,6 +99,40 @@ func TestStatusSnapshotIncludesBrokerDayPnL(t *testing.T) {
 	}
 }
 
+func TestStatusSnapshotUsesActualTradeCount(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	base := time.Date(2026, time.March, 16, 13, 0, 0, 0, time.UTC)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "buy",
+		Price:    5,
+		Quantity: 100,
+		FilledAt: base,
+	})
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "sell",
+		Price:    5.1,
+		Quantity: 100,
+		Reason:   "profit-target",
+		FilledAt: base.Add(time.Minute),
+	})
+
+	status := manager.StatusSnapshot()
+	if status.TradesToday != 2 {
+		t.Fatalf("expected status trades today to count both fills, got %d", status.TradesToday)
+	}
+	if manager.EntriesToday() != 1 {
+		t.Fatalf("expected entries today to remain entry-only, got %d", manager.EntriesToday())
+	}
+	if manager.TradesToday() != 2 {
+		t.Fatalf("expected internal trade counter to track both fills, got %d", manager.TradesToday())
+	}
+}
+
 func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
@@ -119,9 +153,24 @@ func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
 		t.Fatalf("expected one entry on first day, got %d", manager.EntriesToday())
 	}
 
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "sell",
+		Price:    5.1,
+		Quantity: 100,
+		Reason:   "profit-target",
+		FilledAt: firstDay.Add(10 * time.Minute),
+	})
+	if manager.TradesToday() != 2 {
+		t.Fatalf("expected two fills on first day, got %d", manager.TradesToday())
+	}
+	if manager.EntriesToday() != 1 {
+		t.Fatalf("expected entries to remain entry-only after exit, got %d", manager.EntriesToday())
+	}
+
 	manager.MarkPriceAt("SOUN", 5.2, firstDay.Add(20*time.Hour))
 	if manager.TradesToday() != 0 {
-		t.Fatalf("expected trade counter reset on next trading day, got %d", manager.TradesToday())
+		t.Fatalf("expected fill counter reset on next trading day, got %d", manager.TradesToday())
 	}
 	if manager.EntriesToday() != 0 {
 		t.Fatalf("expected entry counter reset on next trading day, got %d", manager.EntriesToday())

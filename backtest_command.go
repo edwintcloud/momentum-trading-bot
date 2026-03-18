@@ -30,7 +30,7 @@ func runBacktest(args []string) error {
 		return err
 	}
 
-	start, startDateOnly, err := parseCLIBacktestTime(*startRaw)
+	start, _, err := parseCLIBacktestTime(*startRaw)
 	if err != nil {
 		return err
 	}
@@ -38,17 +38,11 @@ func runBacktest(args []string) error {
 	if err != nil {
 		return err
 	}
-	start, end, trainStart, trainEnd, err := inferBacktestWindows(start, end, startDateOnly, endDateOnly, *dataPath == "")
+	start, end, err = inferBacktestWindows(start, end, endDateOnly, *dataPath == "")
 	if err != nil {
 		return err
 	}
-	log.Printf(
-		"Backtest window start=%s end=%s train_start=%s train_end=%s",
-		formatLogTime(start),
-		formatLogTime(end),
-		formatLogTime(trainStart),
-		formatLogTime(trainEnd),
-	)
+	log.Printf("Backtest window start=%s end=%s", formatLogTime(start), formatLogTime(end))
 
 	cfg := config.DefaultTradingConfig()
 	runCfg := backtest.RunConfig{
@@ -90,13 +84,12 @@ func runBacktest(args []string) error {
 		if err != nil {
 			return err
 		}
-		fetchStart, fetchEnd := backtestFetchWindow(start, end, trainStart, trainEnd)
-		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), fetchStart, fetchEnd, historicalRateLimit)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), start, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
-		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(fetchStart), formatLogTime(fetchEnd))
+		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(start), formatLogTime(end))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, fetchStart, fetchEnd, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, start, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
@@ -136,16 +129,16 @@ func runBacktest(args []string) error {
 	return nil
 }
 
-func inferBacktestWindows(start, end time.Time, startDateOnly, endDateOnly, requireStart bool) (time.Time, time.Time, time.Time, time.Time, error) {
+func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) (time.Time, time.Time, error) {
 	now := time.Now().UTC()
 	if end.IsZero() {
 		end = now
 	}
 	if requireStart && start.IsZero() {
-		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("start time is required when loading historical data from Alpaca")
+		return time.Time{}, time.Time{}, fmt.Errorf("start time is required when loading historical data from Alpaca")
 	}
 	if start.IsZero() {
-		return time.Time{}, end, time.Time{}, time.Time{}, nil
+		return time.Time{}, end, nil
 	}
 	if endDateOnly {
 		if sameMarketDay(end, now) {
@@ -155,16 +148,9 @@ func inferBacktestWindows(start, end time.Time, startDateOnly, endDateOnly, requ
 		}
 	}
 	if !end.After(start) {
-		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("end time must be after start time")
+		return time.Time{}, time.Time{}, fmt.Errorf("end time must be after start time")
 	}
-	duration := end.Sub(start)
-	minTrainingDuration := 5 * 24 * time.Hour
-	if duration < minTrainingDuration {
-		duration = minTrainingDuration
-	}
-	trainEnd := start.Add(-time.Minute)
-	trainStart := trainEnd.Add(-duration)
-	return start, end, trainStart, trainEnd, nil
+	return start, end, nil
 }
 
 func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]string, error) {
@@ -173,10 +159,6 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]strin
 		return nil, err
 	}
 	return symbols, nil
-}
-
-func backtestFetchWindow(start, end, trainStart, trainEnd time.Time) (time.Time, time.Time) {
-	return start, end
 }
 
 func parseCLIBacktestTime(value string) (time.Time, bool, error) {
@@ -210,11 +192,6 @@ func marketTimeLocation() *time.Location {
 		return time.UTC
 	}
 	return location
-}
-
-func startOfMarketDay(value time.Time) time.Time {
-	local := value.In(marketTimeLocation())
-	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, marketTimeLocation()).UTC()
 }
 
 func endOfMarketDay(value time.Time) time.Time {

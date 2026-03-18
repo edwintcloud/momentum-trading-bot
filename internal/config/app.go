@@ -13,6 +13,7 @@ import (
 type AppConfig struct {
 	HTTPAddr                   string
 	DatabaseURL                string
+	ControlPlaneAuthToken      string
 	SnapshotPersistIntervalSec int
 	StartupTimeoutSec          int
 	ShutdownTimeoutSec         int
@@ -55,8 +56,9 @@ func Load() (AppConfig, error) {
 	}
 
 	cfg := AppConfig{
-		HTTPAddr:                   getEnvString("HTTP_ADDR", ":8080"),
+		HTTPAddr:                   getEnvString("HTTP_ADDR", "127.0.0.1:8080"),
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		ControlPlaneAuthToken:      strings.TrimSpace(os.Getenv("CONTROL_PLANE_AUTH_TOKEN")),
 		SnapshotPersistIntervalSec: 10,
 		StartupTimeoutSec:          30,
 		ShutdownTimeoutSec:         10,
@@ -72,6 +74,9 @@ func Load() (AppConfig, error) {
 	}
 	if cfg.DatabaseURL == "" {
 		return AppConfig{}, fmt.Errorf("DATABASE_URL is required")
+	}
+	if cfg.ControlPlaneAuthToken == "" {
+		return AppConfig{}, fmt.Errorf("CONTROL_PLANE_AUTH_TOKEN is required")
 	}
 	if cfg.Alpaca.OrderFillTimeoutSec < 5 {
 		return AppConfig{}, fmt.Errorf("default order fill timeout must be at least 5 seconds")

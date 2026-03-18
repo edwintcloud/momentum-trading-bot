@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
@@ -24,39 +27,25 @@ type Server struct {
 	runtime   *runtime.State
 	closeAll  chan<- domain.OrderRequest
 	upgrader  websocket.Upgrader
+	authToken string
 }
 
 // NewServer creates an API server.
-func NewServer(portfolioManager *portfolio.Manager, runtimeState *runtime.State, closeAll chan<- domain.OrderRequest) *Server {
+func NewServer(portfolioManager *portfolio.Manager, runtimeState *runtime.State, closeAll chan<- domain.OrderRequest, appConfig config.AppConfig) *Server {
 	return &Server{
 		portfolio: portfolioManager,
 		runtime:   runtimeState,
 		closeAll:  closeAll,
-		upgrader:  websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }},
+		upgrader:  websocket.Upgrader{CheckOrigin: sameOriginRequest},
+		authToken: strings.TrimSpace(appConfig.ControlPlaneAuthToken),
 	}
 }
 
 // Start begins serving HTTP on the given address.
 func (s *Server) Start(ctx context.Context, addr string) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/readyz", s.handleReadyz)
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/positions", s.handlePositions)
-	mux.HandleFunc("/api/candidates", s.handleCandidates)
-	mux.HandleFunc("/api/trades", s.handleTrades)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	mux.HandleFunc("/api/dashboard", s.handleDashboard)
-	mux.HandleFunc("/api/pause", s.handlePause)
-	mux.HandleFunc("/api/resume", s.handleResume)
-	mux.HandleFunc("/api/close-all", s.handleCloseAll)
-	mux.HandleFunc("/api/emergency-stop", s.handleEmergencyStop)
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.Handle("/", s.webHandler())
-
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -74,6 +63,25 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
+	mux.HandleFunc("/api/status", s.requireControlPlaneAuth(s.handleStatus))
+	mux.HandleFunc("/api/positions", s.requireControlPlaneAuth(s.handlePositions))
+	mux.HandleFunc("/api/candidates", s.requireControlPlaneAuth(s.handleCandidates))
+	mux.HandleFunc("/api/trades", s.requireControlPlaneAuth(s.handleTrades))
+	mux.HandleFunc("/api/logs", s.requireControlPlaneAuth(s.handleLogs))
+	mux.HandleFunc("/api/dashboard", s.requireControlPlaneAuth(s.handleDashboard))
+	mux.HandleFunc("/api/pause", s.requireControlPlaneAuth(s.handlePause))
+	mux.HandleFunc("/api/resume", s.requireControlPlaneAuth(s.handleResume))
+	mux.HandleFunc("/api/close-all", s.requireControlPlaneAuth(s.handleCloseAll))
+	mux.HandleFunc("/api/emergency-stop", s.requireControlPlaneAuth(s.handleEmergencyStop))
+	mux.HandleFunc("/ws", s.requireControlPlaneAuth(s.handleWebSocket))
+	mux.Handle("/", s.requireControlPlaneAuth(s.webHandler().ServeHTTP))
+	return mux
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
@@ -163,6 +171,26 @@ func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
 	}
 	s.runtime.RecordLog("error", "control", "emergency stop triggered")
 	s.writeJSON(w, http.StatusOK, map[string]any{"emergencyStop": true, "queued": len(orders)})
+}
+
+func (s *Server) requireControlPlaneAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			s.unauthorized(w)
+			return
+		}
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "operator" || subtle.ConstantTimeCompare([]byte(password), []byte(s.authToken)) != 1 {
+			s.unauthorized(w)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="Momentum Trading Bot"`)
+	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 }
 
 const (
@@ -267,4 +295,19 @@ func (s *Server) webHandler() http.Handler {
 		}
 		fs.ServeHTTP(w, r)
 	})
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if originURL.Host == "" || r.Host == "" {
+		return false
+	}
+	return strings.EqualFold(originURL.Host, r.Host)
 }

@@ -511,7 +511,7 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		NetPnL:           round2(m.realizedPnL + unrealized),
 		Exposure:         round2(exposure),
 		OpenPositions:    len(m.positions),
-		TradesToday:      m.entriesToday,
+		TradesToday:      m.tradesToday,
 		DailyLossLimit:   round2(m.EffectiveCapital() * m.config.DailyLossLimitPct),
 		MaxOpenPositions: m.config.MaxOpenPositions,
 		MaxTradesPerDay:  m.config.MaxTradesPerDay,
