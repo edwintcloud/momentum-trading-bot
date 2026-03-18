@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -49,18 +50,20 @@ func TestRunExecutesHistoricalReplay(t *testing.T) {
 }
 
 func TestRunExecutesHistoricalReplayFromInputBars(t *testing.T) {
+	bars := []InputBar{
+		{Timestamp: time.Date(2026, 3, 9, 9, 30, 0, 0, time.UTC), Symbol: "APVO", Open: 10.00, High: 10.10, Low: 9.95, Close: 10.05, Volume: 50_000, PrevClose: 9.80},
+		{Timestamp: time.Date(2026, 3, 9, 9, 31, 0, 0, time.UTC), Symbol: "APVO", Open: 10.05, High: 10.10, Low: 10.00, Close: 10.02, Volume: 50_000, PrevClose: 9.80},
+		{Timestamp: time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC), Symbol: "APVO", Open: 11.10, High: 11.30, Low: 11.05, Close: 11.24, Volume: 200_000, PrevClose: 10.01},
+		{Timestamp: time.Date(2026, 3, 10, 8, 1, 0, 0, time.UTC), Symbol: "APVO", Open: 11.24, High: 11.48, Low: 11.22, Close: 11.46, Volume: 250_000, PrevClose: 10.01},
+		{Timestamp: time.Date(2026, 3, 10, 8, 2, 0, 0, time.UTC), Symbol: "APVO", Open: 11.46, High: 11.72, Low: 11.44, Close: 11.70, Volume: 400_000, PrevClose: 10.01},
+		{Timestamp: time.Date(2026, 3, 10, 9, 30, 0, 0, time.UTC), Symbol: "APVO", Open: 11.70, High: 11.86, Low: 11.66, Close: 11.84, Volume: 500_000, PrevClose: 10.01},
+		{Timestamp: time.Date(2026, 3, 10, 9, 31, 0, 0, time.UTC), Symbol: "APVO", Open: 11.84, High: 12.12, Low: 11.80, Close: 12.10, Volume: 650_000, PrevClose: 10.01},
+		{Timestamp: time.Date(2026, 3, 10, 9, 32, 0, 0, time.UTC), Symbol: "APVO", Open: 12.10, High: 12.35, Low: 12.06, Close: 12.32, Volume: 700_000, PrevClose: 10.01},
+		{Timestamp: time.Date(2026, 3, 10, 9, 34, 0, 0, time.UTC), Symbol: "APVO", Open: 12.30, High: 12.32, Low: 11.40, Close: 11.55, Volume: 300_000, PrevClose: 10.01},
+	}
+
 	result, err := Run(context.Background(), config.DefaultTradingConfig(), RunConfig{
-		Bars: []InputBar{
-			{Timestamp: time.Date(2026, 3, 9, 9, 30, 0, 0, time.UTC), Symbol: "APVO", Open: 10.00, High: 10.10, Low: 9.95, Close: 10.05, Volume: 50_000, PrevClose: 9.80},
-			{Timestamp: time.Date(2026, 3, 9, 9, 31, 0, 0, time.UTC), Symbol: "APVO", Open: 10.05, High: 10.10, Low: 10.00, Close: 10.02, Volume: 50_000, PrevClose: 9.80},
-			{Timestamp: time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC), Symbol: "APVO", Open: 11.10, High: 11.30, Low: 11.05, Close: 11.24, Volume: 200_000, PrevClose: 10.01},
-			{Timestamp: time.Date(2026, 3, 10, 8, 1, 0, 0, time.UTC), Symbol: "APVO", Open: 11.24, High: 11.48, Low: 11.22, Close: 11.46, Volume: 250_000, PrevClose: 10.01},
-			{Timestamp: time.Date(2026, 3, 10, 8, 2, 0, 0, time.UTC), Symbol: "APVO", Open: 11.46, High: 11.72, Low: 11.44, Close: 11.70, Volume: 400_000, PrevClose: 10.01},
-			{Timestamp: time.Date(2026, 3, 10, 9, 30, 0, 0, time.UTC), Symbol: "APVO", Open: 11.70, High: 11.86, Low: 11.66, Close: 11.84, Volume: 500_000, PrevClose: 10.01},
-			{Timestamp: time.Date(2026, 3, 10, 9, 31, 0, 0, time.UTC), Symbol: "APVO", Open: 11.84, High: 12.12, Low: 11.80, Close: 12.10, Volume: 650_000, PrevClose: 10.01},
-			{Timestamp: time.Date(2026, 3, 10, 9, 32, 0, 0, time.UTC), Symbol: "APVO", Open: 12.10, High: 12.35, Low: 12.06, Close: 12.32, Volume: 700_000, PrevClose: 10.01},
-			{Timestamp: time.Date(2026, 3, 10, 9, 34, 0, 0, time.UTC), Symbol: "APVO", Open: 12.30, High: 12.32, Low: 11.40, Close: 11.55, Volume: 300_000, PrevClose: 10.01},
-		},
+		Bars: bars,
 	})
 	if err != nil {
 		t.Fatalf("expected in-memory bar replay to complete, got %v", err)
@@ -71,5 +74,32 @@ func TestRunExecutesHistoricalReplayFromInputBars(t *testing.T) {
 	if result.Diagnostics.EntryCandidates == 0 {
 		t.Fatalf("expected scanner to emit at least one candidate, got %+v", result.Diagnostics)
 	}
+
+	streamed, err := Run(context.Background(), config.DefaultTradingConfig(), RunConfig{
+		Iterator: &testInputBarIterator{bars: append([]InputBar(nil), bars...)},
+	})
+	if err != nil {
+		t.Fatalf("expected iterator bar replay to complete, got %v", err)
+	}
+	if !reflect.DeepEqual(streamed.Diagnostics, result.Diagnostics) {
+		t.Fatalf("expected iterator diagnostics to match slice replay\nstreamed=%+v\nslice=%+v", streamed.Diagnostics, result.Diagnostics)
+	}
 }
 
+type testInputBarIterator struct {
+	bars []InputBar
+	next int
+}
+
+func (it *testInputBarIterator) Next() (InputBar, bool, error) {
+	if it.next >= len(it.bars) {
+		return InputBar{}, false, nil
+	}
+	item := it.bars[it.next]
+	it.next++
+	return item, true, nil
+}
+
+func (it *testInputBarIterator) Close() error {
+	return nil
+}

@@ -2,13 +2,8 @@ package backtest
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
-	"io"
 	"math"
-	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,10 +21,11 @@ var marketTZ = mustLoadLocation("America/New_York")
 
 // RunConfig controls a historical simulation.
 type RunConfig struct {
-	DataPath           string
-	Bars               []InputBar
-	Start              time.Time
-	End                time.Time
+	DataPath string
+	Bars     []InputBar
+	Iterator InputBarIterator
+	Start    time.Time
+	End      time.Time
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -48,28 +44,28 @@ type InputBar struct {
 
 // Result summarizes a completed backtest.
 type Result struct {
-	StartingCapital      float64
-	RealizedPnL          float64
-	UnrealizedPnL        float64
-	EndingEquity         float64
-	NetPnL               float64
-	MaxDrawdownPct       float64
-	ProfitFactor         float64
-	AvgWinPnL            float64
-	AvgLossPnL           float64
-	AvgWinR              float64
-	AvgLossR             float64
-	AvgMFER              float64
-	AvgMAER              float64
-	TrailingStopExitPct  float64
-	AvgTimeToStopMin     float64
-	Trades               int
-	Wins                 int
-	Losses               int
-	WinRate              float64
-	OpenPositionsAtEnd   int
-	Diagnostics          Diagnostics
-	ClosedTrades         []domain.ClosedTrade
+	StartingCapital     float64
+	RealizedPnL         float64
+	UnrealizedPnL       float64
+	EndingEquity        float64
+	NetPnL              float64
+	MaxDrawdownPct      float64
+	ProfitFactor        float64
+	AvgWinPnL           float64
+	AvgLossPnL          float64
+	AvgWinR             float64
+	AvgLossR            float64
+	AvgMFER             float64
+	AvgMAER             float64
+	TrailingStopExitPct float64
+	AvgTimeToStopMin    float64
+	Trades              int
+	Wins                int
+	Losses              int
+	WinRate             float64
+	OpenPositionsAtEnd  int
+	Diagnostics         Diagnostics
+	ClosedTrades        []domain.ClosedTrade
 }
 
 // Diagnostics summarizes how bars moved through the backtest decision funnel.
@@ -93,47 +89,29 @@ type Diagnostics struct {
 
 // EntrySample captures a representative entry decision for diagnostics.
 type EntrySample struct {
-	Symbol                  string
-	Timestamp               time.Time
-	Reason                  string
-	Price                   float64
-	GapPercent              float64
-	RelativeVolume          float64
-	PriceVsOpenPct          float64
-	DistanceFromHighPct     float64
-	AllowedDistanceHighPct  float64
-	OneMinuteReturnPct      float64
-	ThreeMinuteReturnPct    float64
-	VolumeRate              float64
-	VolumeLeaderPct         float64
-	LeaderRank              int
-	ATRPct                  float64
-	PriceVsVWAPPct          float64
-	BreakoutPct             float64
-	SetupType               string
-	Score                   float64
-	StrongSqueeze           bool
+	Symbol                 string
+	Timestamp              time.Time
+	Reason                 string
+	Price                  float64
+	GapPercent             float64
+	RelativeVolume         float64
+	PriceVsOpenPct         float64
+	DistanceFromHighPct    float64
+	AllowedDistanceHighPct float64
+	OneMinuteReturnPct     float64
+	ThreeMinuteReturnPct   float64
+	VolumeRate             float64
+	VolumeLeaderPct        float64
+	LeaderRank             int
+	ATRPct                 float64
+	PriceVsVWAPPct         float64
+	BreakoutPct            float64
+	SetupType              string
+	Score                  float64
+	StrongSqueeze          bool
 }
 
-type bar struct {
-	Timestamp   time.Time
-	Symbol      string
-	Open        float64
-	High        float64
-	Low         float64
-	Close       float64
-	Volume      int64
-	PrevClose   float64
-	Catalyst    string
-	CatalystURL string
-}
-
-type record struct {
-	bar          bar
-	tick         domain.Tick
-	candidate    domain.Candidate
-	hasCandidate bool
-}
+type bar = InputBar
 
 type pendingEntry struct {
 	order         domain.OrderRequest
@@ -160,23 +138,16 @@ type symbolState struct {
 	lastClose     float64
 }
 
-
-
-
 // Run executes a CSV-driven backtest using the live strategy/risk/portfolio components.
 func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Result, error) {
-	bars, err := resolveBars(runCfg)
+	iter, err := resolveBarIterator(runCfg)
 	if err != nil {
 		return Result{}, err
 	}
-	if len(bars) == 0 {
-		return Result{}, fmt.Errorf("no bars found for requested backtest window")
-	}
+	defer iter.Close()
 
 	runtimeState := runtime.NewState()
-	records, _ := buildRecords(cfg, runtimeState, bars)
 	diagnostics := Diagnostics{
-		BarsLoaded:         len(records),
 		ScannerRejects:     make(map[string]int),
 		EntryRejects:       make(map[string]int),
 		EntryRiskRejects:   make(map[string]int),
@@ -192,22 +163,33 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	pendingEntries := make(map[string]pendingEntry)
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)
-
-	equityCurve := make([]float64, 0, len(records))
-	for _, rec := range records {
+	normalizerState := make(map[string]*symbolState)
+	peakEquity := cfg.StartingCapital
+	maxDrawdown := 0.0
+	for {
 		select {
 		case <-ctx.Done():
 			return Result{}, ctx.Err()
 		default:
 		}
-		if !withinWindow(rec.bar.Timestamp, runCfg.Start, runCfg.End) {
+		item, ok, err := iter.Next()
+		if err != nil {
+			return Result{}, err
+		}
+		if !ok {
+			break
+		}
+		currentBar := normalizeInputBar(item)
+		if !withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
 			continue
 		}
+		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
+		tick := normalizeBar(currentBar, normalizerState)
 
-		if pending, exists := pendingEntries[rec.bar.Symbol]; exists {
-			if fill, updatedPending, filled, expired := maybeFillPendingEntry(pending, rec.bar); filled {
-				delete(pendingEntries, rec.bar.Symbol)
+		if pending, exists := pendingEntries[currentBar.Symbol]; exists {
+			if fill, updatedPending, filled, expired := maybeFillPendingEntry(pending, currentBar); filled {
+				delete(pendingEntries, currentBar.Symbol)
 				book.ApplyExecution(fill)
 				openAnalytics[fill.Symbol] = tradeAnalytics{
 					entryPrice:   fill.Price,
@@ -217,23 +199,23 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					maeR:         0,
 				}
 			} else if expired {
-				delete(pendingEntries, rec.bar.Symbol)
+				delete(pendingEntries, currentBar.Symbol)
 			} else {
-				pendingEntries[rec.bar.Symbol] = updatedPending
+				pendingEntries[currentBar.Symbol] = updatedPending
 			}
 		}
 
-		hadPosition := book.HasPosition(rec.tick.Symbol)
-		exitSignal, exitOK, exitReason := strat.EvaluateExitDetailed(rec.tick)
+		hadPosition := book.HasPosition(tick.Symbol)
+		exitSignal, exitOK, exitReason := strat.EvaluateExitDetailed(tick)
 		if hadPosition {
 			diagnostics.ExitChecks++
-			if analytics, exists := openAnalytics[rec.tick.Symbol]; exists {
-				if exitOK && rec.tick.BarOpen > 0 && round2(exitSignal.Price) == round2(rec.tick.BarOpen) {
-					updateTradeAnalytics(&analytics, rec.tick.BarOpen, rec.tick.BarOpen)
+			if analytics, exists := openAnalytics[tick.Symbol]; exists {
+				if exitOK && tick.BarOpen > 0 && round2(exitSignal.Price) == round2(tick.BarOpen) {
+					updateTradeAnalytics(&analytics, tick.BarOpen, tick.BarOpen)
 				} else {
-					updateTradeAnalytics(&analytics, rec.tick.BarHigh, rec.tick.BarLow)
+					updateTradeAnalytics(&analytics, tick.BarHigh, tick.BarLow)
 				}
-				openAnalytics[rec.tick.Symbol] = analytics
+				openAnalytics[tick.Symbol] = analytics
 			}
 		}
 		if exitOK {
@@ -251,20 +233,20 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					})
 					delete(openAnalytics, order.Symbol)
 				}
-				applyPaperFill(book, order, rec.tick.Timestamp)
+				applyPaperFill(book, order, tick.Timestamp)
 			} else {
 				incrementReason(diagnostics.ExitRiskRejects, riskReason)
 			}
 		} else if hadPosition {
 			incrementReason(diagnostics.ExitRejects, exitReason)
 		}
-		if book.HasPosition(rec.tick.Symbol) {
-			book.MarkPriceAt(rec.tick.Symbol, rec.tick.BarHigh, rec.tick.Timestamp)
-			book.MarkPriceAt(rec.tick.Symbol, rec.tick.BarLow, rec.tick.Timestamp)
-			book.MarkPriceAt(rec.tick.Symbol, rec.tick.Price, rec.tick.Timestamp)
+		if book.HasPosition(tick.Symbol) {
+			book.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
+			book.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
+			book.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
 		}
 
-		candidate, ok, scanReason := scan.EvaluateTickDetailed(rec.tick)
+		candidate, ok, scanReason := scan.EvaluateTickDetailed(tick)
 		if ok {
 			diagnostics.EntryCandidates++
 			decision := strat.EvaluateCandidateDecision(candidate)
@@ -289,7 +271,20 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			incrementReason(diagnostics.ScannerRejects, scanReason)
 		}
 
-		equityCurve = append(equityCurve, book.EffectiveCapital()+book.RealizedPnL()+book.UnrealizedPnL()-cfg.StartingCapital)
+		equity := cfg.StartingCapital + book.RealizedPnL() + book.UnrealizedPnL()
+		if equity > peakEquity {
+			peakEquity = equity
+		}
+		if peakEquity > 0 {
+			drawdown := ((peakEquity - equity) / peakEquity) * 100
+			if drawdown > maxDrawdown {
+				maxDrawdown = drawdown
+			}
+		}
+	}
+
+	if diagnostics.BarsLoaded == 0 {
+		return Result{}, fmt.Errorf("no bars found for requested backtest window")
 	}
 
 	closedTrades := book.GetClosedTrades()
@@ -367,189 +362,30 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	return Result{
-				StartingCapital:      cfg.StartingCapital,
-		RealizedPnL:          round2(realizedPnL),
-		UnrealizedPnL:        round2(unrealizedPnL),
-		EndingEquity:         round2(endingEquity),
-		NetPnL:               round2(netPnL),
-		MaxDrawdownPct:       round2(maxDrawdownPct(equityCurve, cfg.StartingCapital)),
-		ProfitFactor:         round2(profitFactor),
-		AvgWinPnL:            round2(avgWinPnL),
-		AvgLossPnL:           round2(avgLossPnL),
-		AvgWinR:              round2(avgWinR),
-		AvgLossR:             round2(avgLossR),
-		AvgMFER:              round2(avgMFER),
-		AvgMAER:              round2(avgMAER),
-		TrailingStopExitPct:  round2(trailingStopExitPct),
-		AvgTimeToStopMin:     round2(avgTimeToStopMin),
-		Trades:               len(closedTrades),
-		Wins:                 wins,
-		Losses:               losses,
-		WinRate:              round2(winRate),
-		OpenPositionsAtEnd:   openPositionsAtEnd,
-		Diagnostics:          diagnostics,
-		ClosedTrades:         closedTrades,
+		StartingCapital:     cfg.StartingCapital,
+		RealizedPnL:         round2(realizedPnL),
+		UnrealizedPnL:       round2(unrealizedPnL),
+		EndingEquity:        round2(endingEquity),
+		NetPnL:              round2(netPnL),
+		MaxDrawdownPct:      round2(maxDrawdown),
+		ProfitFactor:        round2(profitFactor),
+		AvgWinPnL:           round2(avgWinPnL),
+		AvgLossPnL:          round2(avgLossPnL),
+		AvgWinR:             round2(avgWinR),
+		AvgLossR:            round2(avgLossR),
+		AvgMFER:             round2(avgMFER),
+		AvgMAER:             round2(avgMAER),
+		TrailingStopExitPct: round2(trailingStopExitPct),
+		AvgTimeToStopMin:    round2(avgTimeToStopMin),
+		Trades:              len(closedTrades),
+		Wins:                wins,
+		Losses:              losses,
+		WinRate:             round2(winRate),
+		OpenPositionsAtEnd:  openPositionsAtEnd,
+		Diagnostics:         diagnostics,
+		ClosedTrades:        closedTrades,
 	}, nil
 }
-
-func resolveBars(runCfg RunConfig) ([]bar, error) {
-	switch {
-	case len(runCfg.Bars) > 0:
-		return convertInputBars(runCfg.Bars, runCfg.Start, runCfg.End), nil
-	case runCfg.DataPath != "":
-		return loadBars(runCfg.DataPath, runCfg.Start, runCfg.End)
-	default:
-		return nil, fmt.Errorf("either data path or historical bars are required")
-	}
-}
-
-func loadBars(path string, start, end time.Time) ([]bar, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(file)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		return nil, err
-	}
-	columns := make(map[string]int, len(header))
-	for index, name := range header {
-		columns[strings.ToLower(strings.TrimSpace(name))] = index
-	}
-
-	var bars []bar
-	for {
-		row, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		entry, parseErr := parseBar(columns, row)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		if !withinWindow(entry.Timestamp, start, end) {
-			continue
-		}
-		bars = append(bars, entry)
-	}
-
-	sort.Slice(bars, func(i, j int) bool {
-		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
-			return bars[i].Symbol < bars[j].Symbol
-		}
-		return bars[i].Timestamp.Before(bars[j].Timestamp)
-	})
-	return bars, nil
-}
-
-func convertInputBars(input []InputBar, start, end time.Time) []bar {
-	bars := make([]bar, 0, len(input))
-	for _, item := range input {
-		entry := bar{
-			Timestamp:   item.Timestamp.UTC(),
-			Symbol:      strings.ToUpper(item.Symbol),
-			Open:        item.Open,
-			High:        item.High,
-			Low:         item.Low,
-			Close:       item.Close,
-			Volume:      item.Volume,
-			PrevClose:   item.PrevClose,
-			Catalyst:    item.Catalyst,
-			CatalystURL: item.CatalystURL,
-		}
-		if !withinWindow(entry.Timestamp, start, end) {
-			continue
-		}
-		bars = append(bars, entry)
-	}
-	sort.Slice(bars, func(i, j int) bool {
-		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
-			return bars[i].Symbol < bars[j].Symbol
-		}
-		return bars[i].Timestamp.Before(bars[j].Timestamp)
-	})
-	return bars
-}
-
-func parseBar(columns map[string]int, row []string) (bar, error) {
-	timestamp, err := parseTimestamp(cell(columns, row, "timestamp", "time", "datetime"))
-	if err != nil {
-		return bar{}, err
-	}
-	open, err := strconv.ParseFloat(cell(columns, row, "open"), 64)
-	if err != nil {
-		return bar{}, err
-	}
-	high, err := strconv.ParseFloat(cell(columns, row, "high"), 64)
-	if err != nil {
-		return bar{}, err
-	}
-	low, err := strconv.ParseFloat(cell(columns, row, "low"), 64)
-	if err != nil {
-		return bar{}, err
-	}
-	closePrice, err := strconv.ParseFloat(cell(columns, row, "close"), 64)
-	if err != nil {
-		return bar{}, err
-	}
-	volume, err := strconv.ParseInt(cell(columns, row, "volume"), 10, 64)
-	if err != nil {
-		return bar{}, err
-	}
-
-	prevClose := 0.0
-	if rawPrevClose := cell(columns, row, "prev_close", "previous_close"); rawPrevClose != "" {
-		prevClose, _ = strconv.ParseFloat(rawPrevClose, 64)
-	}
-
-	return bar{
-		Timestamp:   timestamp.UTC(),
-		Symbol:      strings.ToUpper(cell(columns, row, "symbol")),
-		Open:        open,
-		High:        high,
-		Low:         low,
-		Close:       closePrice,
-		Volume:      volume,
-		PrevClose:   prevClose,
-		Catalyst:    cell(columns, row, "catalyst", "headline"),
-		CatalystURL: cell(columns, row, "catalyst_url", "headline_url", "url"),
-	}, nil
-}
-
-func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []bar) ([]record, map[string][]int) {
-	scan := scanner.NewScanner(cfg, runtimeState)
-	normalizerState := make(map[string]*symbolState)
-	records := make([]record, 0, len(bars))
-	symbolIndices := make(map[string][]int)
-	for _, item := range bars {
-		tick := normalizeBar(item, normalizerState)
-		candidate, ok := scan.EvaluateTick(tick)
-		rec := record{
-			bar:          item,
-			tick:         tick,
-			candidate:    candidate,
-			hasCandidate: ok,
-		}
-		records = append(records, rec)
-		symbolIndices[item.Symbol] = append(symbolIndices[item.Symbol], len(records)-1)
-	}
-	return records, symbolIndices
-}
-
-
-
-
-
-
-
-
 
 func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.Time) {
 	book.ApplyExecution(domain.ExecutionReport{
@@ -694,8 +530,6 @@ func tradingDayKey(at time.Time) string {
 	return at.In(marketTZ).Format("2006-01-02")
 }
 
-
-
 func updateTradeAnalytics(analytics *tradeAnalytics, high, low float64) {
 	if analytics == nil || analytics.riskPerShare <= 0 || analytics.entryPrice <= 0 {
 		return
@@ -822,7 +656,6 @@ func round2(value float64) float64 {
 	return math.Round(value*100) / 100
 }
 
-
 func withinWindow(timestamp, start, end time.Time) bool {
 	if !start.IsZero() && timestamp.Before(start) {
 		return false
@@ -864,26 +697,26 @@ func rememberEntryRejectSample(diag *Diagnostics, candidate domain.Candidate, de
 
 func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDecision) EntrySample {
 	return EntrySample{
-		Symbol:                  candidate.Symbol,
-		Timestamp:               candidate.Timestamp.UTC(),
-		Reason:                  decision.Reason,
-		Price:                   round2(candidate.Price),
-		GapPercent:              round2(candidate.GapPercent),
-		RelativeVolume:          round2(candidate.RelativeVolume),
-		PriceVsOpenPct:          round2(candidate.PriceVsOpenPct),
-		DistanceFromHighPct:     round2(candidate.DistanceFromHighPct),
-		AllowedDistanceHighPct:  round2(decision.AllowedDistanceHighPct),
-		OneMinuteReturnPct:      round2(candidate.OneMinuteReturnPct),
-		ThreeMinuteReturnPct:    round2(candidate.ThreeMinuteReturnPct),
-		VolumeRate:              round2(candidate.VolumeRate),
-		VolumeLeaderPct:         candidate.VolumeLeaderPct,
-		LeaderRank:              candidate.LeaderRank,
-		ATRPct:                  round2(candidate.ATRPct),
-		PriceVsVWAPPct:          round2(candidate.PriceVsVWAPPct),
-		BreakoutPct:             round2(candidate.BreakoutPct),
-		SetupType:               candidate.SetupType,
-		Score:                   round2(candidate.Score),
-		StrongSqueeze:           decision.StrongSqueeze,
+		Symbol:                 candidate.Symbol,
+		Timestamp:              candidate.Timestamp.UTC(),
+		Reason:                 decision.Reason,
+		Price:                  round2(candidate.Price),
+		GapPercent:             round2(candidate.GapPercent),
+		RelativeVolume:         round2(candidate.RelativeVolume),
+		PriceVsOpenPct:         round2(candidate.PriceVsOpenPct),
+		DistanceFromHighPct:    round2(candidate.DistanceFromHighPct),
+		AllowedDistanceHighPct: round2(decision.AllowedDistanceHighPct),
+		OneMinuteReturnPct:     round2(candidate.OneMinuteReturnPct),
+		ThreeMinuteReturnPct:   round2(candidate.ThreeMinuteReturnPct),
+		VolumeRate:             round2(candidate.VolumeRate),
+		VolumeLeaderPct:        candidate.VolumeLeaderPct,
+		LeaderRank:             candidate.LeaderRank,
+		ATRPct:                 round2(candidate.ATRPct),
+		PriceVsVWAPPct:         round2(candidate.PriceVsVWAPPct),
+		BreakoutPct:            round2(candidate.BreakoutPct),
+		SetupType:              candidate.SetupType,
+		Score:                  round2(candidate.Score),
+		StrongSqueeze:          decision.StrongSqueeze,
 	}
 }
 

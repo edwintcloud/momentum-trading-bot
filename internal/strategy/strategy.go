@@ -52,7 +52,6 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 	}
 }
 
-
 // Start listens for candidates and ticks, generating both entry and exit signals.
 func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate, ticks <-chan domain.Tick, out chan<- domain.TradeSignal) error {
 	for {
@@ -330,11 +329,9 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		if tick.Price == 0 {
 			tick.Price = barClose
 		}
-		fmt.Printf("DEBUG STRATEGY: %s opportunity-reallocation barOpen=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
 		reason = previousReason
 		tick.Price = barOpen
-		fmt.Printf("DEBUG STRATEGY: %s open-stop previousStop=%.2f barOpen=%.2f\n", position.Symbol, previousStop, barOpen)
 	case sameDayHold &&
 		holdingTime >= time.Duration(s.config.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
@@ -342,13 +339,11 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		barLow <= failedBreakoutPrice(s.config, position):
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(s.config, position)
-		fmt.Printf("DEBUG STRATEGY: %s failed-breakout fbp=%.2f barLow=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, barLow, holdingTime.Minutes(), peakReturn)
 	case sameDayHold &&
 		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
 		peakReturn < s.config.StagnationMinPeakPct:
 		reason = "stagnation-time-stop"
 		tick.Price = barClose
-		fmt.Printf("DEBUG STRATEGY: %s stagnation-time-stop barClose=%.2f holdingTime=%.2f peakReturn=%.2f\n", position.Symbol, tick.Price, holdingTime.Minutes(), peakReturn)
 	case func() bool {
 		stopPrice, stopReason := protectiveStop(s.config, position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
@@ -356,7 +351,6 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 		}
 		reason = stopReason
 		tick.Price = stopPrice
-		fmt.Printf("DEBUG STRATEGY: %s %s stopPrice=%.2f barLow=%.2f peakReturn=%.2f\n", position.Symbol, reason, stopPrice, barLow, peakReturn)
 		return true
 	}():
 	default:
@@ -482,7 +476,6 @@ func decisionTime(timestamp time.Time) time.Time {
 	}
 	return timestamp.UTC()
 }
-
 
 var knownLeveragedETFs = map[string]bool{
 	"UVIX": true, "UVXY": true, "SQQQ": true, "TQQQ": true, "SOXL": true, "SOXS": true,
@@ -676,7 +669,6 @@ func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSquee
 		return candidate.VolumeRate >= minVolumeRate
 	}
 }
-
 
 func (s *Strategy) symbolState(symbol string, at time.Time) symbolTradeState {
 	state := s.symbolStates[symbol]

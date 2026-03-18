@@ -52,9 +52,9 @@ func runBacktest(args []string) error {
 
 	cfg := config.DefaultTradingConfig()
 	runCfg := backtest.RunConfig{
-		DataPath:           *dataPath,
-		Start:              start,
-		End:                end,
+		DataPath: *dataPath,
+		Start:    start,
+		End:      end,
 	}
 
 	if *dataPath == "" {
@@ -96,12 +96,12 @@ func runBacktest(args []string) error {
 		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(fetchStart), formatLogTime(fetchEnd))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		inputBars, err := fetchBarsFromAlpaca(fetchCtx, client, symbols, fetchStart, fetchEnd, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, fetchStart, fetchEnd, historicalRateLimit)
 		if err != nil {
 			return err
 		}
-		runCfg.Bars = inputBars
-		log.Printf("Loaded %d historical bars from Alpaca across %d symbols", len(inputBars), uniqueInputSymbols(inputBars))
+		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
+		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 	}
 
 	result, err := backtest.Run(context.Background(), cfg, runCfg)
@@ -176,46 +176,7 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]strin
 }
 
 func backtestFetchWindow(start, end, trainStart, trainEnd time.Time) (time.Time, time.Time) {
-	fetchStart := earliestNonZero(start, trainStart)
-	fetchEnd := latestNonZero(end, trainEnd)
-	if !fetchStart.IsZero() {
-		fetchStart = fetchStart.Add(-24 * time.Hour)
-	}
-	return fetchStart, fetchEnd
-}
-
-func earliestNonZero(values ...time.Time) time.Time {
-	var earliest time.Time
-	for _, value := range values {
-		if value.IsZero() {
-			continue
-		}
-		if earliest.IsZero() || value.Before(earliest) {
-			earliest = value
-		}
-	}
-	return earliest
-}
-
-func latestNonZero(values ...time.Time) time.Time {
-	var latest time.Time
-	for _, value := range values {
-		if value.IsZero() {
-			continue
-		}
-		if latest.IsZero() || value.After(latest) {
-			latest = value
-		}
-	}
-	return latest
-}
-
-func uniqueInputSymbols(input []backtest.InputBar) int {
-	seen := make(map[string]struct{}, len(input))
-	for _, item := range input {
-		seen[strings.ToUpper(item.Symbol)] = struct{}{}
-	}
-	return len(seen)
+	return start, end
 }
 
 func parseCLIBacktestTime(value string) (time.Time, bool, error) {

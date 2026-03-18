@@ -82,3 +82,70 @@ func TestFetchHistoricalJobUsesCacheWhenAvailable(t *testing.T) {
 		t.Fatalf("unexpected cached result: %+v", result)
 	}
 }
+
+func TestHistoricalDatasetIteratorMergesCachedShardsInOrder(t *testing.T) {
+	previousRoot := historicalCacheRoot
+	historicalCacheRoot = t.TempDir()
+	t.Cleanup(func() {
+		historicalCacheRoot = previousRoot
+	})
+
+	dayStart := time.Date(2026, 3, 12, 13, 0, 0, 0, time.UTC)
+	dayEnd := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	jobs := []historicalFetchJob{
+		{
+			index:   1,
+			start:   dayStart,
+			end:     dayEnd,
+			symbols: []string{"APVO"},
+		},
+		{
+			index:   2,
+			start:   dayStart,
+			end:     dayEnd,
+			symbols: []string{"EONR"},
+		},
+	}
+	if err := saveHistoricalJobCache(jobs[0], "sip", historicalFetchResult{
+		bars: []backtest.InputBar{
+			{Timestamp: dayStart.Add(2 * time.Minute), Symbol: "APVO", Open: 10.10, High: 10.40, Low: 10.05, Close: 10.30, Volume: 3000},
+			{Timestamp: dayStart, Symbol: "APVO", Open: 10.00, High: 10.20, Low: 9.95, Close: 10.15, Volume: 1000},
+		},
+	}); err != nil {
+		t.Fatalf("expected APVO shard to save, got %v", err)
+	}
+	if err := saveHistoricalJobCache(jobs[1], "sip", historicalFetchResult{
+		bars: []backtest.InputBar{
+			{Timestamp: dayStart.Add(time.Minute), Symbol: "EONR", Open: 3.00, High: 3.10, Low: 2.95, Close: 3.05, Volume: 2000},
+		},
+	}); err != nil {
+		t.Fatalf("expected EONR shard to save, got %v", err)
+	}
+
+	iterator := newHistoricalDatasetIterator(historicalDataset{
+		feed: "sip",
+		jobs: jobs,
+	})
+	defer iterator.Close()
+
+	var got []backtest.InputBar
+	for {
+		bar, ok, err := iterator.Next()
+		if err != nil {
+			t.Fatalf("expected merged iterator to succeed, got %v", err)
+		}
+		if !ok {
+			break
+		}
+		got = append(got, bar)
+	}
+
+	want := []backtest.InputBar{
+		{Timestamp: dayStart, Symbol: "APVO", Open: 10.00, High: 10.20, Low: 9.95, Close: 10.15, Volume: 1000},
+		{Timestamp: dayStart.Add(time.Minute), Symbol: "EONR", Open: 3.00, High: 3.10, Low: 2.95, Close: 3.05, Volume: 2000},
+		{Timestamp: dayStart.Add(2 * time.Minute), Symbol: "APVO", Open: 10.10, High: 10.40, Low: 10.05, Close: 10.30, Volume: 3000},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected merged bars:\n got=%+v\nwant=%+v", got, want)
+	}
+}
