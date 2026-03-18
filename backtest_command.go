@@ -55,9 +55,6 @@ func runBacktest(args []string) error {
 		DataPath:           *dataPath,
 		Start:              start,
 		End:                end,
-		TrainStart:         trainStart,
-		TrainEnd:           trainEnd,
-		LabelLookaheadBars: 8,
 	}
 
 	if *dataPath == "" {
@@ -111,13 +108,10 @@ func runBacktest(args []string) error {
 	if err != nil {
 		return err
 	}
-	if result.ModelTrainingWarning != "" {
-		log.Printf("Backtest entry-model training skipped: %s. Using model=%s", result.ModelTrainingWarning, result.ModelName)
-	}
 	logBacktestDiagnostics(result.Diagnostics)
 
 	log.Printf(
-		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f avg_win_pnl=%.2f avg_loss_pnl=%.2f avg_win_r=%.2f avg_loss_r=%.2f avg_mfe_r=%.2f avg_mae_r=%.2f trailing_exit_pct=%.2f%% avg_time_to_stop_min=%.2f realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%% model=%s",
+		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f avg_win_pnl=%.2f avg_loss_pnl=%.2f avg_win_r=%.2f avg_loss_r=%.2f avg_mfe_r=%.2f avg_mae_r=%.2f trailing_exit_pct=%.2f%% avg_time_to_stop_min=%.2f realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%%",
 		result.Trades,
 		result.Wins,
 		result.Losses,
@@ -137,7 +131,6 @@ func runBacktest(args []string) error {
 		result.EndingEquity,
 		result.OpenPositionsAtEnd,
 		result.MaxDrawdownPct,
-		result.ModelName,
 	)
 	logClosedTradeSamples(result.ClosedTrades)
 	return nil
@@ -283,7 +276,7 @@ func formatLogTime(value time.Time) string {
 
 func logBacktestConfig(cfg config.TradingConfig) {
 	log.Printf(
-		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f max_vs_open=%.2f model_threshold=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trailing_stop=%.2f trailing_activation=%.2f",
+		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f max_vs_open=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trailing_stop=%.2f trailing_activation=%.2f",
 		cfg.MinPrice,
 		cfg.MinGapPercent,
 		cfg.MinRelativeVolume,
@@ -293,7 +286,6 @@ func logBacktestConfig(cfg config.TradingConfig) {
 		cfg.MinThreeMinuteReturnPct,
 		cfg.MinVolumeRate,
 		cfg.MaxPriceVsOpenPct,
-		cfg.EntryModelMinPredictedReturnPct,
 		cfg.RiskPerTradePct,
 		cfg.MaxTradesPerDay,
 		cfg.MaxOpenPositions,
@@ -306,12 +298,9 @@ func logBacktestConfig(cfg config.TradingConfig) {
 
 func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	log.Printf(
-		"Backtest funnel bars_loaded=%d bars_in_window=%d train_runs=%d train_candidates=%d train_samples=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
+		"Backtest funnel bars_loaded=%d bars_in_window=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
 		diag.BarsLoaded,
 		diag.BarsInWindow,
-		diag.TrainingRuns,
-		diag.TrainingCandidates,
-		diag.TrainingSamples,
 		diag.EntryCandidates,
 		diag.EntrySignals,
 		diag.EntryRiskApproved,
@@ -368,13 +357,11 @@ func logEntrySamples(samples []backtest.EntrySample) {
 	parts := make([]string, 0, len(samples))
 	for _, sample := range samples {
 		parts = append(parts, fmt.Sprintf(
-			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f",
+			"%s@%s price=%.2f score=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f",
 			sample.Symbol,
 			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
 			sample.Price,
 			sample.Score,
-			sample.PredictedReturnPct,
-			sample.RequiredPredictedRetPct,
 			sample.DistanceFromHighPct,
 			sample.AllowedDistanceHighPct,
 			sample.RelativeVolume,
@@ -420,14 +407,12 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			continue
 		}
 		log.Printf(
-			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
+			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
 			item.reason,
 			sample.Symbol,
 			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
 			sample.Price,
 			sample.Score,
-			sample.PredictedReturnPct,
-			sample.RequiredPredictedRetPct,
 			sample.DistanceFromHighPct,
 			sample.AllowedDistanceHighPct,
 			sample.RelativeVolume,

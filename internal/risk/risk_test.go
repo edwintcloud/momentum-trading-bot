@@ -10,6 +10,20 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
 
+func testConfig() config.TradingConfig {
+	return config.TradingConfig{
+		StartingCapital:                 100_000,
+		RiskPerTradePct:                 0.01,
+		DailyLossLimitPct:               0.03,
+		MaxTradesPerDay:                 8,
+		MaxOpenPositions:                4,
+		MaxExposurePct:                  0.30,
+		EntryStopATRMultiplier:          1.00,
+		MaxRiskATRMultiplier:            4.00,
+		LimitOrderSlippageDollars:       0.10,
+	}
+}
+
 func inSessionSignalTime() time.Time {
 	return time.Date(2026, 3, 13, 14, 0, 0, 0, time.UTC)
 }
@@ -45,7 +59,7 @@ func testBuyExecution(symbol string, price float64, quantity int64, at time.Time
 }
 
 func TestRiskBlocksTradingWhenPaused(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	runtimeState := runtime.NewState()
 	runtimeState.Pause()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -62,7 +76,7 @@ func TestRiskBlocksTradingWhenPaused(t *testing.T) {
 }
 
 func TestRiskAllowsExitEvenWhenPaused(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	runtimeState := runtime.NewState()
 	runtimeState.Pause()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -87,7 +101,7 @@ func TestRiskAllowsExitEvenWhenPaused(t *testing.T) {
 }
 
 func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(93809.87, 100000)
@@ -104,7 +118,7 @@ func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
 }
 
 func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	cfg.LimitOrderSlippageDollars = 0.05
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -122,7 +136,7 @@ func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
 }
 
 func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50_000, 50_000)
@@ -140,7 +154,7 @@ func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
 }
 
 func TestRiskBlocksOrdersOutsideTradableSession(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	engine := NewEngine(cfg, book, runtimeState)
@@ -155,7 +169,7 @@ func TestRiskBlocksOrdersOutsideTradableSession(t *testing.T) {
 }
 
 func TestRiskMaxTradesCountsEntriesNotExits(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	cfg.MaxTradesPerDay = 1
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -189,7 +203,7 @@ func TestRiskMaxTradesCountsEntriesNotExits(t *testing.T) {
 }
 
 func TestRiskMaxTradesCountsApprovedEntriesBeforeFills(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	cfg.MaxTradesPerDay = 1
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -211,7 +225,7 @@ func TestRiskMaxTradesCountsApprovedEntriesBeforeFills(t *testing.T) {
 }
 
 func TestRiskUsesAdaptiveBufferForLowPricedBuy(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	cfg.LimitOrderSlippageDollars = 0.05
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -228,7 +242,7 @@ func TestRiskUsesAdaptiveBufferForLowPricedBuy(t *testing.T) {
 }
 
 func TestRiskUsesAdaptiveBufferForLowPricedSell(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	cfg.LimitOrderSlippageDollars = 0.05
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -253,7 +267,7 @@ func TestRiskUsesAdaptiveBufferForLowPricedSell(t *testing.T) {
 }
 
 func TestRiskCapsAdaptiveBufferForHigherPricedNames(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testConfig()
 	cfg.LimitOrderSlippageDollars = 0.05
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)

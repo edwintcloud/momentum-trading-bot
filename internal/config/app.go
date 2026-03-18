@@ -49,7 +49,6 @@ func Load() (AppConfig, error) {
 	_ = godotenv.Load()
 
 	trading := DefaultTradingConfig()
-	trading.EntryModelPath = getEnvString("ENTRY_MODEL_PATH", trading.EntryModelPath)
 	alpacaCfg, err := loadAlpacaConfig(nil)
 	if err != nil {
 		return AppConfig{}, err

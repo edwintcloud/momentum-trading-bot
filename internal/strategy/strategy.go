@@ -17,8 +17,6 @@ type Strategy struct {
 	config              config.TradingConfig
 	portfolio           *portfolio.Manager
 	runtime             *runtime.State
-	seedModel           LinearModel
-	entryModel          LinearModel
 	lastEntryAt         map[string]time.Time
 	lastExitAt          map[string]time.Time
 	symbolStates        map[string]symbolTradeState
@@ -30,8 +28,6 @@ type CandidateDecision struct {
 	Signal                 domain.TradeSignal
 	Emit                   bool
 	Reason                 string
-	PredictedReturnPct     float64
-	RequiredReturnPct      float64
 	AllowedDistanceHighPct float64
 	StrongSqueeze          bool
 }
@@ -45,23 +41,10 @@ type symbolTradeState struct {
 
 // NewStrategy creates a strategy instance.
 func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Strategy {
-	seedModel := DefaultEntryModel()
-	entryModel := seedModel
-	if cfg.EntryModelPath != "" {
-		loaded, err := LoadLinearModel(cfg.EntryModelPath)
-		if err != nil {
-			runtimeState.RecordLog("warn", "strategy", "could not load entry model from "+cfg.EntryModelPath+": "+err.Error())
-		} else {
-			entryModel = loaded
-			runtimeState.RecordLog("info", "strategy", "loaded entry model "+entryModel.Name)
-		}
-	}
 	return &Strategy{
 		config:              cfg,
 		portfolio:           portfolioManager,
 		runtime:             runtimeState,
-		seedModel:           seedModel,
-		entryModel:          entryModel,
 		lastEntryAt:         make(map[string]time.Time),
 		lastExitAt:          make(map[string]time.Time),
 		symbolStates:        make(map[string]symbolTradeState),
@@ -69,10 +52,6 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 	}
 }
 
-// SetEntryModel swaps the active entry model at runtime.
-func (s *Strategy) SetEntryModel(model LinearModel) {
-	s.entryModel = model
-}
 
 // Start listens for candidates and ticks, generating both entry and exit signals.
 func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate, ticks <-chan domain.Tick, out chan<- domain.TradeSignal) error {
@@ -187,54 +166,49 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	decisionAt := decisionTime(candidate.Timestamp)
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	allowedDistance := s.allowedBreakoutSlack(candidate)
-	predictedReturn := s.predictEntryReturn(candidate, strongSqueeze)
-	requiredReturn := s.requiredPredictedReturn(candidate)
 	if !markethours.IsTradableSessionAt(decisionAt) {
-		return CandidateDecision{Reason: "outside-session", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "outside-session", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if s.isLateSession(decisionAt) {
-		return CandidateDecision{Reason: "late-session-momentum-decay", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "late-session-momentum-decay", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if blockReason := s.runtime.EntryBlockReasonAt(decisionAt); blockReason != "" {
-		return CandidateDecision{Reason: blockReason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: blockReason, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if s.portfolio.HasPosition(candidate.Symbol) {
-		return CandidateDecision{Reason: "has-position", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "has-position", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if lastEntry, exists := s.lastEntryAt[candidate.Symbol]; exists {
 		if decisionAt.Sub(lastEntry) < time.Duration(s.config.EntryCooldownSec)*time.Second {
-			return CandidateDecision{Reason: "entry-cooldown", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+			return CandidateDecision{Reason: "entry-cooldown", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 		}
 	}
 	symbolState := s.symbolState(candidate.Symbol, decisionAt)
 	if symbolState.entrySignals >= 2 {
-		return CandidateDecision{Reason: "symbol-daily-cap", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "symbol-daily-cap", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if symbolState.lossExits > 0 {
-		return CandidateDecision{Reason: "symbol-loss-lockout", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "symbol-loss-lockout", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
-		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: reason, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if candidate.BreakoutPct < -allowedDistance {
-		return CandidateDecision{Reason: "below-breakout-zone", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
-	}
-	if s.config.EntryModelEnabled && predictedReturn < requiredReturn {
-		return CandidateDecision{Reason: "model-threshold", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "below-breakout-zone", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	plan, ok, reason := buildEntryPlan(s.config, candidate)
 	if !ok {
-		return CandidateDecision{Reason: reason, PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: reason, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 
 	maxExposure := s.portfolio.EffectiveCapital() * s.config.MaxExposurePct
 	if s.portfolio.OpenPositionCount() >= s.config.MaxOpenPositions || s.portfolio.Exposure() >= maxExposure {
 		if candidate.Score >= 16.0 {
 			if s.evaluateOpportunitySwap(candidate) {
-				return CandidateDecision{Reason: "reallocation-swap-pending", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+				return CandidateDecision{Reason: "reallocation-swap-pending", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 			}
 		}
-		return CandidateDecision{Reason: "max-capacity-reached", PredictedReturnPct: predictedReturn, RequiredReturnPct: requiredReturn, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+		return CandidateDecision{Reason: "max-capacity-reached", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 
 	quantity := int64(0)
@@ -260,7 +234,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		EntryATR:     plan.EntryATR,
 		SetupType:    plan.SetupType,
 		Reason:       "ml-breakout-entry",
-		Confidence:   predictedReturn,
+		Confidence:   1.0,
 		Timestamp:    decisionAt,
 	}
 
@@ -296,8 +270,6 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 				"setupHigh":             candidate.SetupHigh,
 				"setupLow":              candidate.SetupLow,
 				"score":                 candidate.Score,
-				"predictedReturn":       predictedReturn,
-				"requiredReturn":        requiredReturn,
 			},
 		})
 	}
@@ -306,8 +278,6 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		Signal:                 signal,
 		Emit:                   true,
 		Reason:                 "entry-signal",
-		PredictedReturnPct:     predictedReturn,
-		RequiredReturnPct:      requiredReturn,
 		AllowedDistanceHighPct: allowedDistance,
 		StrongSqueeze:          strongSqueeze,
 	}
@@ -513,64 +483,6 @@ func decisionTime(timestamp time.Time) time.Time {
 	return timestamp.UTC()
 }
 
-func (s *Strategy) requiredPredictedReturn(candidate domain.Candidate) float64 {
-	threshold := s.config.EntryModelMinPredictedReturnPct
-	strongSqueeze := s.isStrongSqueeze(candidate)
-	volumeLeaderPct := s.volumeLeaderPct(candidate)
-
-	// Setup-type discounts.
-	if candidate.SetupType == "consolidation-breakout" {
-		threshold -= 0.25
-	}
-	if candidate.SetupType == "higher-low-reclaim" {
-		threshold -= 0.15
-	}
-	if candidate.SetupType == "vwap-reclaim" {
-		threshold -= 0.10
-	}
-
-	// Session penalties (keep only the strongest 3).
-	if s.isOpeningSession(candidate.Timestamp) {
-		threshold += 0.20
-	}
-	if candidate.MinutesSinceOpen > 180 && !strongSqueeze {
-		threshold += 0.15
-	}
-	if volumeLeaderPct < 0.20 {
-		threshold += 0.15
-	}
-
-	// Quality discounts.
-	if strongSqueeze {
-		threshold -= 0.80
-	}
-	if volumeLeaderPct >= 0.85 {
-		threshold -= 0.20
-	}
-	if candidate.Score >= s.config.MinEntryScore+4 {
-		threshold -= 0.25
-	}
-	if candidate.BreakoutPct >= -0.15 &&
-		candidate.ThreeMinuteReturnPct >= s.config.MinThreeMinuteReturnPct+0.15 &&
-		candidate.VolumeRate >= s.config.MinVolumeRate {
-		threshold -= 0.20
-	}
-
-	minThreshold := s.config.EntryModelMinPredictedReturnPct * 0.30
-	if strongSqueeze {
-		minThreshold = maxFloat(minThreshold, 0.20)
-	}
-	if strongSqueeze && s.isPremarket(candidate.Timestamp) {
-		minThreshold = 0.60
-	}
-	if strongSqueeze && s.isOpeningSession(candidate.Timestamp) {
-		minThreshold = 0.45
-	}
-	if threshold < minThreshold {
-		threshold = minThreshold
-	}
-	return threshold
-}
 
 var knownLeveragedETFs = map[string]bool{
 	"UVIX": true, "UVXY": true, "SQQQ": true, "TQQQ": true, "SOXL": true, "SOXS": true,
@@ -650,6 +562,9 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	if candidate.DistanceFromHighPct > 12.0 {
 		return false, "distance-from-high"
+	}
+	if candidate.BreakoutPct > 3.0 {
+		return false, "chasing-extended-breakout"
 	}
 	if candidate.PriceVsVWAPPct > 12.0 && !strongSqueeze {
 		return false, "vwap-extension"
@@ -762,15 +677,6 @@ func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSquee
 	}
 }
 
-func (s *Strategy) predictEntryReturn(candidate domain.Candidate, strongSqueeze bool) float64 {
-	activePrediction := s.entryModel.Predict(candidate)
-	if s.entryModel.Name == s.seedModel.Name {
-		return activePrediction
-	}
-	seedPrediction := s.seedModel.Predict(candidate)
-	blended := (activePrediction * 0.70) + (seedPrediction * 0.30)
-	return blended
-}
 
 func (s *Strategy) symbolState(symbol string, at time.Time) symbolTradeState {
 	state := s.symbolStates[symbol]

@@ -10,9 +10,18 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
 
+func testScannerConfig() config.TradingConfig {
+	cfg := config.DefaultTradingConfig()
+	cfg.MinRelativeVolume = 6.0
+	cfg.MinGapPercent = 10.0
+	cfg.MinPremarketVolume = 500_000
+	cfg.MaxPrice = 40.0
+	return cfg
+}
+
 func TestScannerFiltersMomentumCandidates(t *testing.T) {
 	runtimeState := runtime.NewState()
-	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	engine := NewScanner(testScannerConfig(), runtimeState)
 
 	engine.evaluateTick(domain.Tick{
 		Symbol:          "APVO",
@@ -55,7 +64,7 @@ func TestScannerFiltersMomentumCandidates(t *testing.T) {
 
 func TestScannerUsesEarlierRejectedTicksForMomentumContext(t *testing.T) {
 	runtimeState := runtime.NewState()
-	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	engine := NewScanner(testScannerConfig(), runtimeState)
 	base := time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC)
 
 	_, ok := engine.evaluateTick(domain.Tick{
@@ -115,7 +124,7 @@ func TestScannerUsesEarlierRejectedTicksForMomentumContext(t *testing.T) {
 
 func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 	runtimeState := runtime.NewState()
-	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	engine := NewScanner(testScannerConfig(), runtimeState)
 	base := time.Date(2026, 3, 10, 16, 0, 0, 0, time.UTC)
 
 	engine.evaluateTick(domain.Tick{
@@ -196,14 +205,14 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 	if !ok {
 		t.Fatal("expected intraday squeeze to pass scanner without gap profile")
 	}
-	if candidate.GapPercent >= config.DefaultTradingConfig().MinGapPercent {
+	if candidate.GapPercent >= testScannerConfig().MinGapPercent {
 		t.Fatalf("expected test candidate to validate non-gap path, got %+v", candidate)
 	}
 }
 
 func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 	runtimeState := runtime.NewState()
-	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	engine := NewScanner(testScannerConfig(), runtimeState)
 	base := time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC)
 
 	engine.evaluateTick(domain.Tick{
@@ -243,7 +252,7 @@ func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 
 func TestScannerRejectsLowGap(t *testing.T) {
 	runtimeState := runtime.NewState()
-	engine := NewScanner(config.DefaultTradingConfig(), runtimeState)
+	engine := NewScanner(testScannerConfig(), runtimeState)
 
 	_, ok := engine.evaluateTick(domain.Tick{
 		Symbol:          "LCID",
@@ -261,7 +270,7 @@ func TestScannerRejectsLowGap(t *testing.T) {
 }
 
 func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
+	cfg := testScannerConfig()
 	runtimeState := runtime.NewState()
 	engine := NewScanner(cfg, runtimeState)
 

@@ -15,37 +15,35 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.DailyLossLimitPct = 0.200
 	cfg.MaxTradesPerDay = 30
 	cfg.MaxOpenPositions = 5
-	cfg.MinPrice = 2.0
+	cfg.MinPrice = 1.0
 
-	// switch {
-	// case equity < 25_000:
-	// 	cfg.RiskPerTradePct = 0.005
-	// 	cfg.DailyLossLimitPct = 0.015
-	// 	cfg.MaxTradesPerDay = 6
-	// 	cfg.MaxOpenPositions = 2
-	// 	cfg.MinPrice = 2.0
-	// case equity < 100_000:
-	// 	cfg.RiskPerTradePct = 0.035
-	// 	cfg.DailyLossLimitPct = 0.200
-	// 	cfg.MaxTradesPerDay = 30
-	// 	cfg.MaxOpenPositions = 5
-	// 	cfg.MinPrice = 2.0
-	// default:
-	// 	cfg.RiskPerTradePct = 0.015
-	// 	cfg.DailyLossLimitPct = 0.080
-	// 	cfg.MaxTradesPerDay = 20
-	// 	cfg.MaxOpenPositions = 5
-	// 	cfg.MinPrice = 2.0
-	// }
+	switch {
+	case equity < 25_000:
+		cfg.RiskPerTradePct = 0.005
+		cfg.DailyLossLimitPct = 0.015
+		cfg.MaxTradesPerDay = 6
+		cfg.MaxOpenPositions = 2
+		cfg.MinPrice = 1.0
+	case equity < 100_000:
+		cfg.RiskPerTradePct = 0.035
+		cfg.DailyLossLimitPct = 0.200
+		cfg.MaxTradesPerDay = 30
+		cfg.MaxOpenPositions = 5
+		cfg.MinPrice = 1.0
+	default:
+		cfg.RiskPerTradePct = 0.015
+		cfg.DailyLossLimitPct = 0.080
+		cfg.MaxTradesPerDay = 20
+		cfg.MaxOpenPositions = 5
+		cfg.MinPrice = 1.0
+	}
 
 	cfg.StopLossPct = 0.03
 	cfg.TrailingStopPct = 0.03
 	cfg.TrailingStopActivationPct = 0.02
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
-	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 0.16
-	cfg.MinEntryScore = 18.0
+	cfg.MinEntryScore = 14.0
 	cfg.MinOneMinuteReturnPct = 0.40
 	cfg.MinThreeMinuteReturnPct = 0.80
 	cfg.MinVolumeRate = 1.40
@@ -57,9 +55,9 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.StagnationWindowMin = 3
 	cfg.StagnationMinPeakPct = 0.005
 	cfg.MinGapPercent = 0.0
-	cfg.MaxPrice = 50.0
-	cfg.MinRelativeVolume = 5.0
-	cfg.MinPremarketVolume = 10_000
+	cfg.MaxPrice = 100.0
+	cfg.MinRelativeVolume = 1.5
+	cfg.MinPremarketVolume = 100_000
 	cfg.ScannerWorkers = 4
 	cfg.LimitOrderSlippageDollars = 0.02
 	cfg.EntryATRPercentFallback = 0.02

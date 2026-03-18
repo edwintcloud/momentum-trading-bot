@@ -30,10 +30,6 @@ type RunConfig struct {
 	Bars               []InputBar
 	Start              time.Time
 	End                time.Time
-	TrainStart         time.Time
-	TrainEnd           time.Time
-	LabelLookaheadBars int
-	ModelOutputPath    string
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -52,8 +48,6 @@ type InputBar struct {
 
 // Result summarizes a completed backtest.
 type Result struct {
-	ModelName            string
-	ModelTrainingWarning string
 	StartingCapital      float64
 	RealizedPnL          float64
 	UnrealizedPnL        float64
@@ -88,9 +82,6 @@ type Diagnostics struct {
 	ExitChecks         int
 	ExitSignals        int
 	ExitRiskApproved   int
-	TrainingCandidates int
-	TrainingSamples    int
-	TrainingRuns       int
 	ScannerRejects     map[string]int
 	EntryRejects       map[string]int
 	EntryRiskRejects   map[string]int
@@ -121,8 +112,6 @@ type EntrySample struct {
 	BreakoutPct             float64
 	SetupType               string
 	Score                   float64
-	PredictedReturnPct      float64
-	RequiredPredictedRetPct float64
 	StrongSqueeze           bool
 }
 
@@ -171,28 +160,11 @@ type symbolState struct {
 	lastClose     float64
 }
 
-type trainingStats struct {
-	candidateBars int
-	samples       int
-}
 
-type trainingRow struct {
-	candidateAt time.Time
-	availableAt time.Time
-	sample      strategy.TrainingSample
-}
 
-type trainingCorpus struct {
-	candidateTimestamps []time.Time
-	rows                []trainingRow
-}
 
 // Run executes a CSV-driven backtest using the live strategy/risk/portfolio components.
 func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Result, error) {
-	if runCfg.LabelLookaheadBars <= 0 {
-		runCfg.LabelLookaheadBars = 8
-	}
-
 	bars, err := resolveBars(runCfg)
 	if err != nil {
 		return Result{}, err
@@ -202,43 +174,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	runtimeState := runtime.NewState()
-	records, symbolIndices := buildRecords(cfg, runtimeState, bars)
-	corpus := trainingCorpus{}
-	if !runCfg.TrainStart.IsZero() {
-		cacheKey := trainingCorpusCacheKey(cfg, runCfg, records, symbolIndices)
-		loadedCorpus := false
-		if cached, ok, err := loadTrainingCorpusCache(cacheKey); err != nil {
-			runtimeState.RecordLog("warn", "backtest", "could not load training corpus cache: "+err.Error())
-		} else if ok {
-			corpus = cached
-			loadedCorpus = true
-			runtimeState.RecordLog(
-				"info",
-				"backtest",
-				fmt.Sprintf(
-					"loaded training corpus cache rows=%d candidates=%d",
-					len(corpus.rows),
-					len(corpus.candidateTimestamps),
-				),
-			)
-		}
-		if !loadedCorpus {
-			corpus = precomputeTrainingCorpus(cfg, records, symbolIndices, runCfg)
-			if err := saveTrainingCorpusCache(cacheKey, corpus); err != nil {
-				runtimeState.RecordLog("warn", "backtest", "could not save training corpus cache: "+err.Error())
-			} else {
-				runtimeState.RecordLog(
-					"info",
-					"backtest",
-					fmt.Sprintf(
-						"saved training corpus cache rows=%d candidates=%d",
-						len(corpus.rows),
-						len(corpus.candidateTimestamps),
-					),
-				)
-			}
-		}
-	}
+	records, _ := buildRecords(cfg, runtimeState, bars)
 	diagnostics := Diagnostics{
 		BarsLoaded:         len(records),
 		ScannerRejects:     make(map[string]int),
@@ -249,18 +185,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		EntryRejectSamples: make(map[string]EntrySample),
 	}
 
-	model := strategy.DefaultEntryModel()
-	trainingWarning := ""
-
 	book := portfolio.NewManager(cfg, runtimeState)
 	scan := scanner.NewScanner(cfg, runtimeState)
 	strat := strategy.NewStrategy(cfg, book, runtimeState)
-	strat.SetEntryModel(model)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
 	pendingEntries := make(map[string]pendingEntry)
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)
-	lastTrainingDay := ""
 
 	equityCurve := make([]float64, 0, len(records))
 	for _, rec := range records {
@@ -273,28 +204,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			continue
 		}
 		diagnostics.BarsInWindow++
-		if !runCfg.TrainStart.IsZero() {
-			trainingDay := tradingDayKey(rec.bar.Timestamp)
-			if trainingDay != lastTrainingDay {
-				windowStart, windowEnd, ok := walkForwardTrainWindow(runCfg, rec.bar.Timestamp)
-				if ok {
-					trainCfg := runCfg
-					trainCfg.TrainStart = windowStart
-					trainCfg.TrainEnd = windowEnd
-					trained, stats, trainErr := trainModel(corpus, trainCfg.TrainStart, trainCfg.TrainEnd)
-					diagnostics.TrainingRuns++
-					diagnostics.TrainingCandidates += stats.candidateBars
-					diagnostics.TrainingSamples += stats.samples
-					if trainErr != nil {
-						trainingWarning = trainErr.Error()
-					} else {
-						model = trained
-						strat.SetEntryModel(model)
-					}
-				}
-				lastTrainingDay = trainingDay
-			}
-		}
 
 		if pending, exists := pendingEntries[rec.bar.Symbol]; exists {
 			if fill, updatedPending, filled, expired := maybeFillPendingEntry(pending, rec.bar); filled {
@@ -456,16 +365,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	if stopMinutesCount > 0 {
 		avgTimeToStopMin = stopMinutesTotal / float64(stopMinutesCount)
 	}
-	if runCfg.ModelOutputPath != "" {
-		if err := strategy.SaveLinearModel(runCfg.ModelOutputPath, model); err != nil {
-			return Result{}, err
-		}
-	}
 
 	return Result{
-		ModelName:            model.Name,
-		ModelTrainingWarning: trainingWarning,
-		StartingCapital:      cfg.StartingCapital,
+				StartingCapital:      cfg.StartingCapital,
 		RealizedPnL:          round2(realizedPnL),
 		UnrealizedPnL:        round2(unrealizedPnL),
 		EndingEquity:         round2(endingEquity),
@@ -493,15 +395,15 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 func resolveBars(runCfg RunConfig) ([]bar, error) {
 	switch {
 	case len(runCfg.Bars) > 0:
-		return convertInputBars(runCfg.Bars, runCfg.Start, runCfg.End, runCfg.TrainStart, runCfg.TrainEnd), nil
+		return convertInputBars(runCfg.Bars, runCfg.Start, runCfg.End), nil
 	case runCfg.DataPath != "":
-		return loadBars(runCfg.DataPath, runCfg.Start, runCfg.End, runCfg.TrainStart, runCfg.TrainEnd)
+		return loadBars(runCfg.DataPath, runCfg.Start, runCfg.End)
 	default:
 		return nil, fmt.Errorf("either data path or historical bars are required")
 	}
 }
 
-func loadBars(path string, start, end, trainStart, trainEnd time.Time) ([]bar, error) {
+func loadBars(path string, start, end time.Time) ([]bar, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -532,7 +434,7 @@ func loadBars(path string, start, end, trainStart, trainEnd time.Time) ([]bar, e
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		if !withinAnyWindow(entry.Timestamp, start, end, trainStart, trainEnd) {
+		if !withinWindow(entry.Timestamp, start, end) {
 			continue
 		}
 		bars = append(bars, entry)
@@ -547,7 +449,7 @@ func loadBars(path string, start, end, trainStart, trainEnd time.Time) ([]bar, e
 	return bars, nil
 }
 
-func convertInputBars(input []InputBar, start, end, trainStart, trainEnd time.Time) []bar {
+func convertInputBars(input []InputBar, start, end time.Time) []bar {
 	bars := make([]bar, 0, len(input))
 	for _, item := range input {
 		entry := bar{
@@ -562,7 +464,7 @@ func convertInputBars(input []InputBar, start, end, trainStart, trainEnd time.Ti
 			Catalyst:    item.Catalyst,
 			CatalystURL: item.CatalystURL,
 		}
-		if !withinAnyWindow(entry.Timestamp, start, end, trainStart, trainEnd) {
+		if !withinWindow(entry.Timestamp, start, end) {
 			continue
 		}
 		bars = append(bars, entry)
@@ -641,194 +543,13 @@ func buildRecords(cfg config.TradingConfig, runtimeState *runtime.State, bars []
 	return records, symbolIndices
 }
 
-func precomputeTrainingCorpus(cfg config.TradingConfig, records []record, symbolIndices map[string][]int, runCfg RunConfig) trainingCorpus {
-	corpus := trainingCorpus{
-		candidateTimestamps: make([]time.Time, 0),
-		rows:                make([]trainingRow, 0),
-	}
-	for _, indices := range symbolIndices {
-		for pos, idx := range indices {
-			rec := records[idx]
-			if !rec.hasCandidate || !withinWindow(rec.bar.Timestamp, runCfg.TrainStart, runCfg.End) {
-				continue
-			}
-			corpus.candidateTimestamps = append(corpus.candidateTimestamps, rec.bar.Timestamp)
-			plan, ok, _ := strategy.BuildEntryPlan(cfg, rec.candidate)
-			if !ok {
-				continue
-			}
-			forwardReturn, availableAt, ok := trainingTargetOutcome(cfg, rec, indices, pos, records, runCfg.LabelLookaheadBars, plan)
-			if !ok {
-				continue
-			}
-			corpus.rows = append(corpus.rows, trainingRow{
-				candidateAt: rec.bar.Timestamp,
-				availableAt: availableAt,
-				sample: strategy.TrainingSample{
-					Candidate:        rec.candidate,
-					ForwardReturnPct: forwardReturn,
-				},
-			})
-		}
-	}
-	return corpus
-}
 
-func trainModel(corpus trainingCorpus, trainStart, trainEnd time.Time) (strategy.LinearModel, trainingStats, error) {
-	stats := trainingStats{}
-	samples := make([]strategy.TrainingSample, 0)
-	for _, timestamp := range corpus.candidateTimestamps {
-		if withinWindow(timestamp, trainStart, trainEnd) {
-			stats.candidateBars++
-		}
-	}
-	for _, row := range corpus.rows {
-		if !withinWindow(row.candidateAt, trainStart, trainEnd) {
-			continue
-		}
-		if row.availableAt.After(trainEnd) {
-			continue
-		}
-		samples = append(samples, row.sample)
-		stats.samples++
-	}
-	if len(samples) == 0 {
-		return strategy.LinearModel{}, stats, fmt.Errorf("no training samples produced from the requested train window")
-	}
-	model, err := strategy.TrainLinearModel(samples)
-	return model, stats, err
-}
 
-func trainingTarget(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, runCfg RunConfig, plan strategy.EntryPlan) (float64, bool) {
-	target, _, ok := trainingTargetOutcome(cfg, rec, indices, pos, records, runCfg.LabelLookaheadBars, plan)
-	return target, ok
-}
 
-func trainingTargetOutcome(cfg config.TradingConfig, rec record, indices []int, pos int, records []record, lookaheadBars int, plan strategy.EntryPlan) (float64, time.Time, bool) {
-	entryOrder := domain.OrderRequest{
-		Symbol:       rec.candidate.Symbol,
-		Side:         "buy",
-		Price:        backtestLimitPrice(rec.candidate.Price, "buy", cfg.LimitOrderSlippageDollars),
-		Quantity:     1,
-		StopPrice:    plan.StopPrice,
-		RiskPerShare: plan.RiskPerShare,
-		EntryATR:     plan.EntryATR,
-		SetupType:    plan.SetupType,
-		Reason:       "training-entry",
-		Timestamp:    rec.candidate.Timestamp,
-	}
-	pending := pendingEntry{order: entryOrder, barsRemaining: 2}
-	position := domain.Position{}
-	filled := false
-	if lookaheadBars < 20 {
-		lookaheadBars = 20
-	}
-	for lookahead := 1; lookahead <= lookaheadBars && pos+lookahead < len(indices); lookahead++ {
-		future := records[indices[pos+lookahead]]
-		if !filled {
-			if fill, updatedPending, didFill, expired := maybeFillPendingEntry(pending, future.bar); didFill {
-				filled = true
-				position = domain.Position{
-					Symbol:           fill.Symbol,
-					Quantity:         fill.Quantity,
-					AvgPrice:         fill.Price,
-					StopPrice:        fill.StopPrice,
-					InitialStopPrice: fill.StopPrice,
-					RiskPerShare:     fill.RiskPerShare,
-					EntryATR:         fill.EntryATR,
-					SetupType:        fill.SetupType,
-					LastPrice:        fill.Price,
-					HighestPrice:     fill.Price,
-					OpenedAt:         future.bar.Timestamp.UTC(),
-					UpdatedAt:        future.bar.Timestamp.UTC(),
-				}
-			} else if expired {
-				return 0, time.Time{}, false
-			} else {
-				pending = updatedPending
-				continue
-			}
-		}
 
-		if exitPrice, _, exited := simulateManagedExit(position, future.tick, cfg); exited {
-			return strategy.CurrentRMultiple(position, exitPrice), future.tick.Timestamp.UTC(), true
-		}
-		position.HighestPrice = maxFloat(position.HighestPrice, future.tick.BarHigh, future.tick.Price)
-		position.LastPrice = future.tick.Price
-		position.UpdatedAt = future.tick.Timestamp.UTC()
-	}
-	if !filled {
-		return 0, time.Time{}, false
-	}
-	return strategy.CurrentRMultiple(position, position.LastPrice), position.UpdatedAt.UTC(), true
-}
 
-func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
-	state := states[item.Symbol]
-	if state == nil {
-		state = &symbolState{}
-		states[item.Symbol] = state
-	}
 
-	day := item.Timestamp.In(marketTZ).Format("2006-01-02")
-	if state.day != day {
-		if state.day != "" && state.totalVolume > 0 {
-			state.prevDayVolume = state.totalVolume
-		}
-		prevClose := state.lastClose
-		if item.PrevClose > 0 {
-			prevClose = item.PrevClose
-		}
-		state.day = day
-		state.previousClose = prevClose
-		state.open = item.Open
-		state.highOfDay = 0
-		state.totalVolume = 0
-		state.preMarketVol = 0
-		state.recentVolumes = nil
-	}
 
-	state.totalVolume += item.Volume
-	state.lastClose = item.Close
-	if item.High > state.highOfDay {
-		state.highOfDay = item.High
-	}
-	if state.highOfDay == 0 {
-		state.highOfDay = item.High
-	}
-	if isPremarket(item.Timestamp) {
-		state.preMarketVol += item.Volume
-	}
-	state.recentVolumes = append(state.recentVolumes, item.Volume)
-	if len(state.recentVolumes) > 5 {
-		state.recentVolumes = state.recentVolumes[len(state.recentVolumes)-5:]
-	}
-
-	gapPercent := 0.0
-	if state.previousClose > 0 {
-		gapPercent = ((item.Close - state.previousClose) / state.previousClose) * 100
-	}
-	relativeVolume := calculateRelativeVolume(state, item.Timestamp)
-	volumeSpike := isVolumeSpike(state.recentVolumes, item.Volume, relativeVolume)
-
-	return domain.Tick{
-		Symbol:          item.Symbol,
-		Price:           round2(item.Close),
-		BarOpen:         round2(item.Open),
-		BarHigh:         round2(item.High),
-		BarLow:          round2(item.Low),
-		Open:            round2(state.open),
-		HighOfDay:       round2(state.highOfDay),
-		Volume:          state.totalVolume,
-		RelativeVolume:  round2(relativeVolume),
-		GapPercent:      round2(gapPercent),
-		PreMarketVolume: state.preMarketVol,
-		VolumeSpike:     volumeSpike,
-		Catalyst:        item.Catalyst,
-		CatalystURL:     item.CatalystURL,
-		Timestamp:       item.Timestamp.UTC(),
-	}
-}
 
 func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.Time) {
 	book.ApplyExecution(domain.ExecutionReport{
@@ -973,18 +694,7 @@ func tradingDayKey(at time.Time) string {
 	return at.In(marketTZ).Format("2006-01-02")
 }
 
-func walkForwardTrainWindow(runCfg RunConfig, at time.Time) (time.Time, time.Time, bool) {
-	if runCfg.TrainStart.IsZero() {
-		return time.Time{}, time.Time{}, false
-	}
-	local := at.In(marketTZ)
-	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, marketTZ).UTC()
-	windowEnd := dayStart.Add(-time.Minute)
-	if !windowEnd.After(runCfg.TrainStart) {
-		return time.Time{}, time.Time{}, false
-	}
-	return runCfg.TrainStart, windowEnd, true
-}
+
 
 func updateTradeAnalytics(analytics *tradeAnalytics, high, low float64) {
 	if analytics == nil || analytics.riskPerShare <= 0 || analytics.entryPrice <= 0 {
@@ -1112,9 +822,6 @@ func round2(value float64) float64 {
 	return math.Round(value*100) / 100
 }
 
-func withinAnyWindow(timestamp, start, end, trainStart, trainEnd time.Time) bool {
-	return withinWindow(timestamp, start, end) || withinWindow(timestamp, trainStart, trainEnd)
-}
 
 func withinWindow(timestamp, start, end time.Time) bool {
 	if !start.IsZero() && timestamp.Before(start) {
@@ -1176,8 +883,73 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		BreakoutPct:             round2(candidate.BreakoutPct),
 		SetupType:               candidate.SetupType,
 		Score:                   round2(candidate.Score),
-		PredictedReturnPct:      round2(decision.PredictedReturnPct),
-		RequiredPredictedRetPct: round2(decision.RequiredReturnPct),
 		StrongSqueeze:           decision.StrongSqueeze,
+	}
+}
+
+func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
+	state := states[item.Symbol]
+	if state == nil {
+		state = &symbolState{}
+		states[item.Symbol] = state
+	}
+
+	day := item.Timestamp.In(marketTZ).Format("2006-01-02")
+	if state.day != day {
+		if state.day != "" && state.totalVolume > 0 {
+			state.prevDayVolume = state.totalVolume
+		}
+		prevClose := state.lastClose
+		if item.PrevClose > 0 {
+			prevClose = item.PrevClose
+		}
+		state.day = day
+		state.previousClose = prevClose
+		state.open = item.Open
+		state.highOfDay = 0
+		state.totalVolume = 0
+		state.preMarketVol = 0
+		state.recentVolumes = nil
+	}
+
+	state.totalVolume += item.Volume
+	state.lastClose = item.Close
+	if item.High > state.highOfDay {
+		state.highOfDay = item.High
+	}
+	if state.highOfDay == 0 {
+		state.highOfDay = item.High
+	}
+	if isPremarket(item.Timestamp) {
+		state.preMarketVol += item.Volume
+	}
+	state.recentVolumes = append(state.recentVolumes, item.Volume)
+	if len(state.recentVolumes) > 5 {
+		state.recentVolumes = state.recentVolumes[len(state.recentVolumes)-5:]
+	}
+
+	gapPercent := 0.0
+	if state.previousClose > 0 {
+		gapPercent = ((item.Close - state.previousClose) / state.previousClose) * 100
+	}
+	relativeVolume := calculateRelativeVolume(state, item.Timestamp)
+	volumeSpike := isVolumeSpike(state.recentVolumes, item.Volume, relativeVolume)
+
+	return domain.Tick{
+		Symbol:          item.Symbol,
+		Price:           round2(item.Close),
+		BarOpen:         round2(item.Open),
+		BarHigh:         round2(item.High),
+		BarLow:          round2(item.Low),
+		Open:            round2(state.open),
+		HighOfDay:       round2(state.highOfDay),
+		Volume:          state.totalVolume,
+		RelativeVolume:  round2(relativeVolume),
+		GapPercent:      round2(gapPercent),
+		PreMarketVolume: state.preMarketVol,
+		VolumeSpike:     volumeSpike,
+		Catalyst:        item.Catalyst,
+		CatalystURL:     item.CatalystURL,
+		Timestamp:       item.Timestamp.UTC(),
 	}
 }

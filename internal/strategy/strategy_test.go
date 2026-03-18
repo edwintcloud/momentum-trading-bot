@@ -14,9 +14,48 @@ func inSessionTime() time.Time {
 	return time.Date(2026, 3, 13, 14, 0, 0, 0, time.UTC)
 }
 
+func testConfig() config.TradingConfig {
+	return config.TradingConfig{
+		StartingCapital:           100_000,
+		RiskPerTradePct:           0.01,
+		DailyLossLimitPct:         0.03,
+		MaxTradesPerDay:           8,
+		MaxOpenPositions:          4,
+		MaxExposurePct:            0.30,
+		EntryCooldownSec:          45,
+		ExitCooldownSec:           5,
+		MinEntryScore:             14.0,
+		MinOneMinuteReturnPct:     0.05,
+		MinThreeMinuteReturnPct:   0.15,
+		MinVolumeRate:             1.05,
+		MaxPriceVsOpenPct:         50.0,
+		BreakoutFailureWindowMin:  15,
+		BreakoutFailureLossPct:    0.008,
+		BreakEvenActivationPct:    0.025,
+		BreakEvenFloorPct:         0.0015,
+		StagnationWindowMin:       30,
+		StagnationMinPeakPct:      0.012,
+		MinPrice:                  1.0,
+		MaxPrice:                  100.0,
+		MinRelativeVolume:         1.5,
+		EntryATRPercentFallback:   0.02,
+		EntryStopATRMultiplier:    1.00,
+		MaxRiskATRMultiplier:      4.00,
+		BreakEvenHoldMinutes:      5,
+		BreakEvenMinR:             0.50,
+		TrailActivationR:          0.70,
+		TrailATRMultiplier:        1.50,
+		TightTrailTriggerR:        1.20,
+		TightTrailATRMultiplier:   0.60,
+		ProfitTargetR:             1.20,
+		ProfitTrailActivationR:    1.50,
+		ProfitTrailPct:            0.03,
+		FailedBreakoutCutR:        0.05,
+	}
+}
+
 func testStrategyConfig() config.TradingConfig {
-	cfg := config.DefaultTradingConfig()
-	cfg.EntryModelEnabled = false
+	cfg := testConfig()
 	return cfg
 }
 
@@ -200,7 +239,6 @@ func TestStrategyAllowsStrongIntradaySqueezeEvenWhenFarFromOpen(t *testing.T) {
 
 func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	cfg := testStrategyConfig()
-	cfg.EntryModelEnabled = false
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	strat := NewStrategy(cfg, book, runtimeState)
@@ -228,37 +266,7 @@ func TestStrategyAllowsStrongReclaimBelowHigh(t *testing.T) {
 	}
 }
 
-func TestStrategyRejectsStrongSqueezeWithFlatModelPrediction(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
-	runtimeState := runtime.NewState()
-	book := portfolio.NewManager(cfg, runtimeState)
-	strat := NewStrategy(cfg, book, runtimeState)
-	strat.SetEntryModel(LinearModel{Name: "flat-test", Weights: map[string]float64{}})
-	at := inSessionTime()
 
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:               "SQUEEZE",
-		Price:                7.35,
-		Open:                 5.40,
-		HighOfDay:            7.48,
-		GapPercent:           2.0,
-		RelativeVolume:       9.0,
-		PriceVsOpenPct:       36.11,
-		DistanceFromHighPct:  1.77,
-		OneMinuteReturnPct:   0.22,
-		ThreeMinuteReturnPct: 1.10,
-		VolumeRate:           1.45,
-		MinutesSinceOpen:     150,
-		Score:                22.0,
-		Timestamp:            at,
-	})
-	if ok {
-		t.Fatal("expected flat-model strong squeeze to remain blocked by model gate")
-	}
-	if reason != "model-threshold" {
-		t.Fatalf("unexpected block reason: %s", reason)
-	}
-}
 
 func TestStrategyRejectsSecondaryVolumeSetup(t *testing.T) {
 	cfg := testStrategyConfig()
@@ -430,7 +438,7 @@ func TestStrategyRejectsOpeningParabolicSetup(t *testing.T) {
 	at := time.Date(2026, 3, 13, 13, 31, 0, 0, time.UTC)
 
 	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:               "CONL",
+		Symbol:               "TSLA",
 		Price:                10.13,
 		Open:                 8.80,
 		HighOfDay:            10.18,
@@ -547,47 +555,7 @@ func TestStrategyCapsEntriesPerSymbolPerDay(t *testing.T) {
 	}
 }
 
-func TestStrategyBlocksWeakSetupWithFlatModelPrediction(t *testing.T) {
-	cfg := config.DefaultTradingConfig()
-	runtimeState := runtime.NewState()
-	book := portfolio.NewManager(cfg, runtimeState)
-	strat := NewStrategy(cfg, book, runtimeState)
-	strat.SetEntryModel(LinearModel{Name: "flat-test", Weights: map[string]float64{}})
-	at := inSessionTime()
 
-	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
-		Symbol:                "WEAK",
-		Price:                 4.20,
-		Open:                  4.00,
-		HighOfDay:             4.21,
-		GapPercent:            14,
-		RelativeVolume:        5.8,
-		PriceVsOpenPct:        5.0,
-		DistanceFromHighPct:   0.24,
-		OneMinuteReturnPct:    0.12,
-		ThreeMinuteReturnPct:  0.52,
-		VolumeRate:            1.30,
-		VolumeLeaderPct:       0.92,
-		LeaderRank:            1,
-		ATRPct:                2.40,
-		PriceVsVWAPPct:        0.30,
-		BreakoutPct:           0.12,
-		ConsolidationRangePct: 1.4,
-		CloseOffHighPct:       20,
-		SetupHigh:             4.18,
-		SetupLow:              4.02,
-		SetupType:             "vwap-reclaim",
-		MinutesSinceOpen:      45,
-		Score:                 16,
-		Timestamp:             at,
-	})
-	if ok {
-		t.Fatal("expected marginal setup to remain blocked by model gate")
-	}
-	if reason != "model-threshold" {
-		t.Fatalf("unexpected block reason: %s", reason)
-	}
-}
 
 func TestStrategyRejectsExhaustedMoveFarFromOpen(t *testing.T) {
 	cfg := testStrategyConfig()
