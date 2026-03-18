@@ -16,20 +16,22 @@ var tradingDayLocation = mustLoadLocation("America/New_York")
 
 // Manager tracks open positions, PnL, and trade history.
 type Manager struct {
-	mu              sync.RWMutex
-	config          config.TradingConfig
-	runtime         *runtime.State
-	recorder        domain.EventRecorder
-	positions       map[string]domain.Position
-	closedTrades    []domain.ClosedTrade
-	startingCapital float64
-	brokerEquity    float64
-	dayPnL          float64
-	dayRealizedPnL  float64
-	realizedPnL     float64
-	tradesToday     int
-	entriesToday    int
-	currentTradeDay string
+	mu                sync.RWMutex
+	config            config.TradingConfig
+	runtime           *runtime.State
+	recorder          domain.EventRecorder
+	positions         map[string]domain.Position
+	closedTrades      []domain.ClosedTrade
+	startingCapital   float64
+	brokerEquity      float64
+	dayPnL            float64
+	brokerTradesToday int
+	brokerTradesKnown bool
+	dayRealizedPnL    float64
+	realizedPnL       float64
+	tradesToday       int
+	entriesToday      int
+	currentTradeDay   string
 }
 
 // NewManager creates a new portfolio manager.
@@ -66,6 +68,17 @@ func (m *Manager) SyncBrokerAccount(equity float64, lastEquity float64) {
 	if lastEquity > 0 && equity > 0 {
 		m.dayPnL = round2(equity - lastEquity)
 	}
+}
+
+// SyncBrokerTradesToday updates the dashboard-facing trade count from Alpaca.
+func (m *Manager) SyncBrokerTradesToday(count int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if count < 0 {
+		count = 0
+	}
+	m.brokerTradesToday = count
+	m.brokerTradesKnown = true
 }
 
 // SeedPosition initializes a broker-backed position on startup.
@@ -519,6 +532,9 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 	if m.brokerEquity > 0 {
 		status.DayPnL = round2(m.dayPnL)
 	}
+	if m.brokerTradesKnown {
+		status.TradesToday = m.brokerTradesToday
+	}
 	return status
 }
 
@@ -547,6 +563,7 @@ func (m *Manager) rollTradingDayLocked(now time.Time) {
 		return
 	}
 	m.currentTradeDay = day
+	m.brokerTradesToday = 0
 	m.tradesToday = 0
 	m.entriesToday = 0
 	m.dayRealizedPnL = 0

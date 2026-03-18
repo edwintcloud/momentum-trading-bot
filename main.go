@@ -364,6 +364,7 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 
 func startBrokerAccountSync(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
 	go func() {
+		syncBrokerDashboardState(ctx, client, portfolioManager, runtimeState)
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -371,19 +372,32 @@ func startBrokerAccountSync(ctx context.Context, client *alpaca.Client, portfoli
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-				account, err := client.GetAccount(accountCtx)
-				cancel()
-				if err != nil {
-					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker account sync failed: %v", err))
-					continue
-				}
-				if equity, lastEquity, ok := brokerAccountValues(account); ok {
-					portfolioManager.SyncBrokerAccount(equity, lastEquity)
-				}
+				syncBrokerDashboardState(ctx, client, portfolioManager, runtimeState)
 			}
 		}
 	}()
+}
+
+func syncBrokerDashboardState(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
+	accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	account, err := client.GetAccount(accountCtx)
+	cancel()
+	if err != nil {
+		runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker account sync failed: %v", err))
+		return
+	}
+	if equity, lastEquity, ok := brokerAccountValues(account); ok {
+		portfolioManager.SyncBrokerAccount(equity, lastEquity)
+	}
+
+	tradesCtx, tradesCancel := context.WithTimeout(ctx, 15*time.Second)
+	tradesToday, err := client.CountFillsForDay(tradesCtx, time.Now().UTC())
+	tradesCancel()
+	if err != nil {
+		runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker trade-count sync failed: %v", err))
+		return
+	}
+	portfolioManager.SyncBrokerTradesToday(tradesToday)
 }
 
 func brokerAccountValues(account alpaca.Account) (float64, float64, bool) {

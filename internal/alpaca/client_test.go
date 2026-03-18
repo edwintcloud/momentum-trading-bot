@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,47 @@ func TestListActiveEquitySymbolsFiltersTradableAssets(t *testing.T) {
 	}
 	if len(symbols) != 2 || symbols[0] != "AAPL" || symbols[1] != "MSFT" {
 		t.Fatalf("unexpected tradable symbols: %+v", symbols)
+	}
+}
+
+func TestCountFillsForDayFollowsPagination(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if !strings.Contains(r.URL.Path, "/v2/account/activities/FILL") {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("date"); got != "2026-03-13" {
+			t.Fatalf("expected date query for trading day, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			items := make([]string, 0, 100)
+			for i := 0; i < 100; i++ {
+				items = append(items, `{"id":"fill-`+strconv.Itoa(i)+`"}`)
+			}
+			_, _ = w.Write([]byte("[" + strings.Join(items, ",") + "]"))
+			return
+		}
+		if got := r.URL.Query().Get("page_token"); got != "fill-99" {
+			t.Fatalf("expected second page token fill-99, got %q", got)
+		}
+		_, _ = w.Write([]byte(`[{"id":"fill-100"},{"id":"fill-101"}]`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AlpacaConfig{
+		APIKey:         "key",
+		APISecret:      "secret",
+		TradingBaseURL: server.URL,
+	})
+	count, err := client.CountFillsForDay(context.Background(), time.Date(2026, 3, 13, 18, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("expected fill count to load, got %v", err)
+	}
+	if count != 102 {
+		t.Fatalf("expected 102 fills across pages, got %d", count)
 	}
 }
 

@@ -38,6 +38,7 @@ Last reviewed: 2026-03-18.
 
 - Startup seeds broker positions into the local portfolio and restores today’s closed trades from Postgres.
 - Broker-restored positions are marked as `BrokerSeeded` so time-based exit rules do not treat them like fresh intraday entries after a restart.
+- `TradesToday` in the dashboard status is sourced from Alpaca fill activity via startup and periodic broker sync, not from the local fill ledger.
 - Dashboard snapshots are persisted every 10 seconds from `main.go`.
 - The app reconciles local positions back to Alpaca every 60 seconds.
 - The dashboard depends on built assets under `web/dist`; if they are missing, `/` returns `503 dashboard assets not built`.
@@ -71,7 +72,7 @@ Last reviewed: 2026-03-18.
 
 ### Dashboard trade count
 
-- `StatusSnapshot.TradesToday` now reflects actual fills/trades instead of entry count.
+- `StatusSnapshot.TradesToday` is broker-backed and refreshed from Alpaca fill activity instead of using the local entry/fill counters.
 
 ## Test Status
 

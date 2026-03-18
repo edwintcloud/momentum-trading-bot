@@ -104,6 +104,10 @@ type Order struct {
 	FilledAvgPrice string `json:"filled_avg_price"`
 }
 
+type accountActivity struct {
+	ID string `json:"id"`
+}
+
 // APIError preserves structured Alpaca HTTP error details for callers that
 // need to react to specific rejection payloads.
 type APIError struct {
@@ -271,6 +275,38 @@ func (c *Client) ListOpenPositions(ctx context.Context) ([]BrokerPosition, error
 	var positions []BrokerPosition
 	err := c.getJSON(ctx, c.cfg.TradingBaseURL+"/v2/positions", &positions)
 	return positions, err
+}
+
+// CountFillsForDay returns the number of broker-reported fill activities for
+// the provided New York trading day.
+func (c *Client) CountFillsForDay(ctx context.Context, day time.Time) (int, error) {
+	tradingDay := day.In(markethours.Location()).Format("2006-01-02")
+	total := 0
+	pageToken := ""
+
+	for {
+		endpoint := fmt.Sprintf("%s/v2/account/activities/FILL?date=%s&direction=desc&page_size=100",
+			c.cfg.TradingBaseURL,
+			url.QueryEscape(tradingDay),
+		)
+		if pageToken != "" {
+			endpoint += "&page_token=" + url.QueryEscape(pageToken)
+		}
+
+		var activities []accountActivity
+		if err := c.getJSON(ctx, endpoint, &activities); err != nil {
+			return 0, err
+		}
+		total += len(activities)
+		if len(activities) < 100 {
+			return total, nil
+		}
+		lastID := strings.TrimSpace(activities[len(activities)-1].ID)
+		if lastID == "" {
+			return total, nil
+		}
+		pageToken = lastID
+	}
 }
 
 // GetPosition fetches a single open position by symbol. Returns (position, true, nil)

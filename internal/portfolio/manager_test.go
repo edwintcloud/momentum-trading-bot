@@ -133,6 +133,38 @@ func TestStatusSnapshotUsesActualTradeCount(t *testing.T) {
 	}
 }
 
+func TestStatusSnapshotPrefersBrokerTradeCountWhenAvailable(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	base := time.Date(2026, time.March, 16, 13, 0, 0, 0, time.UTC)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "buy",
+		Price:    5,
+		Quantity: 100,
+		FilledAt: base,
+	})
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "sell",
+		Price:    5.1,
+		Quantity: 100,
+		Reason:   "profit-target",
+		FilledAt: base.Add(time.Minute),
+	})
+	manager.SyncBrokerTradesToday(7)
+
+	status := manager.StatusSnapshot()
+	if status.TradesToday != 7 {
+		t.Fatalf("expected status trades today to prefer broker count, got %d", status.TradesToday)
+	}
+	if manager.TradesToday() != 2 {
+		t.Fatalf("expected local trade counter to remain available for internal bookkeeping, got %d", manager.TradesToday())
+	}
+}
+
 func TestPortfolioResetsDailyTradeCounterByTradingDay(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()
