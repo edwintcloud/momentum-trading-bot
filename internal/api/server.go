@@ -165,6 +165,12 @@ func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"emergencyStop": true, "queued": len(orders)})
 }
 
+const (
+	wsWriteTimeout = 5 * time.Second
+	wsPingInterval = 25 * time.Second
+	wsPongTimeout  = 60 * time.Second
+)
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -172,17 +178,46 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Extend read deadline on every pong so we can detect dead connections.
+	conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+		return nil
+	})
+
+	// Reader goroutine drains control frames (pings/pongs) and closes done
+	// when the client disconnects or the read deadline fires.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+	pingTicker := time.NewTicker(wsPingInterval)
+	defer pingTicker.Stop()
 
 	for {
-		if err := conn.WriteJSON(s.snapshot()); err != nil {
-			return
-		}
 		select {
-		case <-ticker.C:
+		case <-done:
+			return
 		case <-r.Context().Done():
 			return
+		case <-ticker.C:
+			conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+			if err := conn.WriteJSON(s.snapshot()); err != nil {
+				return
+			}
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }

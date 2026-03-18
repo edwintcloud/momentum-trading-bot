@@ -86,6 +86,31 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let socket;
+    let reconnectTimer;
+
+    function connect() {
+      if (cancelled) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      socketRef.current = socket;
+
+      socket.onmessage = (event) => {
+        const next = JSON.parse(event.data);
+        setSnapshot(next);
+        setError('');
+      };
+
+      socket.onerror = () => {
+        setError('Live dashboard stream disconnected. Reconnecting…');
+      };
+
+      socket.onclose = () => {
+        if (!cancelled) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+    }
 
     fetch('/api/dashboard')
       .then((response) => response.json())
@@ -100,23 +125,12 @@ export function App() {
         }
       });
 
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
-    socketRef.current = socket;
-
-    socket.onmessage = (event) => {
-      const next = JSON.parse(event.data);
-      setSnapshot(next);
-      setError('');
-    };
-
-    socket.onerror = () => {
-      setError('Live dashboard stream disconnected.');
-    };
+    connect();
 
     return () => {
       cancelled = true;
-      socket.close();
+      clearTimeout(reconnectTimer);
+      if (socket) socket.close();
     };
   }, []);
 
