@@ -45,12 +45,12 @@ func runOptimize(args []string) error {
 	end := weeks[len(weeks)-1].End
 
 	cfg := config.NormalizeStrategyProfile(config.DefaultTradingConfig())
-	var bars []backtest.InputBar
+	var loadWeek func(context.Context, optimizer.WeeklyWindow) ([]backtest.InputBar, error)
 	if *dataPath != "" {
-		bars, err = backtest.LoadInputBars(*dataPath, start, end)
-		if err != nil {
-			return err
+		loadWeek = func(_ context.Context, window optimizer.WeeklyWindow) ([]backtest.InputBar, error) {
+			return backtest.LoadInputBars(*dataPath, window.Start, window.End)
 		}
+		log.Printf("Optimizer using incremental CSV week loader data=%s", *dataPath)
 	} else {
 		setupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -87,16 +87,20 @@ func runOptimize(args []string) error {
 		log.Printf("Optimizer historical fetch timeout set to %s", fetchTimeout)
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		bars, err = fetchBarsFromAlpaca(fetchCtx, client, symbols, start, end, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, start, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
+		log.Printf("Optimizer historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
+		loadWeek = func(_ context.Context, window optimizer.WeeklyWindow) ([]backtest.InputBar, error) {
+			return loadHistoricalBarsForOptimizerWeek(dataset, window)
+		}
 	}
 
-	log.Printf("Optimizer window start=%s end=%s completed_week_end=%s bars=%d", formatLogTime(start), formatLogTime(end), formatLogTime(completedWeekEnd), len(bars))
+	log.Printf("Optimizer window start=%s end=%s completed_week_end=%s", formatLogTime(start), formatLogTime(end), formatLogTime(completedWeekEnd))
 	report, profile, err := optimizer.Run(context.Background(), optimizer.Params{
 		BaseConfig:  cfg,
-		Bars:        bars,
+		LoadWeek:    loadWeek,
 		AsOf:        asOf,
 		ArtifactDir: *artifactDir,
 	})
@@ -123,4 +127,43 @@ func runOptimize(args []string) error {
 		report.ProfilePath,
 	)
 	return nil
+}
+
+func loadHistoricalBarsForOptimizerWeek(dataset historicalDataset, window optimizer.WeeklyWindow) ([]backtest.InputBar, error) {
+	jobs := historicalJobsForWindow(dataset.jobs, window.Start, window.End)
+	if len(jobs) == 0 {
+		return nil, nil
+	}
+	iterator := newHistoricalDatasetIterator(historicalDataset{
+		feed: dataset.feed,
+		jobs: jobs,
+	})
+	defer iterator.Close()
+
+	bars := make([]backtest.InputBar, 0, 1024)
+	for {
+		bar, ok, err := iterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		bars = append(bars, bar)
+	}
+	return bars, nil
+}
+
+func historicalJobsForWindow(jobs []historicalFetchJob, start, end time.Time) []historicalFetchJob {
+	if len(jobs) == 0 {
+		return nil
+	}
+	out := make([]historicalFetchJob, 0, len(jobs))
+	for _, job := range jobs {
+		if job.end.Before(start) || job.start.After(end) {
+			continue
+		}
+		out = append(out, job)
+	}
+	return out
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -70,18 +71,18 @@ type PeriodSummary struct {
 
 // OptimizerCandidate is a single evaluated profile/config combination.
 type OptimizerCandidate struct {
-	Rank              int                   `json:"rank"`
-	CandidateID       string                `json:"candidateId"`
+	Rank              int                    `json:"rank"`
+	CandidateID       string                 `json:"candidateId"`
 	Profile           config.StrategyProfile `json:"profile"`
-	Config            config.TradingConfig  `json:"config"`
-	SearchSummary     PeriodSummary         `json:"searchSummary"`
-	ValidationSummary PeriodSummary         `json:"validationSummary"`
-	HoldoutSummary    PeriodSummary         `json:"holdoutSummary"`
-	ValidationWeeks   []WeeklyPerformance   `json:"validationWeeks"`
-	HoldoutWeeks      []WeeklyPerformance   `json:"holdoutWeeks"`
-	Score             CandidateScore        `json:"score"`
-	RejectReasons     []string              `json:"rejectReasons,omitempty"`
-	Promotable        bool                  `json:"promotable"`
+	Config            config.TradingConfig   `json:"config"`
+	SearchSummary     PeriodSummary          `json:"searchSummary"`
+	ValidationSummary PeriodSummary          `json:"validationSummary"`
+	HoldoutSummary    PeriodSummary          `json:"holdoutSummary"`
+	ValidationWeeks   []WeeklyPerformance    `json:"validationWeeks"`
+	HoldoutWeeks      []WeeklyPerformance    `json:"holdoutWeeks"`
+	Score             CandidateScore         `json:"score"`
+	RejectReasons     []string               `json:"rejectReasons,omitempty"`
+	Promotable        bool                   `json:"promotable"`
 }
 
 // OptimizationRun documents the deterministic walk-forward layout.
@@ -100,12 +101,31 @@ type OptimizationRun struct {
 
 // OptimizationReport is the versioned JSON artifact emitted by the optimizer.
 type OptimizationReport struct {
-	Run            OptimizationRun    `json:"run"`
-	Candidates     []OptimizerCandidate `json:"candidates"`
-	Winner         *OptimizerCandidate `json:"winner,omitempty"`
-	ProfilePath    string             `json:"profilePath,omitempty"`
-	GeneratedAt    time.Time          `json:"generatedAt"`
-	ArtifactPath   string             `json:"artifactPath,omitempty"`
+	Run          OptimizationRun      `json:"run"`
+	Progress     OptimizationProgress `json:"progress"`
+	Candidates   []OptimizerCandidate `json:"candidates"`
+	Winner       *OptimizerCandidate  `json:"winner,omitempty"`
+	ProfilePath  string               `json:"profilePath,omitempty"`
+	GeneratedAt  time.Time            `json:"generatedAt"`
+	ArtifactPath string               `json:"artifactPath,omitempty"`
+}
+
+// OptimizationProgress captures in-flight optimizer state so the latest report
+// file is useful before the run completes.
+type OptimizationProgress struct {
+	Stage                   string    `json:"stage"`
+	Completed               int       `json:"completed"`
+	Total                   int       `json:"total"`
+	Message                 string    `json:"message,omitempty"`
+	UpdatedAt               time.Time `json:"updatedAt"`
+	RunStartedAt            time.Time `json:"runStartedAt,omitempty"`
+	StageStartedAt          time.Time `json:"stageStartedAt,omitempty"`
+	StageElapsedSeconds     int64     `json:"stageElapsedSeconds,omitempty"`
+	StageRemainingSeconds   int64     `json:"stageRemainingSeconds,omitempty"`
+	StageETA                time.Time `json:"stageEta,omitempty"`
+	OverallElapsedSeconds   int64     `json:"overallElapsedSeconds,omitempty"`
+	OverallRemainingSeconds int64     `json:"overallRemainingSeconds,omitempty"`
+	OverallETA              time.Time `json:"overallEta,omitempty"`
 }
 
 // ArtifactStatus powers the operator-visible pending optimizer state.
@@ -120,14 +140,38 @@ type ArtifactStatus struct {
 type Params struct {
 	BaseConfig  config.TradingConfig
 	Bars        []backtest.InputBar
+	LoadWeek    func(context.Context, WeeklyWindow) ([]backtest.InputBar, error)
 	AsOf        time.Time
 	ArtifactDir string
+}
+
+type weeklyBarSlice struct {
+	Window WeeklyWindow
+	Bars   []backtest.InputBar
+}
+
+type staticInputBarIterator struct {
+	bars []backtest.InputBar
+	next int
 }
 
 type candidateSeed struct {
 	id      string
 	profile config.StrategyProfile
 	config  config.TradingConfig
+}
+
+type progressTracker struct {
+	runStartedAt time.Time
+	stageOrder   []string
+	stages       map[string]*trackedStage
+}
+
+type trackedStage struct {
+	total      int
+	completed  int
+	startedAt  time.Time
+	finishedAt time.Time
 }
 
 type floatKnobSpec struct {
@@ -147,99 +191,131 @@ type intKnobSpec struct {
 var floatKnobs = []floatKnobSpec{
 	{
 		name: "MinEntryScore",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.MinEntryScore, 10.0, 20.0, 1.50, 3.00) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.MinEntryScore },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.MinEntryScore = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.MinEntryScore, 10.0, 20.0, 1.50, 3.00)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.MinEntryScore },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.MinEntryScore = round2(v) },
 	},
 	{
 		name: "MinOneMinuteReturnPct",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.MinOneMinuteReturnPct, 0.05, 1.20, 0.15, 0.30) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.MinOneMinuteReturnPct },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.MinOneMinuteReturnPct = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.MinOneMinuteReturnPct, 0.05, 1.20, 0.15, 0.30)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.MinOneMinuteReturnPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.MinOneMinuteReturnPct = round2(v) },
 	},
 	{
 		name: "MinThreeMinuteReturnPct",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.MinThreeMinuteReturnPct, 0.20, 2.25, 0.20, 0.40) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.MinThreeMinuteReturnPct },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.MinThreeMinuteReturnPct = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.MinThreeMinuteReturnPct, 0.20, 2.25, 0.20, 0.40)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.MinThreeMinuteReturnPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.MinThreeMinuteReturnPct = round2(v) },
 	},
 	{
 		name: "MinVolumeRate",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.MinVolumeRate, 0.80, 2.40, 0.15, 0.30) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.MinVolumeRate },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.MinVolumeRate = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.MinVolumeRate, 0.80, 2.40, 0.15, 0.30)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.MinVolumeRate },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.MinVolumeRate = round2(v) },
 	},
 	{
 		name: "MaxPriceVsOpenPct",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.MaxPriceVsOpenPct, 15.0, 40.0, 2.0, 4.0) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.MaxPriceVsOpenPct },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.MaxPriceVsOpenPct = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.MaxPriceVsOpenPct, 15.0, 40.0, 2.0, 4.0)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.MaxPriceVsOpenPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.MaxPriceVsOpenPct = round2(v) },
 	},
 	{
 		name: "RiskPerTradePct",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(clampFloat(base.RiskPerTradePct, 0.0025, 0.0200), 0.0025, 0.0200, 0.0015, 0.0030) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.RiskPerTradePct },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.RiskPerTradePct = round4(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(clampFloat(base.RiskPerTradePct, 0.0025, 0.0200), 0.0025, 0.0200, 0.0015, 0.0030)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.RiskPerTradePct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.RiskPerTradePct = round4(v) },
 	},
 	{
 		name: "BreakEvenMinR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.BreakEvenMinR, 0.25, 0.85, 0.05, 0.10) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.BreakEvenMinR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.BreakEvenMinR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.BreakEvenMinR, 0.25, 0.85, 0.05, 0.10)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.BreakEvenMinR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.BreakEvenMinR = round2(v) },
 	},
 	{
 		name: "TrailActivationR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.TrailActivationR, 0.45, 1.10, 0.05, 0.10) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.TrailActivationR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.TrailActivationR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.TrailActivationR, 0.45, 1.10, 0.05, 0.10)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.TrailActivationR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.TrailActivationR = round2(v) },
 	},
 	{
 		name: "TrailATRMultiplier",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.TrailATRMultiplier, 0.90, 2.10, 0.10, 0.20) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.TrailATRMultiplier },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.TrailATRMultiplier = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.TrailATRMultiplier, 0.90, 2.10, 0.10, 0.20)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.TrailATRMultiplier },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.TrailATRMultiplier = round2(v) },
 	},
 	{
 		name: "TightTrailTriggerR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.TightTrailTriggerR, 0.85, 1.60, 0.10, 0.20) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.TightTrailTriggerR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.TightTrailTriggerR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.TightTrailTriggerR, 0.85, 1.60, 0.10, 0.20)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.TightTrailTriggerR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.TightTrailTriggerR = round2(v) },
 	},
 	{
 		name: "TightTrailATRMultiplier",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.TightTrailATRMultiplier, 0.40, 1.00, 0.05, 0.10) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.TightTrailATRMultiplier },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.TightTrailATRMultiplier = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.TightTrailATRMultiplier, 0.40, 1.00, 0.05, 0.10)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.TightTrailATRMultiplier },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.TightTrailATRMultiplier = round2(v) },
 	},
 	{
 		name: "ProfitTargetR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.ProfitTargetR, 0.90, 1.60, 0.10, 0.20) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.ProfitTargetR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.ProfitTargetR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ProfitTargetR, 0.90, 1.60, 0.10, 0.20)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ProfitTargetR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ProfitTargetR = round2(v) },
 	},
 	{
 		name: "ProfitTrailActivationR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.ProfitTrailActivationR, 1.10, 2.25, 0.10, 0.20) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.ProfitTrailActivationR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.ProfitTrailActivationR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ProfitTrailActivationR, 1.10, 2.25, 0.10, 0.20)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ProfitTrailActivationR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ProfitTrailActivationR = round2(v) },
 	},
 	{
 		name: "ProfitTrailPct",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.ProfitTrailPct, 0.015, 0.050, 0.005, 0.010) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.ProfitTrailPct },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.ProfitTrailPct = round4(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ProfitTrailPct, 0.015, 0.050, 0.005, 0.010)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ProfitTrailPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ProfitTrailPct = round4(v) },
 	},
 	{
 		name: "FailedBreakoutCutR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.FailedBreakoutCutR, 0.03, 0.10, 0.01, 0.02) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.FailedBreakoutCutR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.FailedBreakoutCutR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.FailedBreakoutCutR, 0.03, 0.10, 0.01, 0.02)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.FailedBreakoutCutR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.FailedBreakoutCutR = round2(v) },
 	},
 	{
 		name: "StructureConfirmR",
-		grid: func(base config.TradingConfig) []float64 { return uniqueFloatGrid(base.StructureConfirmR, 0.00, 0.30, 0.025, 0.05) },
-		get:  func(cfg config.TradingConfig) float64 { return cfg.StructureConfirmR },
-		set:  func(cfg *config.TradingConfig, v float64) { cfg.StructureConfirmR = round2(v) },
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.StructureConfirmR, 0.00, 0.30, 0.025, 0.05)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.StructureConfirmR },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.StructureConfirmR = round2(v) },
 	},
 }
 
@@ -272,9 +348,10 @@ var intKnobs = []intKnobSpec{
 
 // Run executes the weekly walk-forward optimizer and writes JSON artifacts.
 func Run(ctx context.Context, params Params) (OptimizationReport, *config.TradingProfile, error) {
-	if len(params.Bars) == 0 {
+	if len(params.Bars) == 0 && params.LoadWeek == nil {
 		return OptimizationReport{}, nil, fmt.Errorf("optimizer requires historical bars")
 	}
+	runStartedAt := time.Now().UTC()
 	base := config.NormalizeStrategyProfile(params.BaseConfig)
 	completedWeekEnd := PriorCompletedWeekEnd(params.AsOf)
 	allWeeks := BuildWeeklyWindows(completedWeekEnd, 20)
@@ -289,39 +366,138 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	report := OptimizationReport{
 		Run: OptimizationRun{
 			SchemaVersion:    reportSchemaV1,
-			GeneratedAt:      time.Now().UTC(),
+			GeneratedAt:      runStartedAt,
 			AsOf:             params.AsOf.UTC(),
 			CompletedWeekEnd: completedWeekEnd,
 			SearchWeeks:      searchWeeks,
 			ValidationWeeks:  validationWeeks,
 			HoldoutWeeks:     holdoutWeeks,
 		},
-		GeneratedAt: time.Now().UTC(),
+		GeneratedAt: runStartedAt,
+	}
+	tracker := newProgressTracker(runStartedAt)
+	tracker.RegisterStage("prepare", 1)
+	lastReportWriteAt := time.Time{}
+	lastReportWriteStage := ""
+	updateProgress := func(stage string, completed, total int, message string) error {
+		now := time.Now().UTC()
+		report.Progress = tracker.Snapshot(stage, completed, total, message, now)
+		log.Printf(
+			"Optimizer progress stage=%s completed=%d total=%d stage_elapsed=%s stage_eta=%s overall_elapsed=%s overall_eta=%s %s",
+			stage,
+			completed,
+			total,
+			formatDurationCompact(time.Duration(report.Progress.StageElapsedSeconds)*time.Second),
+			formatETA(report.Progress.StageETA, report.Progress.StageRemainingSeconds),
+			formatDurationCompact(time.Duration(report.Progress.OverallElapsedSeconds)*time.Second),
+			formatETA(report.Progress.OverallETA, report.Progress.OverallRemainingSeconds),
+			strings.TrimSpace(message),
+		)
+		shouldWrite := stage != lastReportWriteStage ||
+			completed == 0 ||
+			completed == total ||
+			lastReportWriteAt.IsZero() ||
+			now.Sub(lastReportWriteAt) >= time.Second
+		if !shouldWrite {
+			return nil
+		}
+		if err := writeReportArtifact(params.ArtifactDir, &report); err != nil {
+			return err
+		}
+		lastReportWriteAt = now
+		lastReportWriteStage = stage
+		return nil
+	}
+
+	loadWeek := params.LoadWeek
+	if loadWeek == nil {
+		if err := updateProgress("prepare", 0, 1, "partitioning in-memory bars by completed trading week"); err != nil {
+			return OptimizationReport{}, nil, err
+		}
+		allWeekSlices := sliceBarsByWeek(params.Bars, allWeeks)
+		searchSlices := allWeekSlices[:12]
+		validationSlices := allWeekSlices[12:16]
+		holdoutSlices := allWeekSlices[16:]
+		log.Printf(
+			"Optimizer dataset weekly_partitions=%d search_bars=%d validation_bars=%d holdout_bars=%d total_bars=%d",
+			len(allWeekSlices),
+			totalBarsInSlices(searchSlices),
+			totalBarsInSlices(validationSlices),
+			totalBarsInSlices(holdoutSlices),
+			totalBarsInSlices(allWeekSlices),
+		)
+		loadWeek = func(_ context.Context, window WeeklyWindow) ([]backtest.InputBar, error) {
+			for _, week := range allWeekSlices {
+				if week.Window.Label == window.Label {
+					return week.Bars, nil
+				}
+			}
+			return nil, fmt.Errorf("no in-memory bars for week %s", window.Label)
+		}
+		if err := updateProgress("prepare", 1, 1, "weekly bar partitions ready"); err != nil {
+			return OptimizationReport{}, nil, err
+		}
+	} else {
+		if err := updateProgress("prepare", 1, 1, "using incremental week loader"); err != nil {
+			return OptimizationReport{}, nil, err
+		}
 	}
 
 	coarseSeeds := buildCoarseSeeds(base)
 	report.Run.CoarseCandidates = len(coarseSeeds)
-	searchShortlist, err := evaluateShortlist(ctx, coarseSeeds, params.Bars, searchWeeks, 25, func(candidate *OptimizerCandidate, summary PeriodSummary) {
+	tracker.RegisterStage("coarse-search", len(coarseSeeds)*len(searchWeeks))
+	if err := updateProgress("coarse-search", 0, len(coarseSeeds)*len(searchWeeks), "evaluating coarse strategy candidates"); err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	searchShortlist, searchCandidates, err := evaluateShortlist(ctx, coarseSeeds, searchWeeks, loadWeek, 25, func(candidate *OptimizerCandidate, summary PeriodSummary) {
 		candidate.SearchSummary = summary
+	}, func(completed, total int, message string) error {
+		return updateProgress("coarse-search", completed, total, message)
 	})
 	if err != nil {
 		return OptimizationReport{}, nil, err
 	}
+	report.Candidates = searchCandidates
+	if err := writeReportArtifact(params.ArtifactDir, &report); err != nil {
+		return OptimizationReport{}, nil, err
+	}
 
-	validationAnchors, err := evaluateShortlist(ctx, searchShortlist, params.Bars, validationWeeks, 10, func(candidate *OptimizerCandidate, summary PeriodSummary) {
+	tracker.RegisterStage("validation-shortlist", len(searchShortlist)*len(validationWeeks))
+	if err := updateProgress("validation-shortlist", 0, len(searchShortlist)*len(validationWeeks), "ranking coarse shortlist on validation weeks"); err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	validationAnchors, validationCandidates, err := evaluateShortlist(ctx, searchShortlist, validationWeeks, loadWeek, 10, func(candidate *OptimizerCandidate, summary PeriodSummary) {
 		candidate.ValidationSummary = summary
+	}, func(completed, total int, message string) error {
+		return updateProgress("validation-shortlist", completed, total, message)
 	})
 	if err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	report.Candidates = validationCandidates
+	if err := writeReportArtifact(params.ArtifactDir, &report); err != nil {
 		return OptimizationReport{}, nil, err
 	}
 
 	refinedSeeds := buildRefinedSeeds(base, validationAnchors)
 	report.Run.RefinedCandidates = len(refinedSeeds)
-	refinedCandidates, err := evaluateAll(ctx, refinedSeeds, params.Bars, validationWeeks, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
+	tracker.RegisterStage("refinement", len(refinedSeeds)*len(validationWeeks))
+	if err := updateProgress("refinement", 0, len(refinedSeeds)*len(validationWeeks), "evaluating refined candidates on validation weeks"); err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	refinedCandidates, err := evaluateAll(ctx, refinedSeeds, validationWeeks, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
 		candidate.ValidationSummary = summary
 		candidate.ValidationWeeks = weeks
+	}, func(completed, total int, message string) error {
+		return updateProgress("refinement", completed, total, message)
 	})
 	if err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	report.Candidates = topCandidates(refinedCandidates, 10, func(candidate OptimizerCandidate) PeriodSummary {
+		return candidate.ValidationSummary
+	})
+	if err := writeReportArtifact(params.ArtifactDir, &report); err != nil {
 		return OptimizationReport{}, nil, err
 	}
 
@@ -330,25 +506,46 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	})
 	report.Run.Finalists = len(finalists)
 	if len(finalists) == 0 {
+		tracker.RegisterStage("finalize", 1)
+		if err := updateProgress("finalize", 1, 1, "writing final optimizer artifacts"); err != nil {
+			return OptimizationReport{}, nil, err
+		}
 		if err := writeArtifacts(params.ArtifactDir, &report, nil); err != nil {
 			return OptimizationReport{}, nil, err
 		}
 		return report, nil, nil
 	}
 
-	finalized := make([]OptimizerCandidate, 0, len(finalists))
+	tracker.RegisterStage("holdout", len(finalists)*len(holdoutWeeks))
+	if err := updateProgress("holdout", 0, len(finalists)*len(holdoutWeeks), "running untouched holdout weeks on finalists"); err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	finalistSeeds := make([]candidateSeed, 0, len(finalists))
+	finalistsByID := make(map[string]OptimizerCandidate, len(finalists))
 	for _, finalist := range finalists {
-		select {
-		case <-ctx.Done():
-			return OptimizationReport{}, nil, ctx.Err()
-		default:
-		}
-		holdoutSummary, holdoutPerf, err := evaluateWeeks(ctx, finalist.Config, params.Bars, holdoutWeeks)
-		if err != nil {
-			return OptimizationReport{}, nil, err
-		}
-		finalist.HoldoutSummary = holdoutSummary
-		finalist.HoldoutWeeks = holdoutPerf
+		finalistSeeds = append(finalistSeeds, candidateSeed{
+			id:      finalist.CandidateID,
+			profile: finalist.Profile,
+			config:  finalist.Config,
+		})
+		finalistsByID[finalist.CandidateID] = finalist
+	}
+	holdoutCandidates, err := evaluateAll(ctx, finalistSeeds, holdoutWeeks, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
+		candidate.HoldoutSummary = summary
+		candidate.HoldoutWeeks = weeks
+	}, func(completed, total int, message string) error {
+		return updateProgress("holdout", completed, total, message)
+	})
+	if err != nil {
+		return OptimizationReport{}, nil, err
+	}
+	finalized := make([]OptimizerCandidate, 0, len(holdoutCandidates))
+	for _, holdoutCandidate := range holdoutCandidates {
+		finalist := finalistsByID[holdoutCandidate.CandidateID]
+		finalist.HoldoutSummary = holdoutCandidate.HoldoutSummary
+		finalist.HoldoutWeeks = holdoutCandidate.HoldoutWeeks
+		holdoutSummary := holdoutCandidate.HoldoutSummary
+		holdoutPerf := holdoutCandidate.HoldoutWeeks
 		combinedValidationHoldout := append(append([]WeeklyPerformance(nil), finalist.ValidationWeeks...), holdoutPerf...)
 		combinedSummary := summarizeWeeks(combinedValidationHoldout)
 		finalist.Score = CandidateScore{
@@ -379,6 +576,10 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		winnerProfile = &profile
 	}
 
+	tracker.RegisterStage("finalize", 1)
+	if err := updateProgress("finalize", 1, 1, "writing final optimizer artifacts"); err != nil {
+		return OptimizationReport{}, nil, err
+	}
 	if err := writeArtifacts(params.ArtifactDir, &report, winnerProfile); err != nil {
 		return OptimizationReport{}, nil, err
 	}
@@ -619,12 +820,20 @@ func buildRefinedSeeds(base config.TradingConfig, anchors []candidateSeed) []can
 	return out
 }
 
-func evaluateShortlist(ctx context.Context, seeds []candidateSeed, bars []backtest.InputBar, windows []WeeklyWindow, limit int, assign func(*OptimizerCandidate, PeriodSummary)) ([]candidateSeed, error) {
-	candidates, err := evaluateAll(ctx, seeds, bars, windows, func(candidate *OptimizerCandidate, summary PeriodSummary, _ []WeeklyPerformance) {
+func evaluateShortlist(
+	ctx context.Context,
+	seeds []candidateSeed,
+	windows []WeeklyWindow,
+	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
+	limit int,
+	assign func(*OptimizerCandidate, PeriodSummary),
+	onProgress func(completed, total int, message string) error,
+) ([]candidateSeed, []OptimizerCandidate, error) {
+	candidates, err := evaluateAll(ctx, seeds, windows, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, _ []WeeklyPerformance) {
 		assign(candidate, summary)
-	})
+	}, onProgress)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	top := topCandidates(candidates, limit, func(candidate OptimizerCandidate) PeriodSummary {
 		if len(candidate.ValidationWeeks) > 0 {
@@ -640,67 +849,132 @@ func evaluateShortlist(ctx context.Context, seeds []candidateSeed, bars []backte
 			config:  candidate.Config,
 		})
 	}
-	return out, nil
+	return out, candidates, nil
 }
 
-func evaluateAll(ctx context.Context, seeds []candidateSeed, bars []backtest.InputBar, windows []WeeklyWindow, assign func(*OptimizerCandidate, PeriodSummary, []WeeklyPerformance)) ([]OptimizerCandidate, error) {
-	results := make([]OptimizerCandidate, 0, len(seeds))
-	for _, seed := range seeds {
+func evaluateAll(
+	ctx context.Context,
+	seeds []candidateSeed,
+	windows []WeeklyWindow,
+	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
+	assign func(*OptimizerCandidate, PeriodSummary, []WeeklyPerformance),
+	onProgress func(completed, total int, message string) error,
+) ([]OptimizerCandidate, error) {
+	performanceByCandidate := make([][]WeeklyPerformance, len(seeds))
+	total := len(seeds) * len(windows)
+	completed := 0
+
+	for weekIndex, window := range windows {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		summary, perf, err := evaluateWeeks(ctx, seed.config, bars, windows)
+		bars, err := loadWeek(ctx, window)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load week %s: %w", window.Label, err)
 		}
+		if onProgress != nil {
+			if err := onProgress(completed, total, fmt.Sprintf("loaded week=%s bars=%d week_index=%d/%d", window.Label, len(bars), weekIndex+1, len(windows))); err != nil {
+				return nil, err
+			}
+		}
+		for candidateIndex, seed := range seeds {
+			performance, err := evaluateSingleWeek(ctx, seed.config, window, bars)
+			if err != nil {
+				return nil, err
+			}
+			performanceByCandidate[candidateIndex] = append(performanceByCandidate[candidateIndex], performance)
+			completed++
+			if onProgress != nil {
+				message := fmt.Sprintf(
+					"week=%s candidate=%s candidate_index=%d/%d week_index=%d/%d",
+					window.Label,
+					seed.id,
+					candidateIndex+1,
+					len(seeds),
+					weekIndex+1,
+					len(windows),
+				)
+				if err := onProgress(completed, total, message); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	results := make([]OptimizerCandidate, 0, len(seeds))
+	for index, seed := range seeds {
+		summary := summarizeWeeks(performanceByCandidate[index])
 		candidate := OptimizerCandidate{
 			CandidateID: seed.id,
 			Profile:     seed.profile,
 			Config:      seed.config,
 		}
-		assign(&candidate, summary, perf)
+		assign(&candidate, summary, performanceByCandidate[index])
 		results = append(results, candidate)
 	}
 	return results, nil
 }
 
-func evaluateWeeks(ctx context.Context, cfg config.TradingConfig, bars []backtest.InputBar, windows []WeeklyWindow) (PeriodSummary, []WeeklyPerformance, error) {
-	weeks := make([]WeeklyPerformance, 0, len(windows))
+func evaluateWeeks(
+	ctx context.Context,
+	cfg config.TradingConfig,
+	windows []WeeklyWindow,
+	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
+) (PeriodSummary, []WeeklyPerformance, error) {
+	out := make([]WeeklyPerformance, 0, len(windows))
 	for _, window := range windows {
 		select {
 		case <-ctx.Done():
 			return PeriodSummary{}, nil, ctx.Err()
 		default:
 		}
-		result, err := backtest.Run(ctx, cfg, backtest.RunConfig{
-			Bars:  bars,
-			Start: window.Start,
-			End:   window.End,
-		})
+		bars, err := loadWeek(ctx, window)
 		if err != nil {
-			return PeriodSummary{}, nil, fmt.Errorf("evaluate week %s: %w", window.Label, err)
+			return PeriodSummary{}, nil, fmt.Errorf("load week %s: %w", window.Label, err)
 		}
-		week := WeeklyPerformance{
-			Label:          window.Label,
-			Start:          window.Start,
-			End:            window.End,
-			NetPnL:         round2(result.NetPnL),
-			ReturnPct:      round2(percentReturn(result.NetPnL, result.StartingCapital)),
-			ProfitFactor:   round2(result.ProfitFactor),
-			MaxDrawdownPct: round2(result.MaxDrawdownPct),
-			Trades:         result.Trades,
-			WinningTrades:  result.Wins,
-			LosingTrades:   result.Losses,
-			EndingEquity:   round2(result.EndingEquity),
+		performance, err := evaluateSingleWeek(ctx, cfg, window, bars)
+		if err != nil {
+			return PeriodSummary{}, nil, err
 		}
-		for _, trade := range result.ClosedTrades {
-			week.ClosedTradePnLs = append(week.ClosedTradePnLs, trade.PnL)
-		}
-		weeks = append(weeks, week)
+		out = append(out, performance)
 	}
-	return summarizeWeeks(weeks), weeks, nil
+	return summarizeWeeks(out), out, nil
+}
+
+func evaluateSingleWeek(ctx context.Context, cfg config.TradingConfig, window WeeklyWindow, bars []backtest.InputBar) (WeeklyPerformance, error) {
+	if len(bars) == 0 {
+		return WeeklyPerformance{
+			Label:        window.Label,
+			Start:        window.Start,
+			End:          window.End,
+			EndingEquity: round2(cfg.StartingCapital),
+		}, nil
+	}
+	result, err := backtest.Run(ctx, cfg, backtest.RunConfig{
+		Iterator: &staticInputBarIterator{bars: bars},
+	})
+	if err != nil {
+		return WeeklyPerformance{}, fmt.Errorf("evaluate week %s: %w", window.Label, err)
+	}
+	performance := WeeklyPerformance{
+		Label:          window.Label,
+		Start:          window.Start,
+		End:            window.End,
+		NetPnL:         round2(result.NetPnL),
+		ReturnPct:      round2(percentReturn(result.NetPnL, result.StartingCapital)),
+		ProfitFactor:   round2(result.ProfitFactor),
+		MaxDrawdownPct: round2(result.MaxDrawdownPct),
+		Trades:         result.Trades,
+		WinningTrades:  result.Wins,
+		LosingTrades:   result.Losses,
+		EndingEquity:   round2(result.EndingEquity),
+	}
+	for _, trade := range result.ClosedTrades {
+		performance.ClosedTradePnLs = append(performance.ClosedTradePnLs, trade.PnL)
+	}
+	return performance, nil
 }
 
 func summarizeWeeks(weeks []WeeklyPerformance) PeriodSummary {
@@ -825,6 +1099,216 @@ func compareFinalCandidates(a, b OptimizerCandidate) int {
 	}
 }
 
+func newProgressTracker(runStartedAt time.Time) *progressTracker {
+	return &progressTracker{
+		runStartedAt: runStartedAt,
+		stageOrder:   make([]string, 0, 6),
+		stages:       make(map[string]*trackedStage, 6),
+	}
+}
+
+func (t *progressTracker) RegisterStage(stage string, total int) {
+	if strings.TrimSpace(stage) == "" {
+		return
+	}
+	tracked, ok := t.stages[stage]
+	if !ok {
+		tracked = &trackedStage{}
+		t.stages[stage] = tracked
+		t.stageOrder = append(t.stageOrder, stage)
+	}
+	if total > 0 {
+		tracked.total = total
+	}
+}
+
+func (t *progressTracker) Snapshot(stage string, completed, total int, message string, now time.Time) OptimizationProgress {
+	t.RegisterStage(stage, total)
+	tracked := t.stages[stage]
+	if tracked.startedAt.IsZero() {
+		tracked.startedAt = now
+	}
+	if total > 0 {
+		tracked.total = total
+	}
+	if completed < 0 {
+		completed = 0
+	}
+	if tracked.total > 0 && completed > tracked.total {
+		completed = tracked.total
+	}
+	tracked.completed = completed
+	if tracked.total > 0 && completed >= tracked.total {
+		tracked.finishedAt = now
+	}
+
+	stageElapsed := now.Sub(tracked.startedAt)
+	stageRemaining := t.estimateStageRemaining(stage, now)
+	overallElapsed := now.Sub(t.runStartedAt)
+	overallRemaining := t.estimateOverallRemaining(stage, now)
+
+	progress := OptimizationProgress{
+		Stage:                 stage,
+		Completed:             completed,
+		Total:                 tracked.total,
+		Message:               message,
+		UpdatedAt:             now,
+		RunStartedAt:          t.runStartedAt,
+		StageStartedAt:        tracked.startedAt,
+		StageElapsedSeconds:   int64(stageElapsed.Round(time.Second) / time.Second),
+		OverallElapsedSeconds: int64(overallElapsed.Round(time.Second) / time.Second),
+	}
+	if stageRemaining > 0 {
+		progress.StageRemainingSeconds = int64(stageRemaining.Round(time.Second) / time.Second)
+		progress.StageETA = now.Add(stageRemaining)
+	}
+	if overallRemaining > 0 {
+		progress.OverallRemainingSeconds = int64(overallRemaining.Round(time.Second) / time.Second)
+		progress.OverallETA = now.Add(overallRemaining)
+	}
+	return progress
+}
+
+func (t *progressTracker) estimateStageRemaining(stage string, now time.Time) time.Duration {
+	tracked, ok := t.stages[stage]
+	if !ok || tracked.total <= 0 || tracked.completed <= 0 || tracked.completed >= tracked.total || tracked.startedAt.IsZero() {
+		return 0
+	}
+	elapsed := now.Sub(tracked.startedAt)
+	if elapsed <= 0 {
+		return 0
+	}
+	avgPerUnit := elapsed / time.Duration(tracked.completed)
+	return avgPerUnit * time.Duration(tracked.total-tracked.completed)
+}
+
+func (t *progressTracker) estimateOverallRemaining(currentStage string, now time.Time) time.Duration {
+	aggregateAvg := t.aggregateAveragePerUnit(now)
+	if aggregateAvg <= 0 {
+		return 0
+	}
+	var remaining time.Duration
+	for _, stage := range t.stageOrder {
+		tracked := t.stages[stage]
+		if tracked == nil || tracked.total <= 0 || tracked.completed >= tracked.total {
+			continue
+		}
+		unitsRemaining := tracked.total - tracked.completed
+		if unitsRemaining <= 0 {
+			continue
+		}
+		if stage == currentStage {
+			if stageRemaining := t.estimateStageRemaining(stage, now); stageRemaining > 0 {
+				remaining += stageRemaining
+				continue
+			}
+		}
+		remaining += aggregateAvg * time.Duration(unitsRemaining)
+	}
+	return remaining
+}
+
+func (t *progressTracker) aggregateAveragePerUnit(now time.Time) time.Duration {
+	var totalDuration time.Duration
+	totalUnits := 0
+	for _, stage := range t.stageOrder {
+		tracked := t.stages[stage]
+		if tracked == nil || tracked.total <= 1 || tracked.completed <= 0 || tracked.startedAt.IsZero() {
+			continue
+		}
+		elapsedEnd := now
+		if !tracked.finishedAt.IsZero() && tracked.completed >= tracked.total {
+			elapsedEnd = tracked.finishedAt
+		}
+		elapsed := elapsedEnd.Sub(tracked.startedAt)
+		if elapsed <= 0 {
+			continue
+		}
+		totalDuration += elapsed
+		totalUnits += tracked.completed
+	}
+	if totalUnits == 0 {
+		return 0
+	}
+	return totalDuration / time.Duration(totalUnits)
+}
+
+func formatETA(eta time.Time, remainingSeconds int64) string {
+	if eta.IsZero() || remainingSeconds <= 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s (%s)", eta.In(marketLocation).Format(time.RFC3339), formatDurationCompact(time.Duration(remainingSeconds)*time.Second))
+}
+
+func formatDurationCompact(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	d = d.Round(time.Second)
+	hours := d / time.Hour
+	d -= hours * time.Hour
+	minutes := d / time.Minute
+	d -= minutes * time.Minute
+	seconds := d / time.Second
+	switch {
+	case hours > 0:
+		return fmt.Sprintf("%dh%02dm%02ds", hours, minutes, seconds)
+	case minutes > 0:
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	default:
+		return fmt.Sprintf("%ds", seconds)
+	}
+}
+
+func (it *staticInputBarIterator) Next() (backtest.InputBar, bool, error) {
+	if it.next >= len(it.bars) {
+		return backtest.InputBar{}, false, nil
+	}
+	item := it.bars[it.next]
+	it.next++
+	return item, true, nil
+}
+
+func (it *staticInputBarIterator) Close() error {
+	return nil
+}
+
+func sliceBarsByWeek(bars []backtest.InputBar, windows []WeeklyWindow) []weeklyBarSlice {
+	out := make([]weeklyBarSlice, len(windows))
+	for index, window := range windows {
+		out[index] = weeklyBarSlice{
+			Window: window,
+			Bars:   make([]backtest.InputBar, 0, 4096),
+		}
+	}
+	if len(windows) == 0 || len(bars) == 0 {
+		return out
+	}
+	windowIndex := 0
+	for _, bar := range bars {
+		for windowIndex < len(windows) && bar.Timestamp.After(windows[windowIndex].End) {
+			windowIndex++
+		}
+		if windowIndex >= len(windows) {
+			break
+		}
+		window := windows[windowIndex]
+		if bar.Timestamp.Before(window.Start) {
+			continue
+		}
+		out[windowIndex].Bars = append(out[windowIndex].Bars, bar)
+	}
+	return out
+}
+
+func totalBarsInSlices(weeks []weeklyBarSlice) int {
+	total := 0
+	for _, week := range weeks {
+		total += len(week.Bars)
+	}
+	return total
+}
+
 func promotionRejectReasons(holdoutSummary, combinedSummary PeriodSummary) []string {
 	var reasons []string
 	if holdoutSummary.MaxDrawdownPct > 8.0 {
@@ -872,6 +1356,13 @@ func buildTradingProfile(candidate OptimizerCandidate, run OptimizationRun) conf
 }
 
 func writeArtifacts(artifactDir string, report *OptimizationReport, winnerProfile *config.TradingProfile) error {
+	if err := writeReportArtifact(artifactDir, report); err != nil {
+		return err
+	}
+	return writeProfileArtifact(artifactDir, report, winnerProfile)
+}
+
+func writeReportArtifact(artifactDir string, report *OptimizationReport) error {
 	artifactDir = artifactDirOrDefault(artifactDir)
 	reportDir := filepath.Join(artifactDir, "reports")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
@@ -880,13 +1371,21 @@ func writeArtifacts(artifactDir string, report *OptimizationReport, winnerProfil
 	reportName := fmt.Sprintf("%s-%s.json", report.Run.CompletedWeekEnd.In(marketLocation).Format("20060102"), report.Run.SchemaVersion[:15])
 	reportPath := filepath.Join(reportDir, reportName)
 	report.ArtifactPath = reportPath
+	if err := writeJSON(reportPath, report); err != nil {
+		return err
+	}
+	return writeJSON(filepath.Join(artifactDir, "latest-report.json"), report)
+}
+
+func writeProfileArtifact(artifactDir string, report *OptimizationReport, winnerProfile *config.TradingProfile) error {
+	artifactDir = artifactDirOrDefault(artifactDir)
 	if winnerProfile != nil {
 		profileDir := filepath.Join(artifactDir, "profiles")
 		if err := os.MkdirAll(profileDir, 0o755); err != nil {
 			return err
 		}
 		profilePath := filepath.Join(profileDir, winnerProfile.Version+".json")
-		winnerProfile.SourceReportPath = reportPath
+		winnerProfile.SourceReportPath = report.ArtifactPath
 		report.ProfilePath = profilePath
 		if err := writeJSON(profilePath, winnerProfile); err != nil {
 			return err
@@ -897,10 +1396,7 @@ func writeArtifacts(artifactDir string, report *OptimizationReport, winnerProfil
 	} else {
 		_ = os.Remove(filepath.Join(artifactDir, "latest-candidate-profile.json"))
 	}
-	if err := writeJSON(reportPath, report); err != nil {
-		return err
-	}
-	return writeJSON(filepath.Join(artifactDir, "latest-report.json"), report)
+	return nil
 }
 
 func normalizeCandidateConfig(cfg config.TradingConfig) config.TradingConfig {

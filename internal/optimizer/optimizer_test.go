@@ -59,6 +59,37 @@ func TestBuildCoarseSeedsIsDeterministicAndBounded(t *testing.T) {
 	}
 }
 
+func TestSliceBarsByWeekPartitionsBarsOnce(t *testing.T) {
+	weeks := []WeeklyWindow{
+		{
+			Label: "2026-03-13",
+			Start: time.Date(2026, time.March, 9, 4, 0, 0, 0, marketLocation).UTC(),
+			End:   time.Date(2026, time.March, 13, 19, 59, 59, 0, marketLocation).UTC(),
+		},
+		{
+			Label: "2026-03-20",
+			Start: time.Date(2026, time.March, 16, 4, 0, 0, 0, marketLocation).UTC(),
+			End:   time.Date(2026, time.March, 20, 19, 59, 59, 0, marketLocation).UTC(),
+		},
+	}
+	bars := []backtest.InputBar{
+		{Timestamp: time.Date(2026, time.March, 10, 14, 0, 0, 0, time.UTC), Symbol: "AAA"},
+		{Timestamp: time.Date(2026, time.March, 17, 14, 0, 0, 0, time.UTC), Symbol: "AAA"},
+		{Timestamp: time.Date(2026, time.March, 17, 14, 1, 0, 0, time.UTC), Symbol: "BBB"},
+	}
+
+	slices := sliceBarsByWeek(bars, weeks)
+	if len(slices) != 2 {
+		t.Fatalf("expected two weekly slices, got %d", len(slices))
+	}
+	if len(slices[0].Bars) != 1 || len(slices[1].Bars) != 2 {
+		t.Fatalf("unexpected weekly partition counts: %+v", slices)
+	}
+	if totalBarsInSlices(slices) != len(bars) {
+		t.Fatalf("expected every bar to appear exactly once, got total=%d bars=%d", totalBarsInSlices(slices), len(bars))
+	}
+}
+
 func TestPromotionRejectReasons(t *testing.T) {
 	reasons := promotionRejectReasons(
 		PeriodSummary{MaxDrawdownPct: 8.5, WorstWeekPct: -3.2},
@@ -66,6 +97,29 @@ func TestPromotionRejectReasons(t *testing.T) {
 	)
 	if len(reasons) != 5 {
 		t.Fatalf("expected all promotion gates to reject, got %v", reasons)
+	}
+}
+
+func TestProgressTrackerEstimatesStageAndOverallETA(t *testing.T) {
+	start := time.Date(2026, time.March, 18, 19, 0, 0, 0, time.UTC)
+	tracker := newProgressTracker(start)
+	tracker.RegisterStage("coarse-search", 100)
+	tracker.RegisterStage("validation-shortlist", 40)
+
+	tracker.Snapshot("coarse-search", 0, 100, "starting", start.Add(5*time.Second))
+	progress := tracker.Snapshot("coarse-search", 10, 100, "working", start.Add(15*time.Second))
+
+	if got, want := progress.StageRemainingSeconds, int64(90); got != want {
+		t.Fatalf("expected stage remaining seconds %d, got %d", want, got)
+	}
+	if got, want := progress.OverallRemainingSeconds, int64(130); got != want {
+		t.Fatalf("expected overall remaining seconds %d, got %d", want, got)
+	}
+	if progress.StageETA.IsZero() {
+		t.Fatal("expected stage ETA to be populated")
+	}
+	if progress.OverallETA.IsZero() {
+		t.Fatal("expected overall ETA to be populated")
 	}
 }
 
