@@ -49,7 +49,6 @@ The live-trading arm flag is intentional. The service refuses to start in live m
 Optional overrides:
 
 - `ALPACA_SYMBOLS=AAPL,TSLA` limits the stream to a watchlist; leaving it empty subscribes broadly
-- `HTTP_ADDR=127.0.0.1:8080` changes the bind address; the default is localhost-only for safety
 
 Control-plane access:
 

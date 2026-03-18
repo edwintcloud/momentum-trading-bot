@@ -56,7 +56,7 @@ func Load() (AppConfig, error) {
 	}
 
 	cfg := AppConfig{
-		HTTPAddr:                   getEnvString("HTTP_ADDR", "127.0.0.1:8080"),
+		HTTPAddr:                   ":8080",
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		ControlPlaneAuthToken:      strings.TrimSpace(os.Getenv("CONTROL_PLANE_AUTH_TOKEN")),
 		SnapshotPersistIntervalSec: 10,
