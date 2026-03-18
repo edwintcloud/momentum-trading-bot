@@ -30,9 +30,6 @@ func testConfig() config.TradingConfig {
 		MinVolumeRate:            1.05,
 		MaxPriceVsOpenPct:        50.0,
 		BreakoutFailureWindowMin: 15,
-		BreakoutFailureLossPct:   0.008,
-		BreakEvenActivationPct:   0.025,
-		BreakEvenFloorPct:        0.0015,
 		StagnationWindowMin:      30,
 		StagnationMinPeakPct:     0.012,
 		MinPrice:                 1.0,
@@ -48,8 +45,6 @@ func testConfig() config.TradingConfig {
 		TightTrailTriggerR:       1.20,
 		TightTrailATRMultiplier:  0.60,
 		ProfitTargetR:            1.20,
-		ProfitTrailActivationR:   1.50,
-		ProfitTrailPct:           0.03,
 		FailedBreakoutCutR:       0.05,
 	}
 }

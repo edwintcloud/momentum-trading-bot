@@ -39,8 +39,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	}
 
 	cfg.StopLossPct = 0.03
-	cfg.TrailingStopPct = 0.03
-	cfg.TrailingStopActivationPct = 0.02
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
 	cfg.MinEntryScore = 14.0
@@ -49,9 +47,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.MinVolumeRate = 1.40
 	cfg.MaxPriceVsOpenPct = 30.0
 	cfg.BreakoutFailureWindowMin = 3
-	cfg.BreakoutFailureLossPct = 0.0050
-	cfg.BreakEvenActivationPct = 0.015
-	cfg.BreakEvenFloorPct = 0.001
 	cfg.StagnationWindowMin = 3
 	cfg.StagnationMinPeakPct = 0.005
 	cfg.MinGapPercent = 0.0
@@ -70,8 +65,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.TightTrailTriggerR = 1.20
 	cfg.TightTrailATRMultiplier = 0.70
 	cfg.ProfitTargetR = 1.20
-	cfg.ProfitTrailActivationR = 1.50 
-	cfg.ProfitTrailPct = 0.03 
 	cfg.FailedBreakoutCutR = 0.05
 	cfg.StructureConfirmR = 0.00
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)

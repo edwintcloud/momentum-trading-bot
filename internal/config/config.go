@@ -2,39 +2,34 @@ package config
 
 // TradingConfig centralizes strategy and risk parameters.
 type TradingConfig struct {
-	StartingCapital                 float64
-	StrategyProfileName             string
-	StrategyProfileVersion          string
-	RiskPerTradePct                 float64
-	DailyLossLimitPct               float64
-	MaxTradesPerDay                 int
-	MaxOpenPositions                int
-	MaxExposurePct                  float64
-	StopLossPct                     float64
-	TrailingStopPct                 float64
-	TrailingStopActivationPct       float64
-	EntryCooldownSec                int
-	ExitCooldownSec                 int
-	MinEntryScore                   float64
-	MinOneMinuteReturnPct           float64
-	MinThreeMinuteReturnPct         float64
-	MinVolumeRate                   float64
-	MaxPriceVsOpenPct               float64
-	BreakoutFailureWindowMin        int
-	BreakoutFailureLossPct          float64
-	BreakEvenActivationPct          float64
-	BreakEvenFloorPct               float64
-	StagnationWindowMin             int
-	StagnationMinPeakPct            float64
-	ScannerWorkers                  int
-	MinPrice                        float64
-	MaxPrice                        float64
-	MinGapPercent                   float64
-	MinRelativeVolume               float64
-	MinPremarketVolume              int64
-	HydrationRequestsPerMin         int
-	HydrationRetrySec               int
-	HydrationQueueSize              int
+	StartingCapital          float64
+	StrategyProfileName      string
+	StrategyProfileVersion   string
+	RiskPerTradePct          float64
+	DailyLossLimitPct        float64
+	MaxTradesPerDay          int
+	MaxOpenPositions         int
+	MaxExposurePct           float64
+	StopLossPct              float64
+	EntryCooldownSec         int
+	ExitCooldownSec          int
+	MinEntryScore            float64
+	MinOneMinuteReturnPct    float64
+	MinThreeMinuteReturnPct  float64
+	MinVolumeRate            float64
+	MaxPriceVsOpenPct        float64
+	BreakoutFailureWindowMin int
+	StagnationWindowMin      int
+	StagnationMinPeakPct     float64
+	ScannerWorkers           int
+	MinPrice                 float64
+	MaxPrice                 float64
+	MinGapPercent            float64
+	MinRelativeVolume        float64
+	MinPremarketVolume       int64
+	HydrationRequestsPerMin  int
+	HydrationRetrySec        int
+	HydrationQueueSize       int
 	// LimitOrderSlippageDollars caps the adaptive limit-order buffer used to
 	// improve fill probability without over-penalizing low-priced names.
 	LimitOrderSlippageDollars float64
@@ -48,8 +43,6 @@ type TradingConfig struct {
 	TightTrailTriggerR        float64
 	TightTrailATRMultiplier   float64
 	ProfitTargetR             float64
-	ProfitTrailActivationR    float64
-	ProfitTrailPct            float64
 	FailedBreakoutCutR        float64
 	StructureConfirmR         float64
 }

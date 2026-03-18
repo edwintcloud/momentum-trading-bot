@@ -103,8 +103,6 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.TightTrailTriggerR = overrides.TightTrailTriggerR
 	cfg.TightTrailATRMultiplier = overrides.TightTrailATRMultiplier
 	cfg.ProfitTargetR = overrides.ProfitTargetR
-	cfg.ProfitTrailActivationR = overrides.ProfitTrailActivationR
-	cfg.ProfitTrailPct = overrides.ProfitTrailPct
 	cfg.FailedBreakoutCutR = overrides.FailedBreakoutCutR
 	cfg.StructureConfirmR = overrides.StructureConfirmR
 	return cfg

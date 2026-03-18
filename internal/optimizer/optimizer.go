@@ -286,22 +286,6 @@ var floatKnobs = []floatKnobSpec{
 		set: func(cfg *config.TradingConfig, v float64) { cfg.ProfitTargetR = round2(v) },
 	},
 	{
-		name: "ProfitTrailActivationR",
-		grid: func(base config.TradingConfig) []float64 {
-			return uniqueFloatGrid(base.ProfitTrailActivationR, 1.10, 2.25, 0.10, 0.20)
-		},
-		get: func(cfg config.TradingConfig) float64 { return cfg.ProfitTrailActivationR },
-		set: func(cfg *config.TradingConfig, v float64) { cfg.ProfitTrailActivationR = round2(v) },
-	},
-	{
-		name: "ProfitTrailPct",
-		grid: func(base config.TradingConfig) []float64 {
-			return uniqueFloatGrid(base.ProfitTrailPct, 0.015, 0.050, 0.005, 0.010)
-		},
-		get: func(cfg config.TradingConfig) float64 { return cfg.ProfitTrailPct },
-		set: func(cfg *config.TradingConfig, v float64) { cfg.ProfitTrailPct = round4(v) },
-	},
-	{
 		name: "FailedBreakoutCutR",
 		grid: func(base config.TradingConfig) []float64 {
 			return uniqueFloatGrid(base.FailedBreakoutCutR, 0.03, 0.10, 0.01, 0.02)
@@ -610,8 +594,6 @@ func ApplyStrategyProfileDefaults(base config.TradingConfig, profile config.Stra
 		cfg.TightTrailTriggerR = round2(maxFloat(cfg.TightTrailTriggerR, 1.00))
 		cfg.TightTrailATRMultiplier = round2(minFloat(cfg.TightTrailATRMultiplier, 0.60))
 		cfg.ProfitTargetR = round2(minFloat(cfg.ProfitTargetR, 1.10))
-		cfg.ProfitTrailActivationR = round2(maxFloat(cfg.ProfitTrailActivationR, cfg.ProfitTargetR+0.20))
-		cfg.ProfitTrailPct = round4(minFloat(cfg.ProfitTrailPct, 0.025))
 		cfg.FailedBreakoutCutR = round2(minFloat(cfg.FailedBreakoutCutR, 0.05))
 		cfg.StructureConfirmR = round2(maxFloat(cfg.StructureConfirmR, 0.05))
 	case config.StrategyProfileContinuation:
@@ -631,8 +613,6 @@ func ApplyStrategyProfileDefaults(base config.TradingConfig, profile config.Stra
 		cfg.TightTrailTriggerR = round2(minFloat(cfg.TightTrailTriggerR, 1.05))
 		cfg.TightTrailATRMultiplier = round2(minFloat(cfg.TightTrailATRMultiplier, 0.55))
 		cfg.ProfitTargetR = round2(minFloat(cfg.ProfitTargetR, 1.05))
-		cfg.ProfitTrailActivationR = round2(minFloat(maxFloat(cfg.ProfitTrailActivationR, cfg.ProfitTargetR+0.10), 1.35))
-		cfg.ProfitTrailPct = round4(minFloat(cfg.ProfitTrailPct, 0.0225))
 		cfg.FailedBreakoutCutR = round2(minFloat(cfg.FailedBreakoutCutR, 0.04))
 		cfg.StructureConfirmR = round2(maxFloat(cfg.StructureConfirmR, 0.10))
 	default:
@@ -1421,15 +1401,10 @@ func normalizeCandidateConfig(cfg config.TradingConfig) config.TradingConfig {
 	cfg.TightTrailTriggerR = clampFloat(cfg.TightTrailTriggerR, 0.85, 1.60)
 	cfg.TightTrailATRMultiplier = clampFloat(cfg.TightTrailATRMultiplier, 0.40, 1.00)
 	cfg.ProfitTargetR = clampFloat(cfg.ProfitTargetR, 0.90, 1.60)
-	cfg.ProfitTrailActivationR = clampFloat(cfg.ProfitTrailActivationR, maxFloat(1.10, cfg.ProfitTargetR), 2.25)
-	cfg.ProfitTrailPct = clampFloat(cfg.ProfitTrailPct, 0.015, 0.050)
 	cfg.FailedBreakoutCutR = clampFloat(cfg.FailedBreakoutCutR, 0.03, 0.10)
 	cfg.StructureConfirmR = clampFloat(cfg.StructureConfirmR, 0.00, 0.30)
 	if cfg.TightTrailTriggerR < cfg.TrailActivationR+0.20 {
 		cfg.TightTrailTriggerR = round2(cfg.TrailActivationR + 0.20)
-	}
-	if cfg.ProfitTrailActivationR < cfg.ProfitTargetR {
-		cfg.ProfitTrailActivationR = cfg.ProfitTargetR
 	}
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 	return cfg
@@ -1470,8 +1445,6 @@ func seedSignature(seed candidateSeed) string {
 		fmt.Sprintf("%.2f", cfg.TightTrailTriggerR),
 		fmt.Sprintf("%.2f", cfg.TightTrailATRMultiplier),
 		fmt.Sprintf("%.2f", cfg.ProfitTargetR),
-		fmt.Sprintf("%.2f", cfg.ProfitTrailActivationR),
-		fmt.Sprintf("%.4f", cfg.ProfitTrailPct),
 		fmt.Sprintf("%.2f", cfg.FailedBreakoutCutR),
 		fmt.Sprintf("%.2f", cfg.StructureConfirmR),
 	}, "|")

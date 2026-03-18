@@ -16,11 +16,6 @@ type EntryPlan struct {
 	SetupType    string
 }
 
-// BuildEntryPlan derives the volatility-aware stop and risk basis for a candidate.
-func BuildEntryPlan(cfg config.TradingConfig, candidate domain.Candidate) (EntryPlan, bool, string) {
-	return buildEntryPlan(cfg, candidate)
-}
-
 func buildEntryPlan(cfg config.TradingConfig, candidate domain.Candidate) (EntryPlan, bool, string) {
 	if candidate.Price <= 0 {
 		return EntryPlan{}, false, "invalid-price"
@@ -61,12 +56,6 @@ func currentRMultiple(position domain.Position, price float64) float64 {
 		return 0
 	}
 	return (price - position.AvgPrice) / position.RiskPerShare
-}
-
-// CurrentRMultiple reports the marked-to-market gain or loss in units of the
-// trade's initial risk.
-func CurrentRMultiple(position domain.Position, price float64) float64 {
-	return currentRMultiple(position, price)
 }
 
 func peakRMultiple(position domain.Position, highWatermark float64) float64 {
@@ -154,17 +143,6 @@ func failedBreakoutPrice(cfg config.TradingConfig, position domain.Position) flo
 // FailedBreakoutPrice returns the early-cut price used for non-follow-through setups.
 func FailedBreakoutPrice(cfg config.TradingConfig, position domain.Position) float64 {
 	return failedBreakoutPrice(cfg, position)
-}
-
-func shouldTimeStop(position domain.Position, at time.Time, cfgBreakoutFailureWindowMin, cfgStagnationWindowMin int) bool {
-	holdingTime := at.Sub(position.OpenedAt)
-	if holdingTime < time.Duration(cfgStagnationWindowMin)*time.Minute {
-		return false
-	}
-	if holdingTime < time.Duration(cfgBreakoutFailureWindowMin)*time.Minute {
-		return false
-	}
-	return true
 }
 
 func roundPrice(price float64) float64 {
