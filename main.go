@@ -86,10 +86,6 @@ func main() {
 		runtimeState.RecordLog("warn", "market", fmt.Sprintf("market-data capability probe failed: %v", err))
 	} else {
 		historicalRateLimit = capabilities.HistoricalRateLimitPerMin
-		if appConfig.Alpaca.AutoSelectDataFeed {
-			appConfig.Alpaca.DataFeed = capabilities.DetectedFeed
-			alpacaClient.SetDataFeed(capabilities.DetectedFeed)
-		}
 		appConfig.Trading.HydrationRequestsPerMin = recommendedHydrationBudget(capabilities.HistoricalRateLimitPerMin)
 		if capabilities.UnlimitedWebsocketSymbols {
 			runtimeState.RecordLog("info", "market", fmt.Sprintf("detected Alpaca %s plan: feed=%s historical_limit=%d/min websocket_symbols=unlimited", capabilities.PlanName, alpacaClient.DataFeed(), capabilities.HistoricalRateLimitPerMin))

@@ -29,8 +29,8 @@ func TestLoadUsesSimpleDefaults(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" {
 		t.Fatalf("expected current bind default to remain unchanged, got %q", cfg.HTTPAddr)
 	}
-	if !cfg.Alpaca.AutoSelectDataFeed {
-		t.Fatal("expected alpaca feed auto-detection to stay enabled by default")
+	if cfg.Alpaca.DataFeed != "sip" {
+		t.Fatalf("expected alpaca feed to be pinned to sip, got %q", cfg.Alpaca.DataFeed)
 	}
 	if !cfg.Alpaca.SubscribeAllBars {
 		t.Fatal("expected wildcard subscriptions when no symbols are provided")

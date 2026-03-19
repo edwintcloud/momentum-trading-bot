@@ -29,7 +29,6 @@ type AlpacaConfig struct {
 	Paper                bool
 	LiveTradingEnabled   bool
 	DataFeed             string
-	AutoSelectDataFeed   bool
 	TradingBaseURL       string
 	MarketDataBaseURL    string
 	MarketDataStreamURL  string
@@ -123,8 +122,7 @@ func loadAlpacaConfig(symbolOverrides []string) (AlpacaConfig, error) {
 		APISecret:            strings.TrimSpace(os.Getenv("ALPACA_API_SECRET")),
 		Paper:                paper,
 		LiveTradingEnabled:   getEnvBool("ALPACA_LIVE_TRADING_ENABLED", false),
-		DataFeed:             "iex",
-		AutoSelectDataFeed:   true,
+		DataFeed:             "sip",
 		TradingBaseURL:       strings.TrimRight(tradingBaseURL, "/"),
 		MarketDataBaseURL:    "https://data.alpaca.markets",
 		MarketDataStreamURL:  "wss://stream.data.alpaca.markets",

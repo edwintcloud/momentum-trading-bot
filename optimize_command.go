@@ -64,9 +64,6 @@ func runOptimize(args []string) error {
 		historicalRateLimit := 0
 		if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
 			historicalRateLimit = capabilities.HistoricalRateLimitPerMin
-			if alpacaCfg.AutoSelectDataFeed {
-				client.SetDataFeed(capabilities.DetectedFeed)
-			}
 			log.Printf("Optimizer using Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
 		} else {
 			log.Printf("Optimizer capability detection failed, using defaults: %v", capErr)
