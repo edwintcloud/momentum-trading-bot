@@ -446,90 +446,6 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 	return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0
 }
 
-func simulateManagedExit(position domain.Position, tick domain.Tick, cfg config.TradingConfig) (float64, string, bool) {
-	decisionAt := tick.Timestamp.UTC()
-	highWatermark := maxFloat(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := strategy.ProtectiveStop(cfg, position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
-	if previousStop <= 0 {
-		previousStop, previousReason = strategy.ProtectiveStop(cfg, position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
-	}
-	barOpen := firstPositive(tick.BarOpen, tick.Price)
-	barLow := firstPositive(tick.BarLow, tick.Price)
-	barClose := firstPositive(tick.Price, tick.BarOpen)
-	peakReturn := strategy.PeakRMultiple(position, highWatermark)
-	holdingTime := decisionAt.Sub(position.OpenedAt)
-	sameDayHold := sameTrainingDay(position.OpenedAt, decisionAt)
-
-	spread := tick.BarHigh - tick.BarLow
-	if spread < 0 {
-		spread = 0
-	}
-	penalty := spread * 0.05
-
-	localTime := decisionAt.In(marketTZ)
-	minutes := localTime.Hour()*60 + localTime.Minute()
-
-	switch {
-	case minutes >= 15*60+55:
-		fillPrice := math.Max(0.01, round2(barClose-penalty))
-		return fillPrice, "end-of-day-liquidation", true
-	case barOpen > 0 && previousStop > 0 && barOpen <= previousStop:
-		fillPrice := math.Max(0.01, round2(barOpen-penalty))
-		// fmt.Printf("DEBUG EXIT: %s open-stop previousStop=%.2f barOpen=%.2f penalty=%.2f\n", position.Symbol, previousStop, barOpen, penalty)
-		return fillPrice, previousReason, true
-	case sameDayHold &&
-		holdingTime >= time.Duration(cfg.BreakoutFailureWindowMin)*time.Minute &&
-		peakReturn < 1.0 &&
-		barLow > 0 &&
-		barLow <= strategy.FailedBreakoutPrice(cfg, position):
-		fillPrice := math.Max(0.01, round2(strategy.FailedBreakoutPrice(cfg, position)-penalty))
-		// fmt.Printf("DEBUG EXIT: %s failed-breakout fbp=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f\n", position.Symbol, strategy.FailedBreakoutPrice(cfg, position), barLow, penalty, peakReturn)
-		return fillPrice, "failed-breakout", true
-	case func() bool {
-		stopPrice, _ := strategy.ProtectiveStop(cfg, position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
-		return stopPrice > 0 && barLow > 0 && barLow <= stopPrice
-	}():
-		stopPrice, reason := strategy.ProtectiveStop(cfg, position, highWatermark, firstPositive(tick.Price, barOpen), decisionAt)
-		fillPrice := math.Max(0.01, round2(stopPrice-penalty))
-		// fmt.Printf("DEBUG EXIT: %s %s stopPrice=%.2f barLow=%.2f penalty=%.2f peakReturn=%.2f initialStop=%.2f\n", position.Symbol, reason, stopPrice, barLow, penalty, peakReturn, position.InitialStopPrice)
-		return fillPrice, reason, true
-	default:
-		return 0, "", false
-	}
-}
-
-func backtestLimitPrice(price float64, side string, maxBuffer float64) float64 {
-	if price <= 0 {
-		return 0
-	}
-	buffer := price * 0.004
-	if buffer < 0.01 {
-		buffer = 0.01
-	}
-	if buffer > maxBuffer {
-		buffer = maxBuffer
-	}
-	buffer = round2(buffer)
-	if side == "sell" {
-		return round2(math.Max(0.01, price-buffer))
-	}
-	return round2(price + buffer)
-}
-
-func sameTrainingDay(a, b time.Time) bool {
-	if a.IsZero() || b.IsZero() {
-		return false
-	}
-	return a.In(marketTZ).Format("2006-01-02") == b.In(marketTZ).Format("2006-01-02")
-}
-
-func tradingDayKey(at time.Time) string {
-	if at.IsZero() {
-		return ""
-	}
-	return at.In(marketTZ).Format("2006-01-02")
-}
-
 func updateTradeAnalytics(analytics *tradeAnalytics, high, low float64) {
 	if analytics == nil || analytics.riskPerShare <= 0 || analytics.entryPrice <= 0 {
 		return
@@ -555,44 +471,6 @@ func isStopLikeExit(reason string) bool {
 	default:
 		return false
 	}
-}
-
-func firstPositive(values ...float64) float64 {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func maxFloat(values ...float64) float64 {
-	maximum := 0.0
-	for _, value := range values {
-		if value > maximum {
-			maximum = value
-		}
-	}
-	return maximum
-}
-
-func maxDrawdownPct(curve []float64, startingCapital float64) float64 {
-	if len(curve) == 0 || startingCapital <= 0 {
-		return 0
-	}
-	peak := startingCapital
-	maxDrawdown := 0.0
-	for _, pnl := range curve {
-		equity := startingCapital + pnl
-		if equity > peak {
-			peak = equity
-		}
-		drawdown := ((peak - equity) / peak) * 100
-		if drawdown > maxDrawdown {
-			maxDrawdown = drawdown
-		}
-	}
-	return maxDrawdown
 }
 
 func calculateRelativeVolume(state *symbolState, timestamp time.Time) float64 {
