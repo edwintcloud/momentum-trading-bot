@@ -13,7 +13,7 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	}
 	cfg.StartingCapital = round2(capital)
 
-	cfg.EnableShorts = false
+	cfg.EnableShorts = true
 	cfg.RiskPerTradePct = inferRiskPerTradePct(capital)
 	cfg.DailyLossLimitPct = 0.2
 	cfg.MaxTradesPerDay = 20

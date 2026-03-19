@@ -26,7 +26,6 @@ func runBacktest(args []string) error {
 	dataPath := flags.String("data", "", "Optional CSV fallback with timestamp,symbol,open,high,low,close,volume columns")
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
 	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
-	enableShorts := flags.Bool("enable-shorts", true, "Enable short entries during backtests")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -100,7 +99,6 @@ func runBacktest(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg.EnableShorts = *enableShorts
 	if profileLabel != "" {
 		log.Printf("Backtest loaded trading profile %s", profileLabel)
 	}
