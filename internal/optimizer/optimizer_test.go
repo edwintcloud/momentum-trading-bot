@@ -54,9 +54,81 @@ func TestBuildCoarseSeedsIsDeterministicAndBounded(t *testing.T) {
 		if cfg.MaxOpenPositions < 1 || cfg.MaxOpenPositions > 4 {
 			t.Fatalf("seed %q max open positions out of bounds: %d", first[index].id, cfg.MaxOpenPositions)
 		}
+		if cfg.MaxShortOpenPositions < 1 || cfg.MaxShortOpenPositions > cfg.MaxOpenPositions {
+			t.Fatalf("seed %q max short open positions out of bounds: %d (max_open=%d)", first[index].id, cfg.MaxShortOpenPositions, cfg.MaxOpenPositions)
+		}
+		if cfg.MaxShortExposurePct < 0.10 || cfg.MaxShortExposurePct > cfg.MaxExposurePct {
+			t.Fatalf("seed %q max short exposure out of bounds: %.2f (max_exposure=%.2f)", first[index].id, cfg.MaxShortExposurePct, cfg.MaxExposurePct)
+		}
+		if cfg.ShortMinEntryScore < 14 || cfg.ShortMinEntryScore > 28 {
+			t.Fatalf("seed %q short min entry score out of bounds: %.2f", first[index].id, cfg.ShortMinEntryScore)
+		}
+		if cfg.ShortPeakExtensionMinPct < 8 || cfg.ShortPeakExtensionMinPct > 22 {
+			t.Fatalf("seed %q short peak extension out of bounds: %.2f", first[index].id, cfg.ShortPeakExtensionMinPct)
+		}
+		if cfg.ShortVWAPBreakMinPct < -2.50 || cfg.ShortVWAPBreakMinPct > -0.20 {
+			t.Fatalf("seed %q short VWAP break out of bounds: %.2f", first[index].id, cfg.ShortVWAPBreakMinPct)
+		}
+		if cfg.ShortStopATRMultiplier < 0.75 || cfg.ShortStopATRMultiplier > 2.25 {
+			t.Fatalf("seed %q short stop ATR multiplier out of bounds: %.2f", first[index].id, cfg.ShortStopATRMultiplier)
+		}
 		if !config.IsSupportedStrategyProfile(config.StrategyProfile(first[index].profile)) {
 			t.Fatalf("seed %q uses unsupported profile %q", first[index].id, first[index].profile)
 		}
+	}
+}
+
+func TestSeedSignatureIncludesShortKnobs(t *testing.T) {
+	base := config.TuneTradingConfig(config.DefaultTradingConfig(), 25_000, 1_000)
+	a := candidateSeed{id: "a", profile: config.StrategyProfileBaseline, config: base}
+	b := candidateSeed{id: "b", profile: config.StrategyProfileBaseline, config: base}
+	b.config.ShortMinEntryScore += 2
+
+	if seedSignature(a) == seedSignature(b) {
+		t.Fatal("expected differing short config to change seed signature")
+	}
+}
+
+func TestSummarizeWeeksBreaksOutLongAndShort(t *testing.T) {
+	summary := summarizeWeeks([]WeeklyPerformance{
+		{
+			Label:           "2026-03-06",
+			ReturnPct:       2.25,
+			Trades:          3,
+			LongTrades:      2,
+			ShortTrades:     1,
+			LongPnL:         150.12,
+			ShortPnL:        -25.10,
+			MaxDrawdownPct:  1.80,
+			ClosedTradePnLs: []float64{100.12, 50.00, -25.10},
+		},
+		{
+			Label:           "2026-03-13",
+			ReturnPct:       -0.75,
+			Trades:          2,
+			LongTrades:      0,
+			ShortTrades:     2,
+			LongPnL:         0,
+			ShortPnL:        40.37,
+			MaxDrawdownPct:  2.40,
+			ClosedTradePnLs: []float64{55.55, -15.18},
+		},
+	})
+
+	if summary.Trades != 5 {
+		t.Fatalf("expected 5 total trades, got %d", summary.Trades)
+	}
+	if summary.LongTrades != 2 || summary.ShortTrades != 3 {
+		t.Fatalf("expected long/short trade breakdown 2/3, got %d/%d", summary.LongTrades, summary.ShortTrades)
+	}
+	if summary.LongPnL != 150.12 || summary.ShortPnL != 15.27 {
+		t.Fatalf("expected long/short pnl 150.12/15.27, got %.2f/%.2f", summary.LongPnL, summary.ShortPnL)
+	}
+	if summary.MaxDrawdownPct != 2.40 {
+		t.Fatalf("expected max drawdown 2.40, got %.2f", summary.MaxDrawdownPct)
+	}
+	if summary.ProfitFactor != 5.11 {
+		t.Fatalf("expected profit factor 5.11, got %.2f", summary.ProfitFactor)
 	}
 }
 

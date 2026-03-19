@@ -14,6 +14,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 )
 
 const (
@@ -45,10 +46,14 @@ type WeeklyPerformance struct {
 	Start           time.Time `json:"start"`
 	End             time.Time `json:"end"`
 	NetPnL          float64   `json:"netPnL"`
+	LongPnL         float64   `json:"longPnL"`
+	ShortPnL        float64   `json:"shortPnL"`
 	ReturnPct       float64   `json:"returnPct"`
 	ProfitFactor    float64   `json:"profitFactor"`
 	MaxDrawdownPct  float64   `json:"maxDrawdownPct"`
 	Trades          int       `json:"trades"`
+	LongTrades      int       `json:"longTrades"`
+	ShortTrades     int       `json:"shortTrades"`
 	WinningTrades   int       `json:"winningTrades"`
 	LosingTrades    int       `json:"losingTrades"`
 	EndingEquity    float64   `json:"endingEquity"`
@@ -60,6 +65,8 @@ type WeeklyPerformance struct {
 type PeriodSummary struct {
 	Weeks                 int     `json:"weeks"`
 	Trades                int     `json:"trades"`
+	LongTrades            int     `json:"longTrades"`
+	ShortTrades           int     `json:"shortTrades"`
 	PositiveWeeks         int     `json:"positiveWeeks"`
 	PositiveWeeksPct      float64 `json:"positiveWeeksPct"`
 	MedianWeeklyReturnPct float64 `json:"medianWeeklyReturnPct"`
@@ -67,6 +74,8 @@ type PeriodSummary struct {
 	ProfitFactor          float64 `json:"profitFactor"`
 	MaxDrawdownPct        float64 `json:"maxDrawdownPct"`
 	WorstWeekPct          float64 `json:"worstWeekPct"`
+	LongPnL               float64 `json:"longPnL"`
+	ShortPnL              float64 `json:"shortPnL"`
 }
 
 // OptimizerCandidate is a single evaluated profile/config combination.
@@ -352,6 +361,47 @@ var floatKnobs = []floatKnobSpec{
 		get: func(cfg config.TradingConfig) float64 { return cfg.StructureConfirmR },
 		set: func(cfg *config.TradingConfig, v float64) { cfg.StructureConfirmR = round2(v) },
 	},
+	{
+		name: "ShortMinEntryScore",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ShortMinEntryScore, 14.0, 28.0, 1.5, 3.0)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ShortMinEntryScore },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ShortMinEntryScore = round2(v) },
+	},
+	{
+		name: "MaxShortExposurePct",
+		grid: func(base config.TradingConfig) []float64 {
+			maxShortExposure := maxFloat(0.15, base.MaxExposurePct)
+			return uniqueFloatGrid(base.MaxShortExposurePct, 0.10, maxShortExposure, 0.03, 0.06)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.MaxShortExposurePct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.MaxShortExposurePct = round2(v) },
+	},
+	{
+		name: "ShortPeakExtensionMinPct",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ShortPeakExtensionMinPct, 8.0, 22.0, 1.5, 3.0)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ShortPeakExtensionMinPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ShortPeakExtensionMinPct = round2(v) },
+	},
+	{
+		name: "ShortVWAPBreakMinPct",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ShortVWAPBreakMinPct, -2.50, -0.20, 0.20, 0.40)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ShortVWAPBreakMinPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ShortVWAPBreakMinPct = round2(v) },
+	},
+	{
+		name: "ShortStopATRMultiplier",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ShortStopATRMultiplier, 0.75, 2.25, 0.15, 0.30)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ShortStopATRMultiplier },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ShortStopATRMultiplier = round2(v) },
+	},
 }
 
 var intKnobs = []intKnobSpec{
@@ -378,6 +428,15 @@ var intKnobs = []intKnobSpec{
 		grid: func(base config.TradingConfig) []int { return uniqueIntGrid(base.BreakEvenHoldMinutes, 2, 6, 1, 1) },
 		get:  func(cfg config.TradingConfig) int { return cfg.BreakEvenHoldMinutes },
 		set:  func(cfg *config.TradingConfig, v int) { cfg.BreakEvenHoldMinutes = v },
+	},
+	{
+		name: "MaxShortOpenPositions",
+		grid: func(base config.TradingConfig) []int {
+			upper := maxInt(1, minInt(3, base.MaxOpenPositions))
+			return uniqueIntGrid(base.MaxShortOpenPositions, 1, upper, 1, 1)
+		},
+		get: func(cfg config.TradingConfig) int { return cfg.MaxShortOpenPositions },
+		set: func(cfg *config.TradingConfig, v int) { cfg.MaxShortOpenPositions = v },
 	},
 }
 
@@ -1097,8 +1156,17 @@ func evaluateSingleWeek(ctx context.Context, cfg config.TradingConfig, window We
 		EndingEquity:   round2(result.EndingEquity),
 	}
 	for _, trade := range result.ClosedTrades {
+		if domain.IsShort(trade.Side) {
+			performance.ShortTrades++
+			performance.ShortPnL += trade.PnL
+		} else {
+			performance.LongTrades++
+			performance.LongPnL += trade.PnL
+		}
 		performance.ClosedTradePnLs = append(performance.ClosedTradePnLs, trade.PnL)
 	}
+	performance.LongPnL = round2(performance.LongPnL)
+	performance.ShortPnL = round2(performance.ShortPnL)
 	return performance, nil
 }
 
@@ -1109,13 +1177,21 @@ func summarizeWeeks(weeks []WeeklyPerformance) PeriodSummary {
 	returns := make([]float64, 0, len(weeks))
 	positiveWeeks := 0
 	trades := 0
+	longTrades := 0
+	shortTrades := 0
 	maxDrawdown := 0.0
 	worstWeek := math.MaxFloat64
 	grossWins := 0.0
 	grossLosses := 0.0
+	longPnL := 0.0
+	shortPnL := 0.0
 	for _, week := range weeks {
 		returns = append(returns, week.ReturnPct)
 		trades += week.Trades
+		longTrades += week.LongTrades
+		shortTrades += week.ShortTrades
+		longPnL += week.LongPnL
+		shortPnL += week.ShortPnL
 		if week.ReturnPct > 0 {
 			positiveWeeks++
 		}
@@ -1141,6 +1217,8 @@ func summarizeWeeks(weeks []WeeklyPerformance) PeriodSummary {
 	return PeriodSummary{
 		Weeks:                 len(weeks),
 		Trades:                trades,
+		LongTrades:            longTrades,
+		ShortTrades:           shortTrades,
 		PositiveWeeks:         positiveWeeks,
 		PositiveWeeksPct:      round2((float64(positiveWeeks) / float64(len(weeks))) * 100),
 		MedianWeeklyReturnPct: round2(percentile(returns, 0.50)),
@@ -1148,6 +1226,8 @@ func summarizeWeeks(weeks []WeeklyPerformance) PeriodSummary {
 		ProfitFactor:          round2(profitFactor),
 		MaxDrawdownPct:        round2(maxDrawdown),
 		WorstWeekPct:          round2(worstWeek),
+		LongPnL:               round2(longPnL),
+		ShortPnL:              round2(shortPnL),
 	}
 }
 
@@ -1575,10 +1655,12 @@ func normalizeCandidateConfig(cfg config.TradingConfig) config.TradingConfig {
 	}
 	cfg.MaxTradesPerDay = maxInt(cfg.MaxTradesPerDay, cfg.MaxOpenPositions)
 	cfg.MaxOpenPositions = clampInt(cfg.MaxOpenPositions, 1, 4)
+	cfg.MaxShortOpenPositions = clampInt(cfg.MaxShortOpenPositions, 1, maxInt(1, cfg.MaxOpenPositions))
 	cfg.MaxTradesPerDay = clampInt(cfg.MaxTradesPerDay, 4, 20)
 	cfg.EntryCooldownSec = clampInt(cfg.EntryCooldownSec, 30, 120)
 	cfg.BreakEvenHoldMinutes = clampInt(cfg.BreakEvenHoldMinutes, 2, 6)
 	cfg.MinEntryScore = clampFloat(cfg.MinEntryScore, 10.0, 20.0)
+	cfg.ShortMinEntryScore = clampFloat(cfg.ShortMinEntryScore, 14.0, 28.0)
 	cfg.MinOneMinuteReturnPct = clampFloat(cfg.MinOneMinuteReturnPct, 0.05, 1.20)
 	cfg.MinThreeMinuteReturnPct = clampFloat(cfg.MinThreeMinuteReturnPct, 0.20, 2.25)
 	cfg.MinVolumeRate = clampFloat(cfg.MinVolumeRate, 0.80, 2.40)
@@ -1604,6 +1686,10 @@ func normalizeCandidateConfig(cfg config.TradingConfig) config.TradingConfig {
 	cfg.ProfitTargetR = clampFloat(cfg.ProfitTargetR, 0.90, 1.60)
 	cfg.FailedBreakoutCutR = clampFloat(cfg.FailedBreakoutCutR, 0.03, 0.10)
 	cfg.StructureConfirmR = clampFloat(cfg.StructureConfirmR, 0.00, 0.30)
+	cfg.MaxShortExposurePct = clampFloat(cfg.MaxShortExposurePct, 0.10, cfg.MaxExposurePct)
+	cfg.ShortPeakExtensionMinPct = clampFloat(cfg.ShortPeakExtensionMinPct, 8.0, 22.0)
+	cfg.ShortVWAPBreakMinPct = clampFloat(cfg.ShortVWAPBreakMinPct, -2.50, -0.20)
+	cfg.ShortStopATRMultiplier = clampFloat(cfg.ShortStopATRMultiplier, 0.75, 2.25)
 	if cfg.TightTrailTriggerR < cfg.TrailActivationR+0.20 {
 		cfg.TightTrailTriggerR = round2(cfg.TrailActivationR + 0.20)
 	}
@@ -1648,6 +1734,12 @@ func seedSignature(seed candidateSeed) string {
 		fmt.Sprintf("%.2f", cfg.ProfitTargetR),
 		fmt.Sprintf("%.2f", cfg.FailedBreakoutCutR),
 		fmt.Sprintf("%.2f", cfg.StructureConfirmR),
+		fmt.Sprintf("%.2f", cfg.ShortMinEntryScore),
+		fmt.Sprintf("%d", cfg.MaxShortOpenPositions),
+		fmt.Sprintf("%.2f", cfg.MaxShortExposurePct),
+		fmt.Sprintf("%.2f", cfg.ShortPeakExtensionMinPct),
+		fmt.Sprintf("%.2f", cfg.ShortVWAPBreakMinPct),
+		fmt.Sprintf("%.2f", cfg.ShortStopATRMultiplier),
 	}, "|")
 }
 

@@ -20,7 +20,7 @@ const (
 	StrategyProfileContinuation   StrategyProfile = "continuation_breakout"
 )
 
-const bundledTradingProfileRelPath = "profiles/20260122-high_conviction_breakout.json"
+const bundledTradingProfileRelPath = "profiles/default.json"
 
 var supportedStrategyProfiles = map[StrategyProfile]struct{}{
 	StrategyProfileBaseline:       {},

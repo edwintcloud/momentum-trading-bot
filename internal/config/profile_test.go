@@ -114,7 +114,7 @@ func TestLocateBundledTradingProfilePathSearchesParentDirectories(t *testing.T) 
 	if err := os.MkdirAll(profileDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profilePath := filepath.Join(profileDir, "20260122-high_conviction_breakout.json")
+	profilePath := filepath.Join(profileDir, "default.json")
 	raw, err := json.Marshal(TradingProfile{
 		Name:    StrategyProfileHighConviction,
 		Version: "test-bundled-profile",

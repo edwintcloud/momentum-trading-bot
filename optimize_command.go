@@ -158,7 +158,7 @@ func runOptimize(args []string) error {
 		return nil
 	}
 	log.Printf(
-		"Optimizer winner profile=%s version=%s promotable=%t status=%s holdout_median=%.2f%% positive_weeks=%.2f%% holdout_p25=%.2f%% profit_factor=%.2f max_drawdown=%.2f%% profile_path=%s",
+		"Optimizer winner profile=%s version=%s promotable=%t status=%s holdout_median=%.2f%% positive_weeks=%.2f%% holdout_p25=%.2f%% profit_factor=%.2f max_drawdown=%.2f%% holdout_long_trades=%d holdout_short_trades=%d holdout_long_pnl=%.2f holdout_short_pnl=%.2f profile_path=%s",
 		profile.Name,
 		profile.Version,
 		report.Winner.Promotable,
@@ -168,6 +168,10 @@ func runOptimize(args []string) error {
 		report.Winner.Score.HoldoutP25WeeklyReturnPct,
 		report.Winner.Score.ProfitFactor,
 		report.Winner.Score.MaxDrawdownPct,
+		report.Winner.HoldoutSummary.LongTrades,
+		report.Winner.HoldoutSummary.ShortTrades,
+		report.Winner.HoldoutSummary.LongPnL,
+		report.Winner.HoldoutSummary.ShortPnL,
 		report.ProfilePath,
 	)
 	return nil
