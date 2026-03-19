@@ -495,31 +495,9 @@ func tradingDayStart(at time.Time) time.Time {
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, markethours.Location()).UTC()
 }
 
-var knownLeveragedETFs = map[string]bool{
-	"UVIX": true, "UVXY": true, "SQQQ": true, "TQQQ": true, "SOXL": true, "SOXS": true,
-	"SPXL": true, "SPXS": true, "UPRO": true, "SPXU": true, "UDOW": true, "SDOW": true,
-	"TNA": true, "TZA": true, "FAS": true, "FAZ": true, "NUGT": true, "DUST": true,
-	"JNUG": true, "JDST": true, "UGL": true, "GLL": true, "AGQ": true, "ZSL": true,
-	"BOIL": true, "KOLD": true, "UCO": true, "SCO": true, "YINN": true, "YANG": true,
-	"CWEB": true, "KORU": true, "EURL": true, "EDC": true, "EDZ": true, "INDL": true,
-	"LBJ": true, "GUSH": true, "DRIP": true, "NRGU": true, "NRGD": true, "UAMY": true,
-	"BITX": true, "BITI": true, "ETHU": true, "ETHD": true, "MSTU": true, "TSLL": true, "TSLQ": true, "CONL": true,
-	"GDXD": true, "GDXU": true, "AAPU": true, "AAPD": true, "AMZU": true, "AMZD": true,
-	"NVDL": true, "NVDD": true, "NVDU": true, "MSFU": true, "MSFD": true, "GOOU": true,
-	"GOOD": true, "COINU": true, "COIND": true, "DPST": true, "LABU": true, "LABD": true,
-	"WTIU": true, "MSTZ": true, "SUPX": true, "DXD": true,
-}
-
-func isLeveragedETF(symbol string) bool {
-	return knownLeveragedETFs[symbol]
-}
-
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
 	if candidate.Price < s.config.MinPrice {
 		return false, "low-price"
-	}
-	if isLeveragedETF(candidate.Symbol) {
-		return false, "leveraged-etf"
 	}
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)

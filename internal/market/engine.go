@@ -48,6 +48,7 @@ type Engine struct {
 	config            config.TradingConfig
 	portfolio         *portfolio.Manager
 	runtime           *runtime.State
+	eligibleSymbols   map[string]struct{}
 	state             map[string]*symbolState
 	seenBars          map[string]bool
 	seenTypes         map[string]bool
@@ -64,6 +65,7 @@ func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager
 		config:            cfg,
 		portfolio:         portfolioManager,
 		runtime:           runtimeState,
+		eligibleSymbols:   make(map[string]struct{}),
 		state:             make(map[string]*symbolState),
 		seenBars:          make(map[string]bool),
 		seenTypes:         make(map[string]bool),
@@ -75,8 +77,19 @@ func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager
 
 // Start consumes Alpaca market data until the context is canceled.
 func (e *Engine) Start(ctx context.Context, out chan<- domain.Tick) error {
+	symbols, err := e.client.ListActiveEquitySymbols(ctx)
+	if err != nil {
+		return fmt.Errorf("load NYSE/NASDAQ universe: %w", err)
+	}
+	if len(symbols) == 0 {
+		return fmt.Errorf("load NYSE/NASDAQ universe: no eligible symbols returned")
+	}
+	for _, symbol := range symbols {
+		e.eligibleSymbols[symbol] = struct{}{}
+	}
 	e.runtime.SetDependencyStatus("market_data_stream", false, "waiting for alpaca stream")
 	e.runtime.RecordLog("info", "market", "connecting to alpaca market data stream")
+	e.runtime.RecordLog("info", "market", fmt.Sprintf("limiting live market intake to %d NYSE/NASDAQ symbols", len(symbols)))
 	e.runtime.RecordLog("info", "market", fmt.Sprintf("hydration rate limit set to %d requests/min", e.config.HydrationRequestsPerMin))
 	go e.runHydrationWorker(ctx)
 	return e.client.StreamMarketData(ctx, func(message alpaca.StreamMessage) error {
@@ -121,6 +134,9 @@ func (e *Engine) Start(ctx context.Context, out chan<- domain.Tick) error {
 }
 
 func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) domain.Tick {
+	if _, ok := e.eligibleSymbols[message.Symbol]; !ok {
+		return domain.Tick{}
+	}
 	e.getState(message.Symbol)
 	e.scheduleHydration(message.Symbol, message.Close, message.Timestamp)
 

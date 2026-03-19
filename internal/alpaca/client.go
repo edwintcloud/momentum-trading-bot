@@ -55,6 +55,7 @@ type BrokerPosition struct {
 
 type asset struct {
 	Symbol     string `json:"symbol"`
+	Exchange   string `json:"exchange"`
 	Tradable   bool   `json:"tradable"`
 	AssetClass string `json:"class"`
 	Status     string `json:"status"`
@@ -469,7 +470,13 @@ func (c *Client) GetHistoricalBarsPage(ctx context.Context, symbols []string, st
 	return page, nil
 }
 
-// ListActiveEquitySymbols returns Alpaca's current tradable US equity symbol universe.
+var allowedPrimaryExchanges = map[string]struct{}{
+	"NASDAQ": {},
+	"NYSE":   {},
+}
+
+// ListActiveEquitySymbols returns Alpaca's tradable US equity symbol universe
+// limited to NYSE and NASDAQ primary listings.
 func (c *Client) ListActiveEquitySymbols(ctx context.Context) ([]string, error) {
 	endpoint := c.cfg.TradingBaseURL + "/v2/assets?status=active&asset_class=us_equity"
 	var assets []asset
@@ -480,6 +487,9 @@ func (c *Client) ListActiveEquitySymbols(ctx context.Context) ([]string, error) 
 	symbols := make([]string, 0, len(assets))
 	for _, item := range assets {
 		if !item.Tradable {
+			continue
+		}
+		if _, ok := allowedPrimaryExchanges[strings.ToUpper(strings.TrimSpace(item.Exchange))]; !ok {
 			continue
 		}
 		symbols = append(symbols, strings.ToUpper(strings.TrimSpace(item.Symbol)))

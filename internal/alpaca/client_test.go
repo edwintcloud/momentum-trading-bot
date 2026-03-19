@@ -90,7 +90,7 @@ func TestGetHistoricalBarsFollowsPagination(t *testing.T) {
 	}
 }
 
-func TestListActiveEquitySymbolsFiltersTradableAssets(t *testing.T) {
+func TestListActiveEquitySymbolsFiltersTradableAssetsAndExchanges(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "/v2/assets") {
 			http.NotFound(w, r)
@@ -98,9 +98,11 @@ func TestListActiveEquitySymbolsFiltersTradableAssets(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[
-			{"symbol":"AAPL","tradable":true,"class":"us_equity","status":"active"},
-			{"symbol":"TEST","tradable":false,"class":"us_equity","status":"active"},
-			{"symbol":"MSFT","tradable":true,"class":"us_equity","status":"active"}
+			{"symbol":"AAPL","exchange":"NASDAQ","tradable":true,"class":"us_equity","status":"active"},
+			{"symbol":"IBM","exchange":"NYSE","tradable":true,"class":"us_equity","status":"active"},
+			{"symbol":"SPDN","exchange":"ARCA","tradable":true,"class":"us_equity","status":"active"},
+			{"symbol":"TEST","exchange":"NASDAQ","tradable":false,"class":"us_equity","status":"active"},
+			{"symbol":"OTCM","exchange":"OTC","tradable":true,"class":"us_equity","status":"active"}
 		]`))
 	}))
 	defer server.Close()
@@ -114,7 +116,7 @@ func TestListActiveEquitySymbolsFiltersTradableAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected tradable assets to load, got %v", err)
 	}
-	if len(symbols) != 2 || symbols[0] != "AAPL" || symbols[1] != "MSFT" {
+	if len(symbols) != 2 || symbols[0] != "AAPL" || symbols[1] != "IBM" {
 		t.Fatalf("unexpected tradable symbols: %+v", symbols)
 	}
 }
