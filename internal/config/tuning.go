@@ -4,17 +4,17 @@ import "math"
 
 // TuneTradingConfig applies broker-aware defaults that bias toward conservative
 // momentum participation without requiring manual knob tuning.
-func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPerMin int) TradingConfig {
+func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitPerMin int) TradingConfig {
 	cfg := base
-	if equity <= 0 {
-		equity = cfg.StartingCapital
+	if capital <= 0 {
+		capital = cfg.StartingCapital
 	}
-	cfg.StartingCapital = round2(equity)
+	cfg.StartingCapital = round2(capital)
 
-	cfg.RiskPerTradePct = 0.1
+	cfg.RiskPerTradePct = inferRiskPerTradePct(capital)
 	cfg.DailyLossLimitPct = 0.2
 	cfg.MaxTradesPerDay = 20
-	cfg.MaxOpenPositions = 5
+	cfg.MaxOpenPositions = inferMaxOpenPositions(capital)
 	cfg.StopLossPct = 0.05
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
@@ -76,8 +76,30 @@ func inferMaxExposurePct(cfg TradingConfig) float64 {
 	if exposure < 0.25 {
 		exposure = 0.25
 	}
-	if exposure > 10.00 {
-		exposure = 10.00
+	if exposure > 1.00 {
+		exposure = 1.00
 	}
 	return round2(exposure)
+}
+
+func inferRiskPerTradePct(capital float64) float64 {
+	switch {
+	case capital <= 25_000:
+		return 0.005
+	case capital >= 100_000:
+		return 0.015
+	default:
+		return 0.01
+	}
+}
+
+func inferMaxOpenPositions(capital float64) int {
+	switch {
+	case capital <= 25_000:
+		return 2
+	case capital >= 100_000:
+		return 4
+	default:
+		return 3
+	}
 }

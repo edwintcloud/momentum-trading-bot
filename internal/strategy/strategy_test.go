@@ -685,11 +685,12 @@ func TestStrategyCreatesExitSignalOnStopLoss(t *testing.T) {
 	}
 }
 
-func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
+func TestStrategyUsesCashValueForSizing(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50500)
+	book.SyncBrokerCash(50000)
 	strat := NewStrategy(cfg, book, runtimeState)
 	at := inSessionTime()
 
@@ -717,11 +718,55 @@ func TestStrategyUsesEffectiveCapitalForSizing(t *testing.T) {
 	}
 }
 
+func TestStrategyCapsSizingToAvailableCash(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.MaxExposurePct = 1.0
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(50000, 50500)
+	book.SyncBrokerCash(5000)
+	at := inSessionTime()
+	book.SeedPosition(domain.Position{
+		Symbol:      "SEEDED",
+		Quantity:    4500,
+		AvgPrice:    10,
+		LastPrice:   10,
+		MarketValue: 45000,
+		OpenedAt:    at.Add(-time.Hour),
+		UpdatedAt:   at.Add(-time.Hour),
+	})
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	signal, ok := strat.evaluateCandidate(domain.Candidate{
+		Symbol:               "HUMA",
+		Price:                10.00,
+		Open:                 9.60,
+		HighOfDay:            10.05,
+		GapPercent:           21,
+		RelativeVolume:       6.4,
+		PriceVsOpenPct:       4.17,
+		DistanceFromHighPct:  0.50,
+		OneMinuteReturnPct:   0.7,
+		ThreeMinuteReturnPct: 1.5,
+		VolumeRate:           2.1,
+		MinutesSinceOpen:     12,
+		Score:                22,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatal("expected strategy to emit entry signal")
+	}
+	if signal.Quantity != 500 {
+		t.Fatalf("expected quantity capped by remaining cash, got %d", signal.Quantity)
+	}
+}
+
 func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50500)
+	book.SyncBrokerCash(50000)
 	strat := NewStrategy(cfg, book, runtimeState)
 
 	signal, ok := strat.evaluateCandidate(domain.Candidate{

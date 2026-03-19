@@ -12,15 +12,15 @@ import (
 
 func testConfig() config.TradingConfig {
 	return config.TradingConfig{
-		StartingCapital:                 100_000,
-		RiskPerTradePct:                 0.01,
-		DailyLossLimitPct:               0.03,
-		MaxTradesPerDay:                 8,
-		MaxOpenPositions:                4,
-		MaxExposurePct:                  0.30,
-		EntryStopATRMultiplier:          1.00,
-		MaxRiskATRMultiplier:            4.00,
-		LimitOrderSlippageDollars:       0.10,
+		StartingCapital:           100_000,
+		RiskPerTradePct:           0.01,
+		DailyLossLimitPct:         0.03,
+		MaxTradesPerDay:           8,
+		MaxOpenPositions:          4,
+		MaxExposurePct:            0.30,
+		EntryStopATRMultiplier:    1.00,
+		MaxRiskATRMultiplier:      4.00,
+		LimitOrderSlippageDollars: 0.10,
 	}
 }
 
@@ -105,6 +105,7 @@ func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(93809.87, 100000)
+	book.SyncBrokerCash(93809.87)
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
@@ -117,12 +118,13 @@ func TestRiskBlocksEntriesWhenBrokerDayPnLExceedsLossLimit(t *testing.T) {
 	}
 }
 
-func TestRiskUsesEffectiveCapitalForMaxExposure(t *testing.T) {
+func TestRiskUsesCashValueForMaxExposure(t *testing.T) {
 	cfg := testConfig()
 	cfg.LimitOrderSlippageDollars = 0.05
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50000, 50000)
+	book.SyncBrokerCash(50000)
 	engine := NewEngine(cfg, book, runtimeState)
 	at := inSessionSignalTime()
 
@@ -140,6 +142,7 @@ func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
 	book.SyncBrokerAccount(50_000, 50_000)
+	book.SyncBrokerCash(50_000)
 	at := inSessionSignalTime()
 	book.ApplyExecution(testBuyExecution("EONR", 10, 1500, at.Add(-time.Minute)))
 	engine := NewEngine(cfg, book, runtimeState)
@@ -150,6 +153,35 @@ func TestRiskBlocksEntriesWhenNoExposureRemains(t *testing.T) {
 	}
 	if reason != "max-exposure" {
 		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestRiskTrimsEntriesToAvailableCash(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxExposurePct = 1.0
+	cfg.LimitOrderSlippageDollars = 0.05
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerAccount(50_000, 50_000)
+	book.SyncBrokerCash(5_000)
+	at := inSessionSignalTime()
+	book.SeedPosition(domain.Position{
+		Symbol:      "SEEDED",
+		Quantity:    4_500,
+		AvgPrice:    10,
+		LastPrice:   10,
+		MarketValue: 45_000,
+		OpenedAt:    at.Add(-time.Hour),
+		UpdatedAt:   at.Add(-time.Hour),
+	})
+	engine := NewEngine(cfg, book, runtimeState)
+
+	request, approved, reason := engine.Evaluate(testBuySignal("APVO", 10, 2000, at))
+	if !approved {
+		t.Fatalf("expected order to be trimmed to remaining cash, got %s", reason)
+	}
+	if request.Quantity != 498 {
+		t.Fatalf("expected quantity capped by $5,000 available cash, got %d", request.Quantity)
 	}
 }
 

@@ -99,6 +99,52 @@ func TestStatusSnapshotIncludesBrokerDayPnL(t *testing.T) {
 	}
 }
 
+func TestEffectiveCapitalUsesCashValueAndTracksBrokerCashAfterFills(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	manager.SyncBrokerAccount(50_000, 50_000)
+	manager.SyncBrokerCash(50_000)
+
+	if got := manager.AvailableCash(); got != 50_000 {
+		t.Fatalf("expected starting available cash 50000, got %.2f", got)
+	}
+	if got := manager.EffectiveCapital(); got != 50_000 {
+		t.Fatalf("expected starting cash value 50000, got %.2f", got)
+	}
+
+	at := time.Date(2026, time.March, 16, 13, 0, 0, 0, time.UTC)
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "buy",
+		Price:    10,
+		Quantity: 100,
+		FilledAt: at,
+	})
+
+	if got := manager.AvailableCash(); got != 49_000 {
+		t.Fatalf("expected available cash to drop after buy, got %.2f", got)
+	}
+	if got := manager.EffectiveCapital(); got != 50_000 {
+		t.Fatalf("expected cash value to stay anchored to cash plus deployed basis, got %.2f", got)
+	}
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:   "SOUN",
+		Side:     "sell",
+		Price:    11,
+		Quantity: 100,
+		FilledAt: at.Add(time.Minute),
+	})
+
+	if got := manager.AvailableCash(); got != 50_100 {
+		t.Fatalf("expected available cash to reflect realized proceeds, got %.2f", got)
+	}
+	if got := manager.EffectiveCapital(); got != 50_100 {
+		t.Fatalf("expected cash value to reflect realized pnl after close, got %.2f", got)
+	}
+}
+
 func TestStatusSnapshotUsesActualTradeCount(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

@@ -201,8 +201,10 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		return CandidateDecision{Reason: reason, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 
-	maxExposure := s.portfolio.EffectiveCapital() * s.config.MaxExposurePct
-	if s.portfolio.OpenPositionCount() >= s.config.MaxOpenPositions || s.portfolio.Exposure() >= maxExposure {
+	effectiveCapital := s.portfolio.EffectiveCapital()
+	availableCash := s.portfolio.AvailableCash()
+	maxExposure := effectiveCapital * s.config.MaxExposurePct
+	if s.portfolio.OpenPositionCount() >= s.config.MaxOpenPositions || s.portfolio.Exposure() >= maxExposure || availableCash < candidate.Price {
 		if candidate.Score >= 16.0 {
 			if s.evaluateOpportunitySwap(candidate) {
 				return CandidateDecision{Reason: "reallocation-swap-pending", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
@@ -212,13 +214,17 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	}
 
 	quantity := int64(0)
-	riskAmount := s.portfolio.EffectiveCapital() * s.config.RiskPerTradePct
+	riskAmount := effectiveCapital * s.config.RiskPerTradePct
 	if plan.RiskPerShare > 0 {
 		quantity = int64(riskAmount / plan.RiskPerShare)
 	}
 	quantity = int64(float64(quantity) * s.positionSizeMultiplier(candidate))
+	maxQuantityByCash := int64(availableCash / candidate.Price)
+	if maxQuantityByCash < quantity {
+		quantity = maxQuantityByCash
+	}
 	if quantity < 1 {
-		quantity = 1
+		return CandidateDecision{Reason: "max-capacity-reached", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	s.lastEntryAt[candidate.Symbol] = decisionAt
 	symbolState.entrySignals++

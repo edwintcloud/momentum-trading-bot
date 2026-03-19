@@ -115,9 +115,14 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if availableExposure <= 0 {
 		return domain.OrderRequest{}, false, "max-exposure"
 	}
+	availableCash := r.portfolio.AvailableCash()
+	if availableCash <= 0 {
+		return domain.OrderRequest{}, false, "max-exposure"
+	}
 	limitPrice := r.limitPrice(signal.Price, signal.Side)
 	quantity := signal.Quantity
-	maxQuantityByExposure := int64(availableExposure / limitPrice)
+	availableNotional := math.Min(availableExposure, availableCash)
+	maxQuantityByExposure := int64(availableNotional / limitPrice)
 	if maxQuantityByExposure < quantity {
 		quantity = maxQuantityByExposure
 	}

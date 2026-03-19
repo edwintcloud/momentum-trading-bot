@@ -24,6 +24,8 @@ type Manager struct {
 	closedTrades      []domain.ClosedTrade
 	startingCapital   float64
 	brokerEquity      float64
+	brokerCash        float64
+	brokerCashKnown   bool
 	dayPnL            float64
 	brokerTradesToday int
 	brokerTradesKnown bool
@@ -68,6 +70,17 @@ func (m *Manager) SyncBrokerAccount(equity float64, lastEquity float64) {
 	if lastEquity > 0 && equity > 0 {
 		m.dayPnL = round2(equity - lastEquity)
 	}
+}
+
+// SyncBrokerCash updates the broker-backed cash balance used for entry sizing.
+func (m *Manager) SyncBrokerCash(cash float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cash < 0 {
+		return
+	}
+	m.brokerCash = round2(cash)
+	m.brokerCashKnown = true
 }
 
 // SyncBrokerTradesToday updates the dashboard-facing trade count from Alpaca.
@@ -131,6 +144,9 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	position, exists := m.positions[report.Symbol]
 	if report.Side == "buy" {
 		isNewEntry := !exists
+		if m.brokerCashKnown {
+			m.brokerCash = round2(math.Max(0, m.brokerCash-(float64(report.Quantity)*report.Price)))
+		}
 		if exists {
 			totalCost := (float64(position.Quantity) * position.AvgPrice) + (float64(report.Quantity) * report.Price)
 			position.Quantity += report.Quantity
@@ -188,6 +204,9 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	closeQty := report.Quantity
 	if closeQty > position.Quantity {
 		closeQty = position.Quantity
+	}
+	if m.brokerCashKnown {
+		m.brokerCash = round2(m.brokerCash + (float64(closeQty) * report.Price))
 	}
 	pnl := (report.Price - position.AvgPrice) * float64(closeQty)
 	m.realizedPnL += pnl
@@ -452,12 +471,18 @@ func (m *Manager) DayPnL() float64 {
 	return round2(m.dayRealizedPnL + unrealized)
 }
 
-// EffectiveCapital returns broker equity when available, otherwise configured
-// starting capital.
+// EffectiveCapital returns the account's cash value for non-levered risk sizing.
 func (m *Manager) EffectiveCapital() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.effectiveCapitalLocked()
+}
+
+// AvailableCash returns cash currently available for new entries.
+func (m *Manager) AvailableCash() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.availableCashLocked()
 }
 
 // TradesToday returns the count of fills processed today.
@@ -547,10 +572,26 @@ func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
 }
 
 func (m *Manager) effectiveCapitalLocked() float64 {
-	if m.brokerEquity > 0 {
-		return round2(m.brokerEquity)
+	return round2(m.availableCashLocked() + m.openCostBasisLocked())
+}
+
+func (m *Manager) availableCashLocked() float64 {
+	if m.brokerCashKnown {
+		return round2(math.Max(0, m.brokerCash))
 	}
-	return round2(m.startingCapital)
+	cash := m.startingCapital + m.realizedPnL - m.openCostBasisLocked()
+	if cash < 0 {
+		cash = 0
+	}
+	return round2(cash)
+}
+
+func (m *Manager) openCostBasisLocked() float64 {
+	var basis float64
+	for _, position := range m.positions {
+		basis += float64(position.Quantity) * position.AvgPrice
+	}
+	return round2(basis)
 }
 
 func round2(value float64) float64 {

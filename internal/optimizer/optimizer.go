@@ -1505,8 +1505,8 @@ func inferMaxExposurePct(cfg config.TradingConfig) float64 {
 	if exposure < 0.25 {
 		exposure = 0.25
 	}
-	if exposure > 10.0 {
-		exposure = 10.0
+	if exposure > 1.0 {
+		exposure = 1.0
 	}
 	return round2(exposure)
 }

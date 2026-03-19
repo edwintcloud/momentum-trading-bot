@@ -97,9 +97,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("alpaca account fetch failed: %v", err)
 	}
-	if equity, _, ok := brokerAccountValues(account); ok {
-		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, equity, historicalRateLimit)
-	} else if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
+	if cash, ok := brokerCashValue(account); ok {
+		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, cash, historicalRateLimit)
+	} else if equity, _, ok := brokerAccountValues(account); ok {
 		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, equity, historicalRateLimit)
 	} else {
 		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, appConfig.Trading.StartingCapital, historicalRateLimit)
@@ -341,6 +341,9 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 	if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
 		portfolioManager.SetStartingCapital(math.Round(equity*100) / 100)
 	}
+	if cash, ok := brokerCashValue(account); ok {
+		portfolioManager.SyncBrokerCash(cash)
+	}
 	if equity, lastEquity, ok := brokerAccountValues(account); ok {
 		portfolioManager.SyncBrokerAccount(equity, lastEquity)
 	}
@@ -399,6 +402,9 @@ func syncBrokerDashboardState(ctx context.Context, client *alpaca.Client, portfo
 		runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker account sync failed: %v", err))
 		return
 	}
+	if cash, ok := brokerCashValue(account); ok {
+		portfolioManager.SyncBrokerCash(cash)
+	}
 	if equity, lastEquity, ok := brokerAccountValues(account); ok {
 		portfolioManager.SyncBrokerAccount(equity, lastEquity)
 	}
@@ -420,6 +426,14 @@ func brokerAccountValues(account alpaca.Account) (float64, float64, bool) {
 		return 0, 0, false
 	}
 	return equity, lastEquity, true
+}
+
+func brokerCashValue(account alpaca.Account) (float64, bool) {
+	cash, err := strconv.ParseFloat(account.Cash, 64)
+	if err != nil || cash < 0 {
+		return 0, false
+	}
+	return cash, true
 }
 
 func stringsBeforeDecimal(value string) string {

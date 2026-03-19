@@ -69,7 +69,9 @@ func runBacktest(args []string) error {
 			log.Printf("Backtest capability detection failed, using defaults: %v", capErr)
 		}
 		if account, accountErr := client.GetAccount(setupCtx); accountErr == nil {
-			if equity, _, ok := brokerAccountValues(account); ok {
+			if cash, ok := brokerCashValue(account); ok {
+				cfg = config.TuneTradingConfig(cfg, cash, historicalRateLimit)
+			} else if equity, _, ok := brokerAccountValues(account); ok {
 				cfg = config.TuneTradingConfig(cfg, equity, historicalRateLimit)
 			}
 		} else {
