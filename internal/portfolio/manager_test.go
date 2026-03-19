@@ -299,6 +299,41 @@ func TestPortfolioTracksShortPnLAndCloseAllUsesBuyToCover(t *testing.T) {
 	}
 }
 
+func TestPortfolioRebasesShortStopToActualFillPrice(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	at := time.Now().UTC().Add(-2 * time.Minute)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "WHLR",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionShort,
+		Price:        5.20,
+		Quantity:     100,
+		StopPrice:    5.53,
+		RiskPerShare: 0.31,
+		EntryATR:     0.56,
+		SetupType:    "parabolic-failed-reclaim-short",
+		FilledAt:     at,
+	})
+
+	position, exists := manager.Position("WHLR")
+	if !exists {
+		t.Fatal("expected short position to be open")
+	}
+	if position.StopPrice != 5.51 {
+		t.Fatalf("expected stop to preserve planned risk off actual fill, got %+v", position)
+	}
+	if position.InitialStopPrice != 5.51 {
+		t.Fatalf("expected initial stop to preserve planned risk off actual fill, got %+v", position)
+	}
+	if position.RiskPerShare != 0.31 {
+		t.Fatalf("expected risk/share to remain unchanged, got %+v", position)
+	}
+}
+
 func TestStatusSnapshotLockedCompletesWithQueuedWriter(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

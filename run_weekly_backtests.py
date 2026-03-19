@@ -3,12 +3,12 @@ import subprocess
 import csv
 import os
 import re
+import sys
 
 SUMMARY_PATTERN = re.compile(
     r"PnL\s+net=([+-]?\d+(?:\.\d+)?)\s+realized=([+-]?\d+(?:\.\d+)?)\s+"
     r"unrealized=([+-]?\d+(?:\.\d+)?)\s+ending_equity=([+-]?\d+(?:\.\d+)?)"
 )
-CSV_FILE = "weekly_backtest_results.csv"
 GO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "go-build")
 
 
@@ -51,8 +51,37 @@ def run_backtest(start_date, end_date):
     return net_pnl, profit_percentage
 
 def main():
-    start_date = datetime.date(2026, 1, 1)
-    end_limit = datetime.date(2026, 3, 16)
+    today = datetime.date.today()
+    end_limit = today
+    start_date = today - datetime.timedelta(days=90)
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        flag = args[i]
+        if flag in ("-start", "--start"):
+            if i + 1 >= len(args):
+                print("Missing value for -start", flush=True)
+                return
+            try:
+                start_date = datetime.datetime.strptime(args[i + 1], "%Y-%m-%d").date()
+            except ValueError:
+                print("Invalid -start format. Use YYYY-MM-DD", flush=True)
+                return
+            i += 2
+        elif flag in ("-end", "--end"):
+            if i + 1 >= len(args):
+                print("Missing value for -end", flush=True)
+                return
+            try:
+                end_limit = datetime.datetime.strptime(args[i + 1], "%Y-%m-%d").date()
+            except ValueError:
+                print("Invalid -end format. Use YYYY-MM-DD", flush=True)
+                return
+            i += 2
+        else:
+            print(f"Unknown argument: {flag}", flush=True)
+            return
     results = []
 
     current_start = start_date
@@ -78,6 +107,7 @@ def main():
 
         current_start += datetime.timedelta(days=7)
 
+    CSV_FILE = f"weekly_backtest_results_{start_date.strftime('%m%d%y')}-{end_limit.strftime('%m%d%y')}.csv"
     with open(CSV_FILE, mode="w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=["Week Start", "Week End", "Net Profit", "Profit Percentage"])
         writer.writeheader()

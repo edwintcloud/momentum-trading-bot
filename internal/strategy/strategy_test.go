@@ -156,6 +156,53 @@ func TestStrategyCreatesShortEntrySignal(t *testing.T) {
 	}
 }
 
+func TestStrategyCapsShortEntryStopToATRDistance(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.EnableShorts = true
+	cfg.ShortStopATRMultiplier = 0.55
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	signal, ok := strat.evaluateCandidate(domain.Candidate{
+		Symbol:               "WHLR",
+		Direction:            domain.DirectionShort,
+		Price:                5.22,
+		Open:                 4.80,
+		HighOfDay:            10.13,
+		GapPercent:           8.2,
+		RelativeVolume:       40.0,
+		PriceVsOpenPct:       8.75,
+		DistanceFromHighPct:  48.47,
+		OneMinuteReturnPct:   -8.90,
+		ThreeMinuteReturnPct: -14.71,
+		VolumeRate:           1.36,
+		VolumeLeaderPct:      1.0,
+		LeaderRank:           1,
+		MinutesSinceOpen:     145,
+		ATR:                  0.56,
+		ATRPct:               10.74,
+		PriceVsVWAPPct:       -8.50,
+		BreakoutPct:          -4.74,
+		CloseOffHighPct:      88,
+		SetupHigh:            6.39,
+		SetupLow:             5.48,
+		SetupType:            "parabolic-failed-reclaim-short",
+		Score:                121.34,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatal("expected short strategy to emit entry signal")
+	}
+	if signal.StopPrice != 5.53 {
+		t.Fatalf("expected short stop to respect ATR cap, got %+v", signal)
+	}
+	if signal.RiskPerShare != 0.31 {
+		t.Fatalf("expected short risk/share 0.31 after capping stop, got %+v", signal)
+	}
+}
+
 func TestStrategyAllowsPullbackAndGoWhenBroaderFollowThroughIsStrong(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
@@ -848,7 +895,7 @@ func TestStrategySizesPremarketEntriesMoreConservatively(t *testing.T) {
 	}
 }
 
-func TestStrategyUsesHardProfitTargetOnMassiveSpike(t *testing.T) {
+func TestStrategyDoesNotExitLongOnPureSpikeWithoutRetrace(t *testing.T) {
 	cfg := testStrategyConfig()
 	runtimeState := runtime.NewState()
 	book := portfolio.NewManager(cfg, runtimeState)
@@ -865,8 +912,8 @@ func TestStrategyUsesHardProfitTargetOnMassiveSpike(t *testing.T) {
 		Timestamp: at,
 	}
 	signal, ok := strat.evaluateExit(spikeTick)
-	if !ok || signal.Reason != "profit-target" {
-		t.Fatalf("expected profit-target exit immediately, got %+v", signal)
+	if ok {
+		t.Fatalf("expected strategy to hold until a stop or retrace is hit, got %+v", signal)
 	}
 }
 

@@ -69,12 +69,14 @@ func buildShortEntryPlan(cfg config.TradingConfig, candidate domain.Candidate) (
 	if atr <= 0 {
 		atr = candidate.Price * cfg.EntryATRPercentFallback
 	}
-	setupHigh := candidate.SetupHigh
-	if setupHigh <= candidate.Price {
-		setupHigh = candidate.Price + (atr * cfg.ShortStopATRMultiplier)
-	}
 	atrStop := candidate.Price + (atr * cfg.ShortStopATRMultiplier)
-	stopPrice := math.Max(setupHigh, atrStop)
+	stopPrice := atrStop
+	setupHigh := candidate.SetupHigh
+	if setupHigh > candidate.Price && setupHigh < stopPrice {
+		// Treat structure as a tightening input for shorts, but do not let an
+		// older reclaim high widen the stop beyond the configured ATR cap.
+		stopPrice = setupHigh
+	}
 	riskPerShare := stopPrice - candidate.Price
 	if riskPerShare <= 0 {
 		return EntryPlan{}, false, "invalid-risk"

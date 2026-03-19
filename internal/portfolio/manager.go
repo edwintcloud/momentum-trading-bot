@@ -88,6 +88,16 @@ func inferExecutionIntent(report domain.ExecutionReport, existing domain.Positio
 	return report
 }
 
+func normalizedEntryStop(report domain.ExecutionReport) float64 {
+	if report.Price <= 0 || report.RiskPerShare <= 0 {
+		return round2(report.StopPrice)
+	}
+	if domain.IsShort(report.PositionSide) {
+		return round2(report.Price + report.RiskPerShare)
+	}
+	return round2(math.Max(0.01, report.Price-report.RiskPerShare))
+}
+
 // NewManager creates a new portfolio manager.
 func NewManager(cfg config.TradingConfig, runtimeState *runtime.State) *Manager {
 	return &Manager{
@@ -196,6 +206,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	position, exists := m.positions[report.Symbol]
 	report = inferExecutionIntent(report, position, exists)
 	if domain.IsOpeningIntent(report.Intent) {
+		entryStop := normalizedEntryStop(report)
 		isNewEntry := !exists
 		if m.brokerCashKnown {
 			cashDelta := float64(report.Quantity) * report.Price
@@ -210,11 +221,11 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			position.Quantity += report.Quantity
 			position.AvgPrice = totalCost / float64(position.Quantity)
 			position.Side = report.PositionSide
-			if report.StopPrice > 0 {
-				position.StopPrice = report.StopPrice
+			if entryStop > 0 {
+				position.StopPrice = entryStop
 			}
-			if position.InitialStopPrice == 0 && report.StopPrice > 0 {
-				position.InitialStopPrice = report.StopPrice
+			if position.InitialStopPrice == 0 && entryStop > 0 {
+				position.InitialStopPrice = entryStop
 			}
 			if report.RiskPerShare > 0 {
 				position.RiskPerShare = report.RiskPerShare
@@ -237,8 +248,8 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 				Side:             report.PositionSide,
 				Quantity:         report.Quantity,
 				AvgPrice:         report.Price,
-				StopPrice:        report.StopPrice,
-				InitialStopPrice: report.StopPrice,
+				StopPrice:        entryStop,
+				InitialStopPrice: entryStop,
 				RiskPerShare:     report.RiskPerShare,
 				EntryATR:         report.EntryATR,
 				SetupType:        report.SetupType,
