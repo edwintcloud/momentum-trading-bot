@@ -2,6 +2,8 @@ package config
 
 import "math"
 
+const defaultStartingCapital = 100_000
+
 // TuneTradingConfig applies broker-aware defaults that bias toward conservative
 // momentum participation without requiring manual knob tuning.
 func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitPerMin int) TradingConfig {
@@ -32,6 +34,21 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	cfg.MinGapPercent = 1
 	cfg.MinRelativeVolume = 4
 	cfg.MinPremarketVolume = 60_000
+	cfg.ScannerMinPriceVsOpenPctFloor = 2.50
+	cfg.ScannerMinPriceVsOpenGapMultiplier = 0.25
+	cfg.ScannerMinSetupVolumeRateOffset = -0.05
+	cfg.ScannerMinSetupRelativeVolumeExtra = 0.25
+	cfg.ScannerVWAPTolerancePct = -0.10
+	cfg.ScannerConsolidationATRMultiplier = 1.75
+	cfg.ScannerConsolidationMaxPct = 4.50
+	cfg.ScannerPullbackDepthMinATRMultiplier = 0.35
+	cfg.ScannerPullbackDepthMinPct = 0.40
+	cfg.ScannerPullbackDepthMaxATRMultiplier = 2.40
+	cfg.ScannerPullbackDepthMaxPct = 8.00
+	cfg.ScannerRenewedVolumeRateMin = 1.05
+	cfg.HydrationRequestsPerMin = 120
+	cfg.HydrationRetrySec = 300
+	cfg.HydrationQueueSize = 512
 	cfg.LimitOrderSlippageDollars = 0.02
 	cfg.EntryATRPercentFallback = 0.02
 	cfg.EntryStopATRMultiplier = 2

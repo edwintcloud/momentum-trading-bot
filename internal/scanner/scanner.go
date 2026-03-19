@@ -229,16 +229,16 @@ func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct floa
 	if metrics.setupType == "" {
 		return false
 	}
-	if priceVsOpenPct < maxFloat(2.5, s.config.MinGapPercent*0.25) {
+	if priceVsOpenPct < maxFloat(s.config.ScannerMinPriceVsOpenPctFloor, s.config.MinGapPercent*s.config.ScannerMinPriceVsOpenGapMultiplier) {
 		return false
 	}
 	if metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
 		return false
 	}
-	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
+	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate+s.config.ScannerMinSetupVolumeRateOffset) {
 		return false
 	}
-	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25
+	return tick.RelativeVolume >= s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra
 }
 
 func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
@@ -297,10 +297,10 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	}
 	state.bars = trimmed
 
-	return deriveMetrics(state.bars)
+	return deriveMetrics(state.bars, s.config)
 }
 
-func deriveMetrics(bars []symbolBar) scanMetrics {
+func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 	if len(bars) == 0 {
 		return scanMetrics{}
 	}
@@ -335,7 +335,7 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	metrics.consolidationRangePct = rangePct(setupLow, setupHigh)
 	metrics.pullbackDepthPct = drawdownPct(impulseHigh, setupLow)
 
-	aboveVWAP := metrics.priceVsVWAPPct >= -0.10
+	aboveVWAP := metrics.priceVsVWAPPct >= cfg.ScannerVWAPTolerancePct
 	vwapReclaim := false
 	if len(completed) > 0 {
 		previous := completed[len(completed)-1]
@@ -345,12 +345,12 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	if current.close > 0 && metrics.atr > 0 {
 		atrPct = (metrics.atr / current.close) * 100
 	}
-	tightConsolidation := metrics.consolidationRangePct <= maxFloat(atrPct*1.75, 4.5)
-	shallowEnoughPullback := metrics.pullbackDepthPct >= maxFloat(atrPct*0.35, 0.40) &&
-		metrics.pullbackDepthPct <= maxFloat(atrPct*2.40, 8.0)
+	tightConsolidation := metrics.consolidationRangePct <= maxFloat(atrPct*cfg.ScannerConsolidationATRMultiplier, cfg.ScannerConsolidationMaxPct)
+	shallowEnoughPullback := metrics.pullbackDepthPct >= maxFloat(atrPct*cfg.ScannerPullbackDepthMinATRMultiplier, cfg.ScannerPullbackDepthMinPct) &&
+		metrics.pullbackDepthPct <= maxFloat(atrPct*cfg.ScannerPullbackDepthMaxATRMultiplier, cfg.ScannerPullbackDepthMaxPct)
 	strengthClose := metrics.closeOffHighPct <= 35
 	higherLow := priorPullbackLow > 0 && setupLow > priorPullbackLow
-	renewedVolume := metrics.volumeRate >= 1.05
+	renewedVolume := metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin
 
 	switch {
 	case metrics.breakoutPct >= -0.15 && tightConsolidation && shallowEnoughPullback && aboveVWAP && strengthClose:

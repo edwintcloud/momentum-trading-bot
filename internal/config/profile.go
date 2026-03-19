@@ -105,6 +105,42 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.ProfitTargetR = overrides.ProfitTargetR
 	cfg.FailedBreakoutCutR = overrides.FailedBreakoutCutR
 	cfg.StructureConfirmR = overrides.StructureConfirmR
+	if overrides.ScannerMinPriceVsOpenPctFloor > 0 {
+		cfg.ScannerMinPriceVsOpenPctFloor = overrides.ScannerMinPriceVsOpenPctFloor
+	}
+	if overrides.ScannerMinPriceVsOpenGapMultiplier > 0 {
+		cfg.ScannerMinPriceVsOpenGapMultiplier = overrides.ScannerMinPriceVsOpenGapMultiplier
+	}
+	if overrides.ScannerMinSetupVolumeRateOffset != 0 {
+		cfg.ScannerMinSetupVolumeRateOffset = overrides.ScannerMinSetupVolumeRateOffset
+	}
+	if overrides.ScannerMinSetupRelativeVolumeExtra != 0 {
+		cfg.ScannerMinSetupRelativeVolumeExtra = overrides.ScannerMinSetupRelativeVolumeExtra
+	}
+	if overrides.ScannerVWAPTolerancePct != 0 {
+		cfg.ScannerVWAPTolerancePct = overrides.ScannerVWAPTolerancePct
+	}
+	if overrides.ScannerConsolidationATRMultiplier > 0 {
+		cfg.ScannerConsolidationATRMultiplier = overrides.ScannerConsolidationATRMultiplier
+	}
+	if overrides.ScannerConsolidationMaxPct > 0 {
+		cfg.ScannerConsolidationMaxPct = overrides.ScannerConsolidationMaxPct
+	}
+	if overrides.ScannerPullbackDepthMinATRMultiplier > 0 {
+		cfg.ScannerPullbackDepthMinATRMultiplier = overrides.ScannerPullbackDepthMinATRMultiplier
+	}
+	if overrides.ScannerPullbackDepthMinPct > 0 {
+		cfg.ScannerPullbackDepthMinPct = overrides.ScannerPullbackDepthMinPct
+	}
+	if overrides.ScannerPullbackDepthMaxATRMultiplier > 0 {
+		cfg.ScannerPullbackDepthMaxATRMultiplier = overrides.ScannerPullbackDepthMaxATRMultiplier
+	}
+	if overrides.ScannerPullbackDepthMaxPct > 0 {
+		cfg.ScannerPullbackDepthMaxPct = overrides.ScannerPullbackDepthMaxPct
+	}
+	if overrides.ScannerRenewedVolumeRateMin > 0 {
+		cfg.ScannerRenewedVolumeRateMin = overrides.ScannerRenewedVolumeRateMin
+	}
 	return cfg
 }
 

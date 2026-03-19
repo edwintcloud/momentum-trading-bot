@@ -136,13 +136,16 @@ type ArtifactStatus struct {
 	LastPaperValidationResult string
 }
 
-// Params controls a weekly optimization run.
+// Params controls an optimization run.
 type Params struct {
-	BaseConfig  config.TradingConfig
-	Bars        []backtest.InputBar
-	LoadWeek    func(context.Context, WeeklyWindow) ([]backtest.InputBar, error)
-	AsOf        time.Time
-	ArtifactDir string
+	BaseConfig      config.TradingConfig
+	Bars            []backtest.InputBar
+	LoadWeek        func(context.Context, WeeklyWindow) ([]backtest.InputBar, error)
+	AsOf            time.Time
+	ArtifactDir     string
+	SearchWeeks     []WeeklyWindow
+	ValidationWeeks []WeeklyWindow
+	HoldoutWeeks    []WeeklyWindow
 }
 
 type weeklyBarSlice struct {
@@ -228,6 +231,54 @@ var floatKnobs = []floatKnobSpec{
 		},
 		get: func(cfg config.TradingConfig) float64 { return cfg.MaxPriceVsOpenPct },
 		set: func(cfg *config.TradingConfig, v float64) { cfg.MaxPriceVsOpenPct = round2(v) },
+	},
+	{
+		name: "ScannerMinPriceVsOpenPctFloor",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ScannerMinPriceVsOpenPctFloor, 1.0, 4.0, 0.25, 0.50)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ScannerMinPriceVsOpenPctFloor },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ScannerMinPriceVsOpenPctFloor = round2(v) },
+	},
+	{
+		name: "ScannerMinSetupRelativeVolumeExtra",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ScannerMinSetupRelativeVolumeExtra, 0.0, 1.0, 0.10, 0.20)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ScannerMinSetupRelativeVolumeExtra },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ScannerMinSetupRelativeVolumeExtra = round2(v) },
+	},
+	{
+		name: "ScannerMinSetupVolumeRateOffset",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ScannerMinSetupVolumeRateOffset, -0.30, 0.15, 0.05, 0.10)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ScannerMinSetupVolumeRateOffset },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ScannerMinSetupVolumeRateOffset = round2(v) },
+	},
+	{
+		name: "ScannerVWAPTolerancePct",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ScannerVWAPTolerancePct, -0.50, 0.15, 0.10, 0.20)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ScannerVWAPTolerancePct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ScannerVWAPTolerancePct = round2(v) },
+	},
+	{
+		name: "ScannerConsolidationMaxPct",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ScannerConsolidationMaxPct, 3.0, 6.0, 0.25, 0.50)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ScannerConsolidationMaxPct },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ScannerConsolidationMaxPct = round2(v) },
+	},
+	{
+		name: "ScannerRenewedVolumeRateMin",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.ScannerRenewedVolumeRateMin, 0.85, 1.50, 0.05, 0.10)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.ScannerRenewedVolumeRateMin },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.ScannerRenewedVolumeRateMin = round2(v) },
 	},
 	{
 		name: "RiskPerTradePct",
@@ -337,15 +388,10 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	}
 	runStartedAt := time.Now().UTC()
 	base := config.NormalizeStrategyProfile(params.BaseConfig)
-	completedWeekEnd := PriorCompletedWeekEnd(params.AsOf)
-	allWeeks := BuildWeeklyWindows(completedWeekEnd, 20)
-	if len(allWeeks) != 20 {
-		return OptimizationReport{}, nil, fmt.Errorf("expected 20 completed weeks, got %d", len(allWeeks))
+	completedWeekEnd, searchWeeks, validationWeeks, holdoutWeeks, err := resolveRunWindows(params)
+	if err != nil {
+		return OptimizationReport{}, nil, err
 	}
-
-	searchWeeks := append([]WeeklyWindow(nil), allWeeks[:12]...)
-	validationWeeks := append([]WeeklyWindow(nil), allWeeks[12:16]...)
-	holdoutWeeks := append([]WeeklyWindow(nil), allWeeks[16:]...)
 
 	report := OptimizationReport{
 		Run: OptimizationRun{
@@ -398,23 +444,23 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		if err := updateProgress("prepare", 0, 1, "partitioning in-memory bars by completed trading week"); err != nil {
 			return OptimizationReport{}, nil, err
 		}
-		allWeekSlices := sliceBarsByWeek(params.Bars, allWeeks)
-		searchSlices := allWeekSlices[:12]
-		validationSlices := allWeekSlices[12:16]
-		holdoutSlices := allWeekSlices[16:]
+		partitionWeeks := uniqueWeeklyWindows(append(append(append([]WeeklyWindow(nil), searchWeeks...), validationWeeks...), holdoutWeeks...))
+		allWeekSlices := sliceBarsByWeek(params.Bars, partitionWeeks)
+		slicesByLabel := make(map[string]weeklyBarSlice, len(allWeekSlices))
+		for _, week := range allWeekSlices {
+			slicesByLabel[week.Window.Label] = week
+		}
 		log.Printf(
 			"Optimizer dataset weekly_partitions=%d search_bars=%d validation_bars=%d holdout_bars=%d total_bars=%d",
-			len(allWeekSlices),
-			totalBarsInSlices(searchSlices),
-			totalBarsInSlices(validationSlices),
-			totalBarsInSlices(holdoutSlices),
+			len(partitionWeeks),
+			totalBarsForWindows(searchWeeks, slicesByLabel),
+			totalBarsForWindows(validationWeeks, slicesByLabel),
+			totalBarsForWindows(holdoutWeeks, slicesByLabel),
 			totalBarsInSlices(allWeekSlices),
 		)
 		loadWeek = func(_ context.Context, window WeeklyWindow) ([]backtest.InputBar, error) {
-			for _, week := range allWeekSlices {
-				if week.Window.Label == window.Label {
-					return week.Bars, nil
-				}
+			if week, ok := slicesByLabel[window.Label]; ok {
+				return week.Bars, nil
 			}
 			return nil, fmt.Errorf("no in-memory bars for week %s", window.Label)
 		}
@@ -496,6 +542,28 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		tracker.RegisterStage("finalize", 1)
 		if err := updateProgress("finalize", 1, 1, "writing final optimizer artifacts"); err != nil {
 			return OptimizationReport{}, nil, err
+		}
+		if err := writeArtifacts(params.ArtifactDir, &report, nil); err != nil {
+			return OptimizationReport{}, nil, err
+		}
+		return report, nil, nil
+	}
+
+	if len(holdoutWeeks) == 0 {
+		tracker.RegisterStage("finalize", 1)
+		if err := updateProgress("finalize", 1, 1, "writing single-window optimizer artifacts"); err != nil {
+			return OptimizationReport{}, nil, err
+		}
+		finalized := finalizeWithoutHoldout(finalists)
+		report.Candidates = finalized
+		if len(finalized) > 0 {
+			winner := finalized[0]
+			report.Winner = &winner
+			profile := buildTradingProfile(winner, report.Run)
+			if err := writeArtifacts(params.ArtifactDir, &report, &profile); err != nil {
+				return OptimizationReport{}, nil, err
+			}
+			return report, &profile, nil
 		}
 		if err := writeArtifacts(params.ArtifactDir, &report, nil); err != nil {
 			return OptimizationReport{}, nil, err
@@ -662,6 +730,76 @@ func BuildWeeklyWindows(completedWeekEnd time.Time, count int) []WeeklyWindow {
 		})
 	}
 	return windows
+}
+
+func resolveRunWindows(params Params) (time.Time, []WeeklyWindow, []WeeklyWindow, []WeeklyWindow, error) {
+	if len(params.SearchWeeks) > 0 || len(params.ValidationWeeks) > 0 || len(params.HoldoutWeeks) > 0 {
+		searchWeeks := append([]WeeklyWindow(nil), params.SearchWeeks...)
+		validationWeeks := append([]WeeklyWindow(nil), params.ValidationWeeks...)
+		holdoutWeeks := append([]WeeklyWindow(nil), params.HoldoutWeeks...)
+		if len(searchWeeks) == 0 {
+			return time.Time{}, nil, nil, nil, fmt.Errorf("optimizer custom mode requires at least one search window")
+		}
+		if len(validationWeeks) == 0 {
+			validationWeeks = append([]WeeklyWindow(nil), searchWeeks...)
+		}
+		completedWeekEnd := params.AsOf.UTC()
+		if completedWeekEnd.IsZero() {
+			completedWeekEnd = latestWindowEnd(searchWeeks, validationWeeks, holdoutWeeks)
+		}
+		if completedWeekEnd.IsZero() {
+			return time.Time{}, nil, nil, nil, fmt.Errorf("optimizer custom mode requires a non-zero window end")
+		}
+		return completedWeekEnd, searchWeeks, validationWeeks, holdoutWeeks, nil
+	}
+
+	completedWeekEnd := PriorCompletedWeekEnd(params.AsOf)
+	allWeeks := BuildWeeklyWindows(completedWeekEnd, 20)
+	if len(allWeeks) != 20 {
+		return time.Time{}, nil, nil, nil, fmt.Errorf("expected 20 completed weeks, got %d", len(allWeeks))
+	}
+	searchWeeks := append([]WeeklyWindow(nil), allWeeks[:12]...)
+	validationWeeks := append([]WeeklyWindow(nil), allWeeks[12:16]...)
+	holdoutWeeks := append([]WeeklyWindow(nil), allWeeks[16:]...)
+	return completedWeekEnd, searchWeeks, validationWeeks, holdoutWeeks, nil
+}
+
+func latestWindowEnd(groups ...[]WeeklyWindow) time.Time {
+	var latest time.Time
+	for _, group := range groups {
+		for _, window := range group {
+			if window.End.After(latest) {
+				latest = window.End
+			}
+		}
+	}
+	return latest
+}
+
+func uniqueWeeklyWindows(windows []WeeklyWindow) []WeeklyWindow {
+	if len(windows) == 0 {
+		return nil
+	}
+	out := make([]WeeklyWindow, 0, len(windows))
+	seen := make(map[string]struct{}, len(windows))
+	for _, window := range windows {
+		if _, exists := seen[window.Label]; exists {
+			continue
+		}
+		seen[window.Label] = struct{}{}
+		out = append(out, window)
+	}
+	return out
+}
+
+func totalBarsForWindows(windows []WeeklyWindow, slicesByLabel map[string]weeklyBarSlice) int {
+	total := 0
+	for _, window := range windows {
+		if slice, ok := slicesByLabel[window.Label]; ok {
+			total += len(slice.Bars)
+		}
+	}
+	return total
 }
 
 // LoadArtifactStatus reads the latest optimizer artifacts for dashboard status.
@@ -1022,6 +1160,30 @@ func topCandidates(candidates []OptimizerCandidate, limit int, summary func(Opti
 		out[i].Rank = i + 1
 	}
 	return out
+}
+
+func finalizeWithoutHoldout(candidates []OptimizerCandidate) []OptimizerCandidate {
+	finalized := make([]OptimizerCandidate, len(candidates))
+	copy(finalized, candidates)
+	for index := range finalized {
+		summary := finalized[index].ValidationSummary
+		finalized[index].Score = CandidateScore{
+			HoldoutMedianWeeklyReturnPct: round2(summary.MedianWeeklyReturnPct),
+			PositiveWeeksPct:             round2(summary.PositiveWeeksPct),
+			HoldoutP25WeeklyReturnPct:    round2(summary.P25WeeklyReturnPct),
+			ProfitFactor:                 round2(summary.ProfitFactor),
+			MaxDrawdownPct:               round2(summary.MaxDrawdownPct),
+		}
+		finalized[index].RejectReasons = append(finalized[index].RejectReasons, "single-window-no-holdout")
+		finalized[index].Promotable = false
+	}
+	sort.Slice(finalized, func(i, j int) bool {
+		return compareFinalCandidates(finalized[i], finalized[j]) < 0
+	})
+	for index := range finalized {
+		finalized[index].Rank = index + 1
+	}
+	return finalized
 }
 
 func compareSummary(a, b PeriodSummary) int {
@@ -1411,6 +1573,18 @@ func normalizeCandidateConfig(cfg config.TradingConfig) config.TradingConfig {
 	cfg.MinThreeMinuteReturnPct = clampFloat(cfg.MinThreeMinuteReturnPct, 0.20, 2.25)
 	cfg.MinVolumeRate = clampFloat(cfg.MinVolumeRate, 0.80, 2.40)
 	cfg.MaxPriceVsOpenPct = clampFloat(cfg.MaxPriceVsOpenPct, 15.0, 40.0)
+	cfg.ScannerMinPriceVsOpenPctFloor = clampFloat(cfg.ScannerMinPriceVsOpenPctFloor, 1.0, 4.0)
+	cfg.ScannerMinPriceVsOpenGapMultiplier = clampFloat(cfg.ScannerMinPriceVsOpenGapMultiplier, 0.10, 0.50)
+	cfg.ScannerMinSetupVolumeRateOffset = clampFloat(cfg.ScannerMinSetupVolumeRateOffset, -0.30, 0.15)
+	cfg.ScannerMinSetupRelativeVolumeExtra = clampFloat(cfg.ScannerMinSetupRelativeVolumeExtra, 0.0, 1.0)
+	cfg.ScannerVWAPTolerancePct = clampFloat(cfg.ScannerVWAPTolerancePct, -0.50, 0.15)
+	cfg.ScannerConsolidationATRMultiplier = clampFloat(cfg.ScannerConsolidationATRMultiplier, 1.0, 2.5)
+	cfg.ScannerConsolidationMaxPct = clampFloat(cfg.ScannerConsolidationMaxPct, 3.0, 6.0)
+	cfg.ScannerPullbackDepthMinATRMultiplier = clampFloat(cfg.ScannerPullbackDepthMinATRMultiplier, 0.10, 1.0)
+	cfg.ScannerPullbackDepthMinPct = clampFloat(cfg.ScannerPullbackDepthMinPct, 0.10, 2.0)
+	cfg.ScannerPullbackDepthMaxATRMultiplier = clampFloat(cfg.ScannerPullbackDepthMaxATRMultiplier, 1.0, 3.5)
+	cfg.ScannerPullbackDepthMaxPct = clampFloat(cfg.ScannerPullbackDepthMaxPct, 4.0, 12.0)
+	cfg.ScannerRenewedVolumeRateMin = clampFloat(cfg.ScannerRenewedVolumeRateMin, 0.85, 1.50)
 	cfg.RiskPerTradePct = clampFloat(cfg.RiskPerTradePct, 0.0025, 0.0200)
 	cfg.BreakEvenMinR = clampFloat(cfg.BreakEvenMinR, 0.25, 0.85)
 	cfg.TrailActivationR = clampFloat(cfg.TrailActivationR, 0.45, 1.10)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
@@ -19,30 +20,68 @@ func runOptimize(args []string) error {
 	flags.SetOutput(os.Stdout)
 
 	asOfRaw := flags.String("as-of", "", "Optimization cutoff date/time; uses completed weeks through the prior Friday close")
+	startRaw := flags.String("start", "", "Optional custom optimization start timestamp")
+	endRaw := flags.String("end", "", "Optional custom optimization end timestamp")
 	dataPath := flags.String("data", "", "Optional CSV bars file for offline optimization")
 	artifactDir := flags.String("out", optimizer.DefaultArtifactDir, "Directory for optimizer reports and candidate profiles")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *asOfRaw == "" {
-		return fmt.Errorf("as-of is required")
+
+	customWindowMode := strings.TrimSpace(*startRaw) != "" || strings.TrimSpace(*endRaw) != ""
+	if customWindowMode && strings.TrimSpace(*startRaw) == "" {
+		return fmt.Errorf("start is required when using a custom optimization window")
+	}
+	if !customWindowMode && *asOfRaw == "" {
+		return fmt.Errorf("as-of is required unless start/end are provided")
 	}
 
-	asOf, dateOnly, err := parseCLIBacktestTime(*asOfRaw)
-	if err != nil {
-		return err
+	asOf := time.Time{}
+	start := time.Time{}
+	end := time.Time{}
+	searchWeeks := []optimizer.WeeklyWindow(nil)
+	validationWeeks := []optimizer.WeeklyWindow(nil)
+	if customWindowMode {
+		var err error
+		start, _, err = parseCLIBacktestTime(*startRaw)
+		if err != nil {
+			return err
+		}
+		var endDateOnly bool
+		end, endDateOnly, err = parseCLIBacktestTime(*endRaw)
+		if err != nil {
+			return err
+		}
+		start, end, err = inferBacktestWindows(start, end, endDateOnly, true)
+		if err != nil {
+			return err
+		}
+		label := fmt.Sprintf("%s..%s", start.In(marketTimeLocation()).Format("2006-01-02"), end.In(marketTimeLocation()).Format("2006-01-02"))
+		window := optimizer.WeeklyWindow{
+			Label: label,
+			Start: start,
+			End:   end,
+		}
+		searchWeeks = []optimizer.WeeklyWindow{window}
+		validationWeeks = []optimizer.WeeklyWindow{window}
+		asOf = end
+	} else {
+		parsedAsOf, dateOnly, err := parseCLIBacktestTime(*asOfRaw)
+		if err != nil {
+			return err
+		}
+		if dateOnly {
+			parsedAsOf = endOfMarketDay(parsedAsOf)
+		}
+		asOf = parsedAsOf
+		completedWeekEnd := optimizer.PriorCompletedWeekEnd(asOf)
+		weeks := optimizer.BuildWeeklyWindows(completedWeekEnd, 20)
+		if len(weeks) == 0 {
+			return fmt.Errorf("unable to derive completed weekly windows")
+		}
+		start = weeks[0].Start
+		end = weeks[len(weeks)-1].End
 	}
-	if dateOnly {
-		asOf = endOfMarketDay(asOf)
-	}
-
-	completedWeekEnd := optimizer.PriorCompletedWeekEnd(asOf)
-	weeks := optimizer.BuildWeeklyWindows(completedWeekEnd, 20)
-	if len(weeks) == 0 {
-		return fmt.Errorf("unable to derive completed weekly windows")
-	}
-	start := weeks[0].Start
-	end := weeks[len(weeks)-1].End
 
 	cfg := config.NormalizeStrategyProfile(config.DefaultTradingConfig())
 	var loadWeek func(context.Context, optimizer.WeeklyWindow) ([]backtest.InputBar, error)
@@ -96,12 +135,18 @@ func runOptimize(args []string) error {
 		}
 	}
 
-	log.Printf("Optimizer window start=%s end=%s completed_week_end=%s", formatLogTime(start), formatLogTime(end), formatLogTime(completedWeekEnd))
+	if customWindowMode {
+		log.Printf("Optimizer custom window start=%s end=%s", formatLogTime(start), formatLogTime(end))
+	} else {
+		log.Printf("Optimizer window start=%s end=%s completed_week_end=%s", formatLogTime(start), formatLogTime(end), formatLogTime(optimizer.PriorCompletedWeekEnd(asOf)))
+	}
 	report, profile, err := optimizer.Run(context.Background(), optimizer.Params{
-		BaseConfig:  cfg,
-		LoadWeek:    loadWeek,
-		AsOf:        asOf,
-		ArtifactDir: *artifactDir,
+		BaseConfig:      cfg,
+		LoadWeek:        loadWeek,
+		AsOf:            asOf,
+		ArtifactDir:     *artifactDir,
+		SearchWeeks:     searchWeeks,
+		ValidationWeeks: validationWeeks,
 	})
 	if err != nil {
 		return err
