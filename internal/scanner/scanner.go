@@ -139,7 +139,13 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if !tick.VolumeSpike {
 		return domain.Candidate{}, false, "volume-spike"
 	}
-	if !s.qualifiesMomentumProfile(tick, priceVsOpenPct, metrics) {
+	direction := domain.DirectionLong
+	switch {
+	case metrics.setupType == "parabolic-failed-reclaim-short" && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, metrics):
+		direction = domain.DirectionShort
+	case s.qualifiesMomentumProfile(tick, priceVsOpenPct, metrics):
+		direction = domain.DirectionLong
+	default:
 		return domain.Candidate{}, false, "not-gap-or-squeeze"
 	}
 
@@ -152,6 +158,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	}
 	return domain.Candidate{
 		Symbol:                tick.Symbol,
+		Direction:             direction,
 		Price:                 tick.Price,
 		Open:                  tick.Open,
 		GapPercent:            tick.GapPercent,
@@ -186,6 +193,17 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 }
 
 func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
+	direction := domain.DirectionLong
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
+		direction = domain.DirectionShort
+	}
+	if domain.IsShort(direction) {
+		return s.shortMomentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, leaderRank, metrics)
+	}
+	return s.longMomentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, leaderRank, metrics)
+}
+
+func (s *Scanner) longMomentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
 	score := (clampFloat(tick.GapPercent, -10, 35) * 0.15) +
 		(clampFloat(tick.RelativeVolume, 0, 18) * 1.25) +
 		(clampFloat(priceVsOpenPct, -5, 30) * 0.45) +
@@ -239,6 +257,70 @@ func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct floa
 		return false
 	}
 	return tick.RelativeVolume >= s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra
+}
+
+func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct float64, metrics scanMetrics) bool {
+	if !s.config.EnableShorts {
+		return false
+	}
+	if metrics.setupType != "parabolic-failed-reclaim-short" {
+		return false
+	}
+	if tick.Open <= 0 || tick.HighOfDay <= 0 {
+		return false
+	}
+	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
+	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
+		return false
+	}
+	if tick.GapPercent < s.config.MinGapPercent {
+		return false
+	}
+	if tick.RelativeVolume < s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra {
+		return false
+	}
+	if metrics.priceVsVWAPPct > s.config.ShortVWAPBreakMinPct {
+		return false
+	}
+	if metrics.oneMinuteReturn >= -maxFloat(0.25, s.config.MinOneMinuteReturnPct*0.50) {
+		return false
+	}
+	if metrics.threeMinuteReturn >= -maxFloat(0.50, s.config.MinThreeMinuteReturnPct*0.75) {
+		return false
+	}
+	if metrics.breakoutPct > -0.05 {
+		return false
+	}
+	return priceVsOpenPct >= maxFloat(2.0, s.config.MinGapPercent*0.5)
+}
+
+func (s *Scanner) shortMomentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
+	peakExtensionPct := 0.0
+	if tick.Open > 0 && tick.HighOfDay > tick.Open {
+		peakExtensionPct = ((tick.HighOfDay - tick.Open) / tick.Open) * 100
+	}
+	score := (clampFloat(tick.GapPercent, 0, 35) * 0.20) +
+		(clampFloat(tick.RelativeVolume, 0, 18) * 1.30) +
+		(clampFloat(priceVsOpenPct, 0, 30) * 0.20) +
+		(clampFloat(peakExtensionPct, 0, 35) * 0.55) +
+		(clampFloat(-metrics.oneMinuteReturn, 0, 4.5) * 1.45) +
+		(clampFloat(-metrics.threeMinuteReturn, 0, 8) * 1.20) +
+		(clampFloat(metrics.volumeRate, 0.5, 4) * 1.15) +
+		(clampFloat(-metrics.priceVsVWAPPct, 0, 8) * 1.35) +
+		(clampFloat(-metrics.breakoutPct, 0, 5) * 1.65) +
+		(clampFloat(distanceFromHighPct, 0, 12) * 0.55) +
+		(clampFloat(metrics.closeOffHighPct, 0, 100) * 0.08) +
+		(clampFloat(volumeLeaderPct, 0, 1) * 5.50)
+
+	if leaderRank == 1 {
+		score += 2.5
+	} else if leaderRank == 2 {
+		score += 1.25
+	}
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
+		score += 8.5
+	}
+	return score
 }
 
 func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
@@ -351,8 +433,26 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 	strengthClose := metrics.closeOffHighPct <= 35
 	higherLow := priorPullbackLow > 0 && setupLow > priorPullbackLow
 	renewedVolume := metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin
+	peakHigh := maxBarHigh(lastNBars(completed, 12))
+	peakExtensionPct := percentChange(bars[0].open, peakHigh)
+	reclaimFailureHigh := maxBarHigh(lastNBars(completed, 3))
+	breakdownLow := minBarLow(lastNBars(completed, 3))
+	weakClose := metrics.closeOffHighPct >= 60
 
 	switch {
+	case peakExtensionPct >= cfg.ShortPeakExtensionMinPct &&
+		metrics.oneMinuteReturn <= -0.35 &&
+		metrics.threeMinuteReturn <= -0.75 &&
+		metrics.priceVsVWAPPct <= cfg.ShortVWAPBreakMinPct &&
+		weakClose &&
+		breakdownLow > 0 &&
+		current.close < breakdownLow &&
+		reclaimFailureHigh > current.close &&
+		reclaimFailureHigh < peakHigh:
+		metrics.setupType = "parabolic-failed-reclaim-short"
+		metrics.setupHigh = reclaimFailureHigh
+		metrics.setupLow = breakdownLow
+		metrics.breakoutPct = percentChange(breakdownLow, current.close)
 	case metrics.breakoutPct >= -0.15 && tightConsolidation && shallowEnoughPullback && aboveVWAP && strengthClose:
 		metrics.setupType = "consolidation-breakout"
 	case metrics.breakoutPct >= -maxFloat(atrPct*0.60, 0.45) &&

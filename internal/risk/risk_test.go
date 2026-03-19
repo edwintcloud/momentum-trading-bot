@@ -13,15 +13,26 @@ import (
 func testConfig() config.TradingConfig {
 	return config.TradingConfig{
 		StartingCapital:           100_000,
+		EnableShorts:              false,
 		RiskPerTradePct:           0.01,
 		DailyLossLimitPct:         0.03,
 		MaxTradesPerDay:           8,
 		MaxOpenPositions:          4,
 		MaxExposurePct:            0.30,
+		MaxShortOpenPositions:     1,
+		MaxShortExposurePct:       0.15,
+		ShortMinEntryScore:        20,
 		EntryStopATRMultiplier:    1.00,
+		ShortStopATRMultiplier:    1.25,
 		MaxRiskATRMultiplier:      4.00,
 		LimitOrderSlippageDollars: 0.10,
 	}
+}
+
+type stubShortableChecker map[string]bool
+
+func (s stubShortableChecker) IsShortable(symbol string) bool {
+	return s[symbol]
 }
 
 func inSessionSignalTime() time.Time {
@@ -312,5 +323,68 @@ func TestRiskCapsAdaptiveBufferForHigherPricedNames(t *testing.T) {
 	}
 	if request.Price != 27.09 {
 		t.Fatalf("expected capped buy limit of 27.09, got %.2f", request.Price)
+	}
+}
+
+func TestRiskBlocksShortEntriesWhenSymbolIsNotShortable(t *testing.T) {
+	cfg := testConfig()
+	cfg.EnableShorts = true
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	engine := NewEngine(cfg, book, runtimeState, stubShortableChecker{"IBIO": false})
+	at := inSessionSignalTime()
+
+	_, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:       "IBIO",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionShort,
+		Price:        8.40,
+		Quantity:     100,
+		StopPrice:    8.95,
+		RiskPerShare: 0.55,
+		EntryATR:     0.32,
+		SetupType:    "parabolic-failed-reclaim-short",
+		Reason:       "short-test",
+		Timestamp:    at,
+	})
+	if approved {
+		t.Fatal("expected non-shortable symbol to be blocked")
+	}
+	if reason != "symbol-not-shortable" {
+		t.Fatalf("unexpected block reason: %s", reason)
+	}
+}
+
+func TestRiskApprovesShortEntriesWithinDedicatedCaps(t *testing.T) {
+	cfg := testConfig()
+	cfg.EnableShorts = true
+	cfg.MaxShortOpenPositions = 2
+	cfg.MaxShortExposurePct = 0.20
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	book.SyncBrokerCash(50_000)
+	engine := NewEngine(cfg, book, runtimeState, stubShortableChecker{"IBIO": true})
+	at := inSessionSignalTime()
+
+	request, approved, reason := engine.Evaluate(domain.TradeSignal{
+		Symbol:       "IBIO",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionShort,
+		Price:        8.40,
+		Quantity:     1000,
+		StopPrice:    8.95,
+		RiskPerShare: 0.55,
+		EntryATR:     0.32,
+		SetupType:    "parabolic-failed-reclaim-short",
+		Reason:       "short-test",
+		Timestamp:    at,
+	})
+	if !approved {
+		t.Fatalf("expected short entry approval, got %s", reason)
+	}
+	if request.Side != domain.SideSell || request.Intent != domain.IntentOpen || request.PositionSide != domain.DirectionShort {
+		t.Fatalf("unexpected short request: %+v", request)
 	}
 }

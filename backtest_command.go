@@ -26,6 +26,7 @@ func runBacktest(args []string) error {
 	dataPath := flags.String("data", "", "Optional CSV fallback with timestamp,symbol,open,high,low,close,volume columns")
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
 	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
+	enableShorts := flags.Bool("enable-shorts", true, "Enable short entries during backtests")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -99,6 +100,7 @@ func runBacktest(args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.EnableShorts = *enableShorts
 	if profileLabel != "" {
 		log.Printf("Backtest loaded trading profile %s", profileLabel)
 	}
@@ -199,7 +201,11 @@ func formatLogTime(value time.Time) string {
 
 func logBacktestConfig(cfg config.TradingConfig) {
 	log.Printf(
-		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f max_vs_open=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trail_activation_r=%.2f trail_atr_mult=%.2f tight_trail_trigger_r=%.2f tight_trail_atr_mult=%.2f profit_target_r=%.2f",
+		"Backtest config shorts_enabled=%t max_short_open=%d max_short_exposure=%.2f short_min_score=%.2f min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f max_vs_open=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trail_activation_r=%.2f trail_atr_mult=%.2f tight_trail_trigger_r=%.2f tight_trail_atr_mult=%.2f profit_target_r=%.2f",
+		cfg.EnableShorts,
+		cfg.MaxShortOpenPositions,
+		cfg.MaxShortExposurePct,
+		cfg.ShortMinEntryScore,
 		cfg.MinPrice,
 		cfg.MinGapPercent,
 		cfg.MinRelativeVolume,
@@ -403,8 +409,13 @@ func logClosedTradeSamples(trades []domain.ClosedTrade) {
 	}
 	log.Printf("Closed trades (%d):", len(trades))
 	for _, trade := range trades {
-		log.Printf("  %s qty=%d entry=%s exit=%s pnl=%s reason=%s opened=%s closed=%s",
+		side := trade.Side
+		if side == "" {
+			side = domain.DirectionLong
+		}
+		log.Printf("  %s side=%s qty=%d entry=%s exit=%s pnl=%s reason=%s opened=%s closed=%s",
 			trade.Symbol,
+			side,
 			trade.Quantity,
 			formatMoney(trade.EntryPrice),
 			formatMoney(trade.ExitPrice),

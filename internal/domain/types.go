@@ -43,6 +43,7 @@ type Tick struct {
 // Candidate is a stock that passed the scanner filters.
 type Candidate struct {
 	Symbol                string    `json:"symbol"`
+	Direction             string    `json:"direction"`
 	Price                 float64   `json:"price"`
 	Open                  float64   `json:"open"`
 	GapPercent            float64   `json:"gapPercent"`
@@ -79,6 +80,8 @@ type Candidate struct {
 type TradeSignal struct {
 	Symbol       string    `json:"symbol"`
 	Side         string    `json:"side"`
+	Intent       string    `json:"intent"`
+	PositionSide string    `json:"positionSide"`
 	Price        float64   `json:"price"`
 	Quantity     int64     `json:"quantity"`
 	StopPrice    float64   `json:"stopPrice"`
@@ -94,6 +97,8 @@ type TradeSignal struct {
 type OrderRequest struct {
 	Symbol       string    `json:"symbol"`
 	Side         string    `json:"side"`
+	Intent       string    `json:"intent"`
+	PositionSide string    `json:"positionSide"`
 	Price        float64   `json:"price"`
 	Quantity     int64     `json:"quantity"`
 	StopPrice    float64   `json:"stopPrice"`
@@ -108,6 +113,8 @@ type OrderRequest struct {
 type ExecutionReport struct {
 	Symbol        string    `json:"symbol"`
 	Side          string    `json:"side"`
+	Intent        string    `json:"intent"`
+	PositionSide  string    `json:"positionSide"`
 	Price         float64   `json:"price"`
 	Quantity      int64     `json:"quantity"`
 	StopPrice     float64   `json:"stopPrice"`
@@ -123,6 +130,7 @@ type ExecutionReport struct {
 // Position is an open portfolio holding.
 type Position struct {
 	Symbol           string    `json:"symbol"`
+	Side             string    `json:"side"`
 	Quantity         int64     `json:"quantity"`
 	AvgPrice         float64   `json:"avgPrice"`
 	StopPrice        float64   `json:"stopPrice"`
@@ -132,6 +140,7 @@ type Position struct {
 	SetupType        string    `json:"setupType"`
 	LastPrice        float64   `json:"lastPrice"`
 	HighestPrice     float64   `json:"highestPrice"`
+	LowestPrice      float64   `json:"lowestPrice"`
 	MarketValue      float64   `json:"marketValue"`
 	UnrealizedPnL    float64   `json:"unrealizedPnL"`
 	BrokerSeeded     bool      `json:"brokerSeeded"`
@@ -142,6 +151,7 @@ type Position struct {
 // ClosedTrade records a completed round-trip trade.
 type ClosedTrade struct {
 	Symbol     string    `json:"symbol"`
+	Side       string    `json:"side"`
 	Quantity   int64     `json:"quantity"`
 	EntryPrice float64   `json:"entryPrice"`
 	ExitPrice  float64   `json:"exitPrice"`
@@ -173,6 +183,8 @@ type StatusSnapshot struct {
 	UnrealizedPnL    float64   `json:"unrealizedPnL"`
 	NetPnL           float64   `json:"netPnL"`
 	Exposure         float64   `json:"exposure"`
+	LongExposure     float64   `json:"longExposure"`
+	ShortExposure    float64   `json:"shortExposure"`
 	OpenPositions    int       `json:"openPositions"`
 	TradesToday      int       `json:"tradesToday"`
 	EntriesToday     int       `json:"entriesToday"`

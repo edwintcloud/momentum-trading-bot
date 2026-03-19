@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 )
 
 func TestRunExecutesHistoricalReplay(t *testing.T) {
@@ -83,6 +84,43 @@ func TestRunExecutesHistoricalReplayFromInputBars(t *testing.T) {
 	}
 	if !reflect.DeepEqual(streamed.Diagnostics, result.Diagnostics) {
 		t.Fatalf("expected iterator diagnostics to match slice replay\nstreamed=%+v\nslice=%+v", streamed.Diagnostics, result.Diagnostics)
+	}
+}
+
+func TestMaybeFillPendingOrderSupportsShortEntries(t *testing.T) {
+	pending := pendingEntry{
+		order: domain.OrderRequest{
+			Symbol:       "GOAI",
+			Side:         domain.SideSell,
+			Intent:       domain.IntentOpen,
+			PositionSide: domain.DirectionShort,
+			Price:        5.30,
+			Quantity:     100,
+			StopPrice:    5.62,
+			RiskPerShare: 0.32,
+			EntryATR:     0.22,
+			SetupType:    "parabolic-failed-reclaim-short",
+		},
+		barsRemaining: 2,
+	}
+
+	fill, _, filled, expired := maybeFillPendingOrder(pending, InputBar{
+		Timestamp: time.Date(2026, 3, 19, 14, 1, 0, 0, time.UTC),
+		Symbol:    "GOAI",
+		Open:      5.36,
+		High:      5.40,
+		Low:       5.12,
+		Close:     5.18,
+		Volume:    5_000,
+	})
+	if !filled || !expired {
+		t.Fatalf("expected short pending order to fill, filled=%v expired=%v", filled, expired)
+	}
+	if fill.Side != domain.SideSell || fill.Intent != domain.IntentOpen || fill.PositionSide != domain.DirectionShort {
+		t.Fatalf("unexpected short fill: %+v", fill)
+	}
+	if fill.Price < pending.order.Price {
+		t.Fatalf("expected short entry fill to respect sell limit, got %+v", fill)
 	}
 }
 

@@ -36,6 +36,58 @@ type Manager struct {
 	currentTradeDay   string
 }
 
+func unrealizedPnL(position domain.Position, price float64) float64 {
+	if domain.IsShort(position.Side) {
+		return (position.AvgPrice - price) * float64(position.Quantity)
+	}
+	return (price - position.AvgPrice) * float64(position.Quantity)
+}
+
+func realizedPnL(position domain.Position, exitPrice float64, quantity int64) float64 {
+	if domain.IsShort(position.Side) {
+		return (position.AvgPrice - exitPrice) * float64(quantity)
+	}
+	return (exitPrice - position.AvgPrice) * float64(quantity)
+}
+
+func updatePositionExtrema(position domain.Position, price float64) domain.Position {
+	if price <= 0 {
+		return position
+	}
+	position.HighestPrice = math.Max(position.HighestPrice, price)
+	if position.LowestPrice == 0 || price < position.LowestPrice {
+		position.LowestPrice = price
+	}
+	return position
+}
+
+func inferExecutionIntent(report domain.ExecutionReport, existing domain.Position, exists bool) domain.ExecutionReport {
+	report.Side = domain.NormalizeSide(report.Side)
+	if exists && report.PositionSide == "" {
+		report.PositionSide = existing.Side
+	}
+	report.PositionSide = domain.NormalizeDirection(report.PositionSide)
+	if report.Intent != "" {
+		report.Intent = domain.NormalizeIntent(report.Intent)
+		return report
+	}
+	switch {
+	case exists && report.Side == domain.CloseBrokerSide(existing.Side):
+		report.Intent = domain.IntentClose
+		report.PositionSide = existing.Side
+	case exists && report.Side == domain.OpenBrokerSide(existing.Side):
+		report.Intent = domain.IntentOpen
+		report.PositionSide = existing.Side
+	case report.Side == domain.SideSell:
+		report.Intent = domain.IntentOpen
+		report.PositionSide = domain.DirectionShort
+	default:
+		report.Intent = domain.IntentOpen
+		report.PositionSide = domain.DirectionLong
+	}
+	return report
+}
+
 // NewManager creates a new portfolio manager.
 func NewManager(cfg config.TradingConfig, runtimeState *runtime.State) *Manager {
 	return &Manager{
@@ -142,15 +194,22 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	now := report.FilledAt.UTC()
 	m.rollTradingDayLocked(now)
 	position, exists := m.positions[report.Symbol]
-	if report.Side == "buy" {
+	report = inferExecutionIntent(report, position, exists)
+	if domain.IsOpeningIntent(report.Intent) {
 		isNewEntry := !exists
 		if m.brokerCashKnown {
-			m.brokerCash = round2(math.Max(0, m.brokerCash-(float64(report.Quantity)*report.Price)))
+			cashDelta := float64(report.Quantity) * report.Price
+			if report.Side == domain.SideBuy {
+				m.brokerCash = round2(math.Max(0, m.brokerCash-cashDelta))
+			} else {
+				m.brokerCash = round2(m.brokerCash + cashDelta)
+			}
 		}
 		if exists {
 			totalCost := (float64(position.Quantity) * position.AvgPrice) + (float64(report.Quantity) * report.Price)
 			position.Quantity += report.Quantity
 			position.AvgPrice = totalCost / float64(position.Quantity)
+			position.Side = report.PositionSide
 			if report.StopPrice > 0 {
 				position.StopPrice = report.StopPrice
 			}
@@ -167,14 +226,15 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 				position.SetupType = report.SetupType
 			}
 			position.LastPrice = report.Price
-			position.HighestPrice = math.Max(position.HighestPrice, report.Price)
+			position = updatePositionExtrema(position, report.Price)
 			position.MarketValue = float64(position.Quantity) * report.Price
-			position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
+			position.UnrealizedPnL = unrealizedPnL(position, report.Price)
 			position.UpdatedAt = now
 			m.positions[report.Symbol] = position
 		} else {
-			m.positions[report.Symbol] = domain.Position{
+			newPosition := domain.Position{
 				Symbol:           report.Symbol,
+				Side:             report.PositionSide,
 				Quantity:         report.Quantity,
 				AvgPrice:         report.Price,
 				StopPrice:        report.StopPrice,
@@ -183,12 +243,13 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 				EntryATR:         report.EntryATR,
 				SetupType:        report.SetupType,
 				LastPrice:        report.Price,
-				HighestPrice:     report.Price,
 				MarketValue:      float64(report.Quantity) * report.Price,
 				UnrealizedPnL:    0,
 				OpenedAt:         now,
 				UpdatedAt:        now,
 			}
+			newPosition = updatePositionExtrema(newPosition, report.Price)
+			m.positions[report.Symbol] = newPosition
 		}
 		m.tradesToday++
 		if isNewEntry {
@@ -206,9 +267,14 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 		closeQty = position.Quantity
 	}
 	if m.brokerCashKnown {
-		m.brokerCash = round2(m.brokerCash + (float64(closeQty) * report.Price))
+		cashDelta := float64(closeQty) * report.Price
+		if report.Side == domain.SideBuy {
+			m.brokerCash = round2(math.Max(0, m.brokerCash-cashDelta))
+		} else {
+			m.brokerCash = round2(m.brokerCash + cashDelta)
+		}
 	}
-	pnl := (report.Price - position.AvgPrice) * float64(closeQty)
+	pnl := realizedPnL(position, report.Price, closeQty)
 	m.realizedPnL += pnl
 	m.dayRealizedPnL += pnl
 	m.tradesToday++
@@ -240,15 +306,16 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			return
 		}
 		position.LastPrice = report.Price
-		position.HighestPrice = math.Max(position.HighestPrice, report.Price)
+		position = updatePositionExtrema(position, report.Price)
 		position.MarketValue = float64(position.Quantity) * report.Price
-		position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
+		position.UnrealizedPnL = unrealizedPnL(position, report.Price)
 		position.UpdatedAt = now
 		m.positions[report.Symbol] = position
 		return
 	}
 	closed := domain.ClosedTrade{
 		Symbol:     report.Symbol,
+		Side:       position.Side,
 		Quantity:   closeQty,
 		EntryPrice: position.AvgPrice,
 		ExitPrice:  report.Price,
@@ -269,9 +336,9 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 		return
 	}
 	position.LastPrice = report.Price
-	position.HighestPrice = math.Max(position.HighestPrice, report.Price)
+	position = updatePositionExtrema(position, report.Price)
 	position.MarketValue = float64(position.Quantity) * report.Price
-	position.UnrealizedPnL = (report.Price - position.AvgPrice) * float64(position.Quantity)
+	position.UnrealizedPnL = unrealizedPnL(position, report.Price)
 	position.UpdatedAt = now
 	m.positions[report.Symbol] = position
 }
@@ -282,6 +349,9 @@ func (m *Manager) findMergeableClosedTradeIndex(report domain.ExecutionReport, p
 			continue
 		}
 		if existing.ExitReason != report.Reason {
+			continue
+		}
+		if existing.Side != position.Side {
 			continue
 		}
 		if !existing.OpenedAt.Equal(position.OpenedAt) {
@@ -314,9 +384,9 @@ func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 		return
 	}
 	position.LastPrice = price
-	position.HighestPrice = math.Max(position.HighestPrice, price)
+	position = updatePositionExtrema(position, price)
 	position.MarketValue = float64(position.Quantity) * price
-	position.UnrealizedPnL = (price - position.AvgPrice) * float64(position.Quantity)
+	position.UnrealizedPnL = unrealizedPnL(position, price)
 	position.UpdatedAt = at.UTC()
 	m.positions[symbol] = position
 }
@@ -324,17 +394,22 @@ func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 // ReconcileWithBroker aligns local positions with the broker's current open
 // quantities so the dashboard stays in sync when fills complete outside the
 // bot's poll window or positions are modified externally.
-func (m *Manager) ReconcileWithBroker(brokerQuantities map[string]int64) {
+func (m *Manager) ReconcileWithBroker(brokerPositions map[string]domain.Position) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for symbol := range m.positions {
-		brokerQty, open := brokerQuantities[symbol]
-		if !open || brokerQty <= 0 {
+		brokerPosition, open := brokerPositions[symbol]
+		if !open || brokerPosition.Quantity <= 0 {
 			delete(m.positions, symbol)
 			m.runtime.RecordLog("warn", "portfolio", "removed stale position "+symbol+": no longer open at broker")
 			continue
 		}
-		m.syncPositionQuantityLocked(symbol, brokerQty)
+		if domain.NormalizeDirection(brokerPosition.Side) != domain.NormalizeDirection(m.positions[symbol].Side) {
+			delete(m.positions, symbol)
+			m.runtime.RecordLog("warn", "portfolio", "removed stale position "+symbol+": broker side changed")
+			continue
+		}
+		m.syncPositionQuantityLocked(symbol, brokerPosition.Quantity)
 	}
 }
 
@@ -363,7 +438,7 @@ func (m *Manager) syncPositionQuantityLocked(symbol string, quantity int64) {
 	previous := position.Quantity
 	position.Quantity = quantity
 	position.MarketValue = float64(position.Quantity) * position.LastPrice
-	position.UnrealizedPnL = (position.LastPrice - position.AvgPrice) * float64(position.Quantity)
+	position.UnrealizedPnL = unrealizedPnL(position, position.LastPrice)
 	position.UpdatedAt = time.Now().UTC()
 	m.positions[symbol] = position
 	m.runtime.RecordLog("warn", "portfolio", fmt.Sprintf("reconciled %s quantity from %d to %d based on broker position", symbol, previous, quantity))
@@ -427,15 +502,11 @@ func (m *Manager) OpenPositionCount() int {
 	return len(m.positions)
 }
 
-// Exposure returns gross long exposure.
+// Exposure returns gross absolute exposure.
 func (m *Manager) Exposure() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var exposure float64
-	for _, position := range m.positions {
-		exposure += position.MarketValue
-	}
-	return round2(exposure)
+	return round2(m.longExposureLocked() + m.shortExposureLocked())
 }
 
 // UnrealizedPnL returns aggregate unrealized PnL.
@@ -447,6 +518,33 @@ func (m *Manager) UnrealizedPnL() float64 {
 		pnl += position.UnrealizedPnL
 	}
 	return round2(pnl)
+}
+
+// LongExposure returns gross long notional.
+func (m *Manager) LongExposure() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return round2(m.longExposureLocked())
+}
+
+// ShortExposure returns gross short notional.
+func (m *Manager) ShortExposure() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return round2(m.shortExposureLocked())
+}
+
+// PositionCountBySide returns the number of open positions for a direction.
+func (m *Manager) PositionCountBySide(side string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, position := range m.positions {
+		if domain.NormalizeDirection(position.Side) == domain.NormalizeDirection(side) {
+			count++
+		}
+	}
+	return count
 }
 
 // RealizedPnL returns realized PnL.
@@ -492,7 +590,7 @@ func (m *Manager) TradesToday() int {
 	return m.tradesToday
 }
 
-// EntriesToday returns the count of new long entries opened today.
+// EntriesToday returns the count of new entries opened today.
 func (m *Manager) EntriesToday() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -507,12 +605,14 @@ func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 	orders := make([]domain.OrderRequest, 0, len(m.positions))
 	for _, position := range m.positions {
 		orders = append(orders, domain.OrderRequest{
-			Symbol:    position.Symbol,
-			Side:      "sell",
-			Price:     position.LastPrice,
-			Quantity:  position.Quantity,
-			Reason:    reason,
-			Timestamp: time.Now().UTC(),
+			Symbol:       position.Symbol,
+			Side:         domain.CloseBrokerSide(position.Side),
+			Intent:       domain.IntentClose,
+			PositionSide: position.Side,
+			Price:        position.LastPrice,
+			Quantity:     position.Quantity,
+			Reason:       reason,
+			Timestamp:    time.Now().UTC(),
 		})
 	}
 	sort.Slice(orders, func(i, j int) bool {
@@ -529,12 +629,12 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 }
 
 func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
-	var exposure float64
 	var unrealized float64
 	for _, position := range m.positions {
-		exposure += position.MarketValue
 		unrealized += position.UnrealizedPnL
 	}
+	longExposure := m.longExposureLocked()
+	shortExposure := m.shortExposureLocked()
 
 	status := domain.StatusSnapshot{
 		Running:          true,
@@ -547,7 +647,9 @@ func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
 		RealizedPnL:      round2(m.realizedPnL),
 		UnrealizedPnL:    round2(unrealized),
 		NetPnL:           round2(m.realizedPnL + unrealized),
-		Exposure:         round2(exposure),
+		Exposure:         round2(longExposure + shortExposure),
+		LongExposure:     round2(longExposure),
+		ShortExposure:    round2(shortExposure),
 		OpenPositions:    len(m.positions),
 		TradesToday:      m.tradesToday,
 		EntriesToday:     m.entriesToday,
@@ -572,26 +674,63 @@ func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
 }
 
 func (m *Manager) effectiveCapitalLocked() float64 {
-	return round2(m.availableCashLocked() + m.openCostBasisLocked())
+	return round2(m.availableCashLocked() + m.openLongCostBasisLocked())
 }
 
 func (m *Manager) availableCashLocked() float64 {
+	shortCostBasis := m.openShortCostBasisLocked()
 	if m.brokerCashKnown {
-		return round2(math.Max(0, m.brokerCash))
+		return round2(math.Max(0, m.brokerCash-shortCostBasis))
 	}
-	cash := m.startingCapital + m.realizedPnL - m.openCostBasisLocked()
+	cash := m.startingCapital + m.realizedPnL - m.openLongCostBasisLocked()
 	if cash < 0 {
 		cash = 0
 	}
 	return round2(cash)
 }
 
-func (m *Manager) openCostBasisLocked() float64 {
+func (m *Manager) openLongCostBasisLocked() float64 {
 	var basis float64
 	for _, position := range m.positions {
+		if domain.IsShort(position.Side) {
+			continue
+		}
 		basis += float64(position.Quantity) * position.AvgPrice
 	}
 	return round2(basis)
+}
+
+func (m *Manager) openShortCostBasisLocked() float64 {
+	var basis float64
+	for _, position := range m.positions {
+		if !domain.IsShort(position.Side) {
+			continue
+		}
+		basis += float64(position.Quantity) * position.AvgPrice
+	}
+	return round2(basis)
+}
+
+func (m *Manager) longExposureLocked() float64 {
+	var exposure float64
+	for _, position := range m.positions {
+		if domain.IsShort(position.Side) {
+			continue
+		}
+		exposure += position.MarketValue
+	}
+	return round2(exposure)
+}
+
+func (m *Manager) shortExposureLocked() float64 {
+	var exposure float64
+	for _, position := range m.positions {
+		if !domain.IsShort(position.Side) {
+			continue
+		}
+		exposure += position.MarketValue
+	}
+	return round2(exposure)
 }
 
 func round2(value float64) float64 {

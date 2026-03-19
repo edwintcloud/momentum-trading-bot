@@ -119,6 +119,7 @@ type pendingEntry struct {
 }
 
 type tradeAnalytics struct {
+	side         string
 	entryPrice   float64
 	riskPerShare float64
 	openedAt     time.Time
@@ -188,10 +189,11 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		tick := normalizeBar(currentBar, normalizerState)
 
 		if pending, exists := pendingEntries[currentBar.Symbol]; exists {
-			if fill, updatedPending, filled, expired := maybeFillPendingEntry(pending, currentBar); filled {
+			if fill, updatedPending, filled, expired := maybeFillPendingOrder(pending, currentBar); filled {
 				delete(pendingEntries, currentBar.Symbol)
 				book.ApplyExecution(fill)
 				openAnalytics[fill.Symbol] = tradeAnalytics{
+					side:         fill.PositionSide,
 					entryPrice:   fill.Price,
 					riskPerShare: fill.RiskPerShare,
 					openedAt:     fill.FilledAt,
@@ -391,6 +393,8 @@ func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.
 	book.ApplyExecution(domain.ExecutionReport{
 		Symbol:       order.Symbol,
 		Side:         order.Side,
+		Intent:       order.Intent,
+		PositionSide: order.PositionSide,
 		Price:        order.Price,
 		Quantity:     order.Quantity,
 		StopPrice:    order.StopPrice,
@@ -402,8 +406,8 @@ func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.
 	})
 }
 
-func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionReport, pendingEntry, bool, bool) {
-	if pending.order.Symbol == "" || pending.order.Side != "buy" {
+func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionReport, pendingEntry, bool, bool) {
+	if pending.order.Symbol == "" || !domain.IsOpeningIntent(pending.order.Intent) {
 		return domain.ExecutionReport{}, pending, false, false
 	}
 
@@ -415,9 +419,13 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 
 	fillPrice := 0.0
 	switch {
-	case current.Open > 0 && current.Open <= pending.order.Price:
+	case pending.order.Side == domain.SideBuy && current.Open > 0 && current.Open <= pending.order.Price:
 		fillPrice = current.Open
-	case current.Low > 0 && current.Low <= pending.order.Price:
+	case pending.order.Side == domain.SideBuy && current.Low > 0 && current.Low <= pending.order.Price:
+		fillPrice = pending.order.Price
+	case pending.order.Side == domain.SideSell && current.Open > 0 && current.Open >= pending.order.Price:
+		fillPrice = current.Open
+	case pending.order.Side == domain.SideSell && current.High > 0 && current.High >= pending.order.Price:
 		fillPrice = pending.order.Price
 	}
 
@@ -427,11 +435,17 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 			spread = 0
 		}
 		penalty := spread * 0.05
-		fillPrice = math.Min(pending.order.Price, fillPrice+penalty)
+		if pending.order.Side == domain.SideSell {
+			fillPrice = math.Max(pending.order.Price, fillPrice-penalty)
+		} else {
+			fillPrice = math.Min(pending.order.Price, fillPrice+penalty)
+		}
 
 		return domain.ExecutionReport{
 			Symbol:       pending.order.Symbol,
 			Side:         pending.order.Side,
+			Intent:       pending.order.Intent,
+			PositionSide: pending.order.PositionSide,
 			Price:        round2(fillPrice),
 			Quantity:     pending.order.Quantity,
 			StopPrice:    pending.order.StopPrice,
@@ -448,6 +462,21 @@ func maybeFillPendingEntry(pending pendingEntry, current bar) (domain.ExecutionR
 
 func updateTradeAnalytics(analytics *tradeAnalytics, high, low float64) {
 	if analytics == nil || analytics.riskPerShare <= 0 || analytics.entryPrice <= 0 {
+		return
+	}
+	if domain.IsShort(analytics.side) {
+		if low > 0 {
+			mfeR := (analytics.entryPrice - low) / analytics.riskPerShare
+			if mfeR > analytics.mfeR {
+				analytics.mfeR = mfeR
+			}
+		}
+		if high > 0 {
+			maeR := (high - analytics.entryPrice) / analytics.riskPerShare
+			if maeR > analytics.maeR {
+				analytics.maeR = maeR
+			}
+		}
 		return
 	}
 	if high > 0 {

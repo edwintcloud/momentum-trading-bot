@@ -242,6 +242,63 @@ func TestStatusSnapshotIncludesOptimizerMetadata(t *testing.T) {
 	}
 }
 
+func TestPortfolioTracksShortPnLAndCloseAllUsesBuyToCover(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	manager := NewManager(cfg, runtimeState)
+	at := time.Now().UTC().Add(-5 * time.Minute)
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "GOAI",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionShort,
+		Price:        5.30,
+		Quantity:     100,
+		StopPrice:    5.62,
+		RiskPerShare: 0.32,
+		EntryATR:     0.22,
+		SetupType:    "parabolic-failed-reclaim-short",
+		FilledAt:     at,
+	})
+	manager.MarkPrice("GOAI", 4.90)
+
+	position, exists := manager.Position("GOAI")
+	if !exists {
+		t.Fatal("expected short position to be open")
+	}
+	if position.Side != domain.DirectionShort {
+		t.Fatalf("expected short side, got %+v", position)
+	}
+	if position.UnrealizedPnL <= 0 {
+		t.Fatalf("expected positive unrealized pnl on favorable short move, got %+v", position)
+	}
+
+	orders := manager.PendingCloseAll("test-close-all")
+	if len(orders) != 1 || orders[0].Side != domain.SideBuy || orders[0].Intent != domain.IntentClose {
+		t.Fatalf("expected buy-to-cover close-all order, got %+v", orders)
+	}
+
+	manager.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "GOAI",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentClose,
+		PositionSide: domain.DirectionShort,
+		Price:        4.85,
+		Quantity:     100,
+		Reason:       "profit-target",
+		FilledAt:     time.Now().UTC(),
+	})
+
+	if manager.RealizedPnL() <= 0 {
+		t.Fatalf("expected realized profit after covering short, got %.2f", manager.RealizedPnL())
+	}
+	trades := manager.GetClosedTrades()
+	if len(trades) != 1 || trades[0].Side != domain.DirectionShort {
+		t.Fatalf("expected one recorded short closed trade, got %+v", trades)
+	}
+}
+
 func TestStatusSnapshotLockedCompletesWithQueuedWriter(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

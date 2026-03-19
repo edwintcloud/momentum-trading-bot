@@ -12,6 +12,8 @@ const emptySnapshot = {
     unrealizedPnL: 0,
     netPnL: 0,
     exposure: 0,
+    longExposure: 0,
+    shortExposure: 0,
     openPositions: 0,
     tradesToday: 0,
     entriesToday: 0,
@@ -170,6 +172,8 @@ export function App() {
         <StatCard label="System" value={snapshot.status.emergencyStop ? 'Stopped' : snapshot.status.paused ? 'Paused' : 'Running'} tone={statusTone} />
         <StatCard label="Today's PnL" value={money.format(snapshot.status.dayPnL)} tone={snapshot.status.dayPnL >= 0 ? 'good' : 'danger'} />
         <StatCard label="Exposure" value={money.format(snapshot.status.exposure)} />
+        <StatCard label="Long Exposure" value={money.format(snapshot.status.longExposure)} />
+        <StatCard label="Short Exposure" value={money.format(snapshot.status.shortExposure)} />
         <StatCard label="Open Positions" value={number.format(snapshot.status.openPositions)} />
         <StatCard label="Closed Trades" value={number.format(closedTradesToday)} />
         <StatCard label="Daily Loss Limit" value={money.format(snapshot.status.dailyLossLimit)} tone="warn" />
@@ -239,12 +243,13 @@ export function App() {
       <div className="panel-grid">
         <TableSection
           title="Scanner Candidates"
-          columns={['Symbol', 'Price', 'Gap %', 'Rel Vol', 'Premarket Vol', 'Catalyst']}
+          columns={['Symbol', 'Side', 'Price', 'Gap %', 'Rel Vol', 'Premarket Vol', 'Catalyst']}
           rows={snapshot.candidates}
           emptyMessage="No symbols currently satisfy the scanner filters."
           renderRow={(candidate) => (
             <tr key={candidate.symbol}>
               <td>{candidate.symbol}</td>
+              <td>{candidate.direction || 'long'}</td>
               <td>{money.format(candidate.price)}</td>
               <td>{candidate.gapPercent.toFixed(2)}%</td>
               <td>{candidate.relativeVolume.toFixed(2)}x</td>
@@ -264,12 +269,13 @@ export function App() {
 
         <TableSection
           title="Open Positions"
-          columns={['Symbol', 'Qty', 'Avg', 'Last', 'Market Value', 'Unrealized']}
+          columns={['Symbol', 'Side', 'Qty', 'Avg', 'Last', 'Market Value', 'Unrealized']}
           rows={snapshot.positions}
           emptyMessage="No open positions."
           renderRow={(position) => (
             <tr key={position.symbol}>
               <td>{position.symbol}</td>
+              <td>{position.side || 'long'}</td>
               <td>{number.format(position.quantity)}</td>
               <td>{money.format(position.avgPrice)}</td>
               <td>{money.format(position.lastPrice)}</td>
@@ -283,12 +289,13 @@ export function App() {
       <div className="panel-grid bottom-grid">
         <TableSection
           title="Closed Trades"
-          columns={['Symbol', 'Qty', 'Entry', 'Exit', 'PnL', 'Reason']}
+          columns={['Symbol', 'Side', 'Qty', 'Entry', 'Exit', 'PnL', 'Reason']}
           rows={snapshot.closedTrades.slice(0, 8)}
           emptyMessage="No trades closed yet."
           renderRow={(trade, index) => (
             <tr key={`${trade.symbol}-${index}`}>
               <td>{trade.symbol}</td>
+              <td>{trade.side || 'long'}</td>
               <td>{number.format(trade.quantity)}</td>
               <td>{money.format(trade.entryPrice)}</td>
               <td>{money.format(trade.exitPrice)}</td>

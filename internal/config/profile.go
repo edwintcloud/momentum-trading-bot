@@ -169,6 +169,27 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.ProfitTargetR = overrides.ProfitTargetR
 	cfg.FailedBreakoutCutR = overrides.FailedBreakoutCutR
 	cfg.StructureConfirmR = overrides.StructureConfirmR
+	if overrides.EnableShorts {
+		cfg.EnableShorts = true
+	}
+	if overrides.MaxShortOpenPositions > 0 {
+		cfg.MaxShortOpenPositions = overrides.MaxShortOpenPositions
+	}
+	if overrides.MaxShortExposurePct > 0 {
+		cfg.MaxShortExposurePct = overrides.MaxShortExposurePct
+	}
+	if overrides.ShortMinEntryScore > 0 {
+		cfg.ShortMinEntryScore = overrides.ShortMinEntryScore
+	}
+	if overrides.ShortPeakExtensionMinPct > 0 {
+		cfg.ShortPeakExtensionMinPct = overrides.ShortPeakExtensionMinPct
+	}
+	if overrides.ShortVWAPBreakMinPct != 0 {
+		cfg.ShortVWAPBreakMinPct = overrides.ShortVWAPBreakMinPct
+	}
+	if overrides.ShortStopATRMultiplier > 0 {
+		cfg.ShortStopATRMultiplier = overrides.ShortStopATRMultiplier
+	}
 	if overrides.ScannerMinPriceVsOpenPctFloor > 0 {
 		cfg.ScannerMinPriceVsOpenPctFloor = overrides.ScannerMinPriceVsOpenPctFloor
 	}

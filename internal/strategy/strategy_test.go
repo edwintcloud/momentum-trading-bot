@@ -17,14 +17,18 @@ func inSessionTime() time.Time {
 func testConfig() config.TradingConfig {
 	return config.TradingConfig{
 		StartingCapital:          100_000,
+		EnableShorts:             false,
 		RiskPerTradePct:          0.01,
 		DailyLossLimitPct:        0.03,
 		MaxTradesPerDay:          8,
 		MaxOpenPositions:         4,
 		MaxExposurePct:           0.30,
+		MaxShortOpenPositions:    1,
+		MaxShortExposurePct:      0.15,
 		EntryCooldownSec:         45,
 		ExitCooldownSec:          5,
 		MinEntryScore:            14.0,
+		ShortMinEntryScore:       18.0,
 		MinOneMinuteReturnPct:    0.05,
 		MinThreeMinuteReturnPct:  0.15,
 		MinVolumeRate:            1.05,
@@ -46,6 +50,9 @@ func testConfig() config.TradingConfig {
 		TightTrailATRMultiplier:  0.60,
 		ProfitTargetR:            1.20,
 		FailedBreakoutCutR:       0.05,
+		ShortPeakExtensionMinPct: 12.0,
+		ShortVWAPBreakMinPct:     -0.75,
+		ShortStopATRMultiplier:   1.25,
 	}
 }
 
@@ -100,6 +107,52 @@ func TestStrategyCreatesEntrySignal(t *testing.T) {
 	}
 	if signal.Quantity <= 0 {
 		t.Fatal("expected positive quantity")
+	}
+}
+
+func TestStrategyCreatesShortEntrySignal(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.EnableShorts = true
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+	at := inSessionTime()
+
+	signal, ok := strat.evaluateCandidate(domain.Candidate{
+		Symbol:               "GOAI",
+		Direction:            domain.DirectionShort,
+		Price:                5.28,
+		Open:                 4.70,
+		HighOfDay:            6.18,
+		GapPercent:           14,
+		RelativeVolume:       11.5,
+		PriceVsOpenPct:       12.3,
+		DistanceFromHighPct:  14.56,
+		OneMinuteReturnPct:   -1.6,
+		ThreeMinuteReturnPct: -4.3,
+		VolumeRate:           1.9,
+		VolumeLeaderPct:      0.82,
+		LeaderRank:           1,
+		MinutesSinceOpen:     150,
+		ATR:                  0.31,
+		ATRPct:               5.87,
+		PriceVsVWAPPct:       -1.4,
+		BreakoutPct:          -0.9,
+		CloseOffHighPct:      88,
+		SetupHigh:            5.84,
+		SetupLow:             5.33,
+		SetupType:            "parabolic-failed-reclaim-short",
+		Score:                26,
+		Timestamp:            at,
+	})
+	if !ok {
+		t.Fatal("expected short strategy to emit entry signal")
+	}
+	if signal.Side != domain.SideSell || signal.Intent != domain.IntentOpen || signal.PositionSide != domain.DirectionShort {
+		t.Fatalf("unexpected short signal: %+v", signal)
+	}
+	if signal.StopPrice <= signal.Price {
+		t.Fatalf("expected short stop above entry price, got %+v", signal)
 	}
 }
 
@@ -814,6 +867,47 @@ func TestStrategyUsesHardProfitTargetOnMassiveSpike(t *testing.T) {
 	signal, ok := strat.evaluateExit(spikeTick)
 	if !ok || signal.Reason != "profit-target" {
 		t.Fatalf("expected profit-target exit immediately, got %+v", signal)
+	}
+}
+
+func TestStrategyCoversShortWhenStopBreaks(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.EnableShorts = true
+	runtimeState := runtime.NewState()
+	book := portfolio.NewManager(cfg, runtimeState)
+	at := inSessionTime()
+	book.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "GOAI",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionShort,
+		Price:        5.30,
+		Quantity:     100,
+		StopPrice:    5.62,
+		RiskPerShare: 0.32,
+		EntryATR:     0.24,
+		SetupType:    "parabolic-failed-reclaim-short",
+		FilledAt:     at.Add(-10 * time.Minute),
+	})
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	signal, ok := strat.evaluateExit(domain.Tick{
+		Symbol:    "GOAI",
+		Price:     5.66,
+		BarOpen:   5.40,
+		BarHigh:   5.68,
+		BarLow:    5.34,
+		HighOfDay: 6.18,
+		Timestamp: at,
+	})
+	if !ok {
+		t.Fatal("expected short stop exit")
+	}
+	if signal.Side != domain.SideBuy || signal.Intent != domain.IntentClose || signal.PositionSide != domain.DirectionShort {
+		t.Fatalf("unexpected short exit signal: %+v", signal)
+	}
+	if signal.Reason != "stop-loss" && signal.Reason != "trailing-stop" && signal.Reason != "break-even-stop" {
+		t.Fatalf("expected stop-like short exit, got %+v", signal)
 	}
 }
 

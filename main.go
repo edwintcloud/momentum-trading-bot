@@ -156,7 +156,7 @@ func main() {
 	marketEngine := market.NewEngine(alpacaClient, appConfig.Trading, portfolioManager, runtimeState)
 	scannerEngine := scanner.NewScanner(appConfig.Trading, runtimeState)
 	strategyEngine := strategy.NewStrategy(appConfig.Trading, portfolioManager, runtimeState)
-	riskEngine := risk.NewEngine(appConfig.Trading, portfolioManager, runtimeState)
+	riskEngine := risk.NewEngine(appConfig.Trading, portfolioManager, runtimeState, alpacaClient)
 	executionEngine := execution.NewEngine(alpacaClient, appConfig.Alpaca, runtimeState)
 
 	// Start the market data engine
@@ -288,15 +288,19 @@ func main() {
 					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("position reconciliation failed: %v", reconcileErr))
 					continue
 				}
-				brokerQuantities := make(map[string]int64, len(brokerPositions))
+				brokerSnapshots := make(map[string]domain.Position, len(brokerPositions))
 				for _, p := range brokerPositions {
 					quantity, qtyErr := strconv.ParseInt(stringsBeforeDecimal(p.Qty), 10, 64)
 					if qtyErr != nil {
 						continue
 					}
-					brokerQuantities[strings.ToUpper(p.Symbol)] = quantity
+					brokerSnapshots[strings.ToUpper(p.Symbol)] = domain.Position{
+						Symbol:   strings.ToUpper(p.Symbol),
+						Side:     domain.NormalizeDirection(p.Side),
+						Quantity: quantity,
+					}
 				}
-				portfolioManager.ReconcileWithBroker(brokerQuantities)
+				portfolioManager.ReconcileWithBroker(brokerSnapshots)
 			}
 		}
 	}()
@@ -365,12 +369,14 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 		now := time.Now().UTC()
 		portfolioManager.SeedPosition(domain.Position{
 			Symbol:        brokerPosition.Symbol,
+			Side:          domain.NormalizeDirection(brokerPosition.Side),
 			Quantity:      quantity,
 			AvgPrice:      avgPrice,
 			LastPrice:     currentPrice,
 			HighestPrice:  math.Max(avgPrice, currentPrice),
+			LowestPrice:   math.Min(avgPrice, currentPrice),
 			MarketValue:   float64(quantity) * currentPrice,
-			UnrealizedPnL: (currentPrice - avgPrice) * float64(quantity),
+			UnrealizedPnL: seedPositionPnL(domain.NormalizeDirection(brokerPosition.Side), avgPrice, currentPrice, quantity),
 			BrokerSeeded:  true,
 			OpenedAt:      now,
 			UpdatedAt:     now,
@@ -439,6 +445,13 @@ func brokerCashValue(account alpaca.Account) (float64, bool) {
 func stringsBeforeDecimal(value string) string {
 	parts := strings.SplitN(value, ".", 2)
 	return parts[0]
+}
+
+func seedPositionPnL(side string, avgPrice, currentPrice float64, quantity int64) float64 {
+	if domain.IsShort(side) {
+		return (avgPrice - currentPrice) * float64(quantity)
+	}
+	return (currentPrice - avgPrice) * float64(quantity)
 }
 
 func liveModeLabel(paper bool) string {

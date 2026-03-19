@@ -210,6 +210,53 @@ func TestScannerAllowsIntradaySqueezeWithoutPremarketGap(t *testing.T) {
 	}
 }
 
+func TestScannerEmitsParabolicFailedReclaimShort(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.EnableShorts = true
+	cfg.ShortPeakExtensionMinPct = 12
+	cfg.ShortVWAPBreakMinPct = -0.75
+	runtimeState := runtime.NewState()
+	engine := NewScanner(cfg, runtimeState)
+	base := time.Date(2026, 3, 10, 16, 0, 0, 0, time.UTC)
+
+	ticks := []domain.Tick{
+		{Symbol: "GOAI", Price: 12.90, BarOpen: 12.00, BarHigh: 13.10, BarLow: 11.95, Open: 12.00, HighOfDay: 13.10, GapPercent: 18.0, RelativeVolume: 12.0, PreMarketVolume: 750_000, Volume: 200_000, VolumeSpike: true, Timestamp: base},
+		{Symbol: "GOAI", Price: 14.60, BarOpen: 12.90, BarHigh: 14.80, BarLow: 12.80, Open: 12.00, HighOfDay: 14.80, GapPercent: 21.0, RelativeVolume: 13.5, PreMarketVolume: 780_000, Volume: 500_000, VolumeSpike: true, Timestamp: base.Add(time.Minute)},
+		{Symbol: "GOAI", Price: 14.10, BarOpen: 14.60, BarHigh: 15.60, BarLow: 14.00, Open: 12.00, HighOfDay: 15.60, GapPercent: 21.0, RelativeVolume: 14.2, PreMarketVolume: 800_000, Volume: 850_000, VolumeSpike: true, Timestamp: base.Add(2 * time.Minute)},
+		{Symbol: "GOAI", Price: 13.88, BarOpen: 14.10, BarHigh: 14.20, BarLow: 13.70, Open: 12.00, HighOfDay: 15.60, GapPercent: 21.0, RelativeVolume: 14.6, PreMarketVolume: 820_000, Volume: 1_000_000, VolumeSpike: true, Timestamp: base.Add(3 * time.Minute)},
+		{Symbol: "GOAI", Price: 14.20, BarOpen: 13.88, BarHigh: 14.45, BarLow: 13.80, Open: 12.00, HighOfDay: 15.60, GapPercent: 21.0, RelativeVolume: 14.8, PreMarketVolume: 830_000, Volume: 1_150_000, VolumeSpike: true, Timestamp: base.Add(4 * time.Minute)},
+		{Symbol: "GOAI", Price: 13.62, BarOpen: 14.20, BarHigh: 14.00, BarLow: 13.50, Open: 12.00, HighOfDay: 15.60, GapPercent: 21.0, RelativeVolume: 15.0, PreMarketVolume: 835_000, Volume: 1_250_000, VolumeSpike: true, Timestamp: base.Add(5 * time.Minute)},
+	}
+	for _, tick := range ticks {
+		engine.evaluateTick(tick)
+	}
+
+	candidate, ok := engine.evaluateTick(domain.Tick{
+		Symbol:          "GOAI",
+		Price:           12.72,
+		BarOpen:         14.20,
+		BarHigh:         14.25,
+		BarLow:          12.50,
+		Open:            12.00,
+		HighOfDay:       15.60,
+		GapPercent:      21.0,
+		RelativeVolume:  15.4,
+		PreMarketVolume: 840_000,
+		Volume:          1_450_000,
+		VolumeSpike:     true,
+		Timestamp:       base.Add(6 * time.Minute),
+	})
+	if !ok {
+		t.Fatal("expected short breakdown candidate to pass scanner")
+	}
+	if candidate.Direction != domain.DirectionShort || candidate.SetupType != "parabolic-failed-reclaim-short" {
+		t.Fatalf("expected short setup candidate, got %+v", candidate)
+	}
+	if candidate.BreakoutPct >= 0 || candidate.PriceVsVWAPPct >= 0 {
+		t.Fatalf("expected bearish breakdown metrics, got %+v", candidate)
+	}
+}
+
 func TestScannerTracksCurrentVolumeLeader(t *testing.T) {
 	runtimeState := runtime.NewState()
 	engine := NewScanner(testScannerConfig(), runtimeState)

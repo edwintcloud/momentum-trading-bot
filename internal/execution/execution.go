@@ -45,8 +45,8 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, portf
 }
 
 func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioManager *portfolio.Manager) error {
-	if order.Side == "sell" {
-		adjustedOrder, _, err := e.reconcileSellOrder(ctx, order, portfolioManager)
+	if domain.IsClosingIntent(order.Intent) {
+		adjustedOrder, _, err := e.reconcileCloseOrder(ctx, order, portfolioManager)
 		if err != nil {
 			return err
 		}
@@ -58,13 +58,13 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 
 	submitted, err := e.client.SubmitOrder(submissionCtx, order)
 	if err != nil {
-		if order.Side == "buy" && alpaca.IsInsufficientBuyingPowerError(err) {
+		if domain.IsOpeningIntent(order.Intent) && order.Side == domain.SideBuy && alpaca.IsInsufficientBuyingPowerError(err) {
 			e.runtime.RecordLog("warn", "execution", fmt.Sprintf("insufficient buying power to place entry for %s", order.Symbol))
 			return nil
 		}
-		if order.Side == "sell" && alpaca.IsInsufficientQuantityError(err) {
+		if domain.IsClosingIntent(order.Intent) && alpaca.IsInsufficientQuantityError(err) {
 			if availableQty, ok := alpaca.AvailableQuantityFromError(err); ok {
-				adjustedOrder, changed, adjustErr := e.applyAvailableSellQuantity(order, availableQty, portfolioManager)
+				adjustedOrder, changed, adjustErr := e.applyAvailableCloseQuantity(order, availableQty, portfolioManager)
 				if adjustErr == nil && changed {
 					submissionCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 					defer cancel()
@@ -75,8 +75,8 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 				}
 			}
 		}
-		if err != nil && order.Side == "sell" && alpaca.IsInsufficientQuantityError(err) {
-			adjustedOrder, changed, reconcileErr := e.reconcileSellOrder(ctx, order, portfolioManager)
+		if err != nil && domain.IsClosingIntent(order.Intent) && alpaca.IsInsufficientQuantityError(err) {
+			adjustedOrder, changed, reconcileErr := e.reconcileCloseOrder(ctx, order, portfolioManager)
 			if reconcileErr == nil && changed {
 				submissionCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 				defer cancel()
@@ -109,6 +109,8 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 				Side:          order.Side,
 				Price:         filledPrice,
 				Quantity:      deltaQty,
+				Intent:        order.Intent,
+				PositionSide:  order.PositionSide,
 				StopPrice:     order.StopPrice,
 				RiskPerShare:  order.RiskPerShare,
 				EntryATR:      order.EntryATR,
@@ -178,39 +180,39 @@ func filledOrderState(current alpaca.Order, order domain.OrderRequest) (int64, f
 	return filledQty, filledPrice
 }
 
-func (e *Engine) applyAvailableSellQuantity(order domain.OrderRequest, availableQty int64, portfolioManager *portfolio.Manager) (domain.OrderRequest, bool, error) {
+func (e *Engine) applyAvailableCloseQuantity(order domain.OrderRequest, availableQty int64, portfolioManager *portfolio.Manager) (domain.OrderRequest, bool, error) {
 	portfolioManager.SyncPositionQuantity(order.Symbol, availableQty)
 	if availableQty <= 0 {
-		return domain.OrderRequest{}, false, fmt.Errorf("no broker shares available to sell for %s", order.Symbol)
+		return domain.OrderRequest{}, false, fmt.Errorf("no broker shares available to close for %s", order.Symbol)
 	}
 	if availableQty >= order.Quantity {
 		return order, false, nil
 	}
 	adjusted := order
 	adjusted.Quantity = availableQty
-	e.runtime.RecordLog("warn", "execution", fmt.Sprintf("clamped sell %s quantity from %d to %d based on Alpaca rejection payload", order.Symbol, order.Quantity, availableQty))
+	e.runtime.RecordLog("warn", "execution", fmt.Sprintf("clamped close %s quantity from %d to %d based on Alpaca rejection payload", order.Symbol, order.Quantity, availableQty))
 	return adjusted, true, nil
 }
 
-func (e *Engine) reconcileSellOrder(ctx context.Context, order domain.OrderRequest, portfolioManager *portfolio.Manager) (domain.OrderRequest, bool, error) {
-	brokerQty, err := e.brokerPositionQuantity(ctx, order.Symbol)
+func (e *Engine) reconcileCloseOrder(ctx context.Context, order domain.OrderRequest, portfolioManager *portfolio.Manager) (domain.OrderRequest, bool, error) {
+	brokerQty, err := e.brokerPositionQuantity(ctx, order.Symbol, order.PositionSide)
 	if err != nil {
-		return domain.OrderRequest{}, false, fmt.Errorf("reconcile sell quantity for %s failed: %w", order.Symbol, err)
+		return domain.OrderRequest{}, false, fmt.Errorf("reconcile close quantity for %s failed: %w", order.Symbol, err)
 	}
 	portfolioManager.SyncPositionQuantity(order.Symbol, brokerQty)
 	if brokerQty <= 0 {
-		return domain.OrderRequest{}, false, fmt.Errorf("no broker shares available to sell for %s", order.Symbol)
+		return domain.OrderRequest{}, false, fmt.Errorf("no broker shares available to close for %s", order.Symbol)
 	}
 	if brokerQty >= order.Quantity {
 		return order, false, nil
 	}
 	adjusted := order
 	adjusted.Quantity = brokerQty
-	e.runtime.RecordLog("warn", "execution", fmt.Sprintf("clamped sell %s quantity from %d to %d based on broker position", order.Symbol, order.Quantity, brokerQty))
+	e.runtime.RecordLog("warn", "execution", fmt.Sprintf("clamped close %s quantity from %d to %d based on broker position", order.Symbol, order.Quantity, brokerQty))
 	return adjusted, true, nil
 }
 
-func (e *Engine) brokerPositionQuantity(ctx context.Context, symbol string) (int64, error) {
+func (e *Engine) brokerPositionQuantity(ctx context.Context, symbol string, side string) (int64, error) {
 	lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	position, exists, err := e.client.GetPosition(lookupCtx, symbol)
@@ -218,6 +220,9 @@ func (e *Engine) brokerPositionQuantity(ctx context.Context, symbol string) (int
 		return 0, err
 	}
 	if !exists {
+		return 0, nil
+	}
+	if domain.NormalizeDirection(position.Side) != domain.NormalizeDirection(side) {
 		return 0, nil
 	}
 	return parseShareQuantity(position.Qty)

@@ -13,14 +13,18 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	}
 	cfg.StartingCapital = round2(capital)
 
+	cfg.EnableShorts = false
 	cfg.RiskPerTradePct = inferRiskPerTradePct(capital)
 	cfg.DailyLossLimitPct = 0.2
 	cfg.MaxTradesPerDay = 20
 	cfg.MaxOpenPositions = inferMaxOpenPositions(capital)
 	cfg.StopLossPct = 0.05
+	cfg.MaxShortOpenPositions = inferMaxShortOpenPositions(cfg.MaxOpenPositions)
+	cfg.MaxShortExposurePct = inferMaxShortExposurePct(cfg.MaxExposurePct)
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
 	cfg.MinEntryScore = 18
+	cfg.ShortMinEntryScore = 20
 	cfg.MinOneMinuteReturnPct = 0.4
 	cfg.MinThreeMinuteReturnPct = 0.8
 	cfg.MinVolumeRate = 1.8
@@ -62,6 +66,9 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	cfg.ProfitTargetR = 2
 	cfg.FailedBreakoutCutR = 0.05
 	cfg.StructureConfirmR = 0
+	cfg.ShortPeakExtensionMinPct = 12
+	cfg.ShortVWAPBreakMinPct = -0.75
+	cfg.ShortStopATRMultiplier = 1.25
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 
 	if historicalRateLimitPerMin > 0 {
@@ -119,4 +126,29 @@ func inferMaxOpenPositions(capital float64) int {
 	default:
 		return 3
 	}
+}
+
+func inferMaxShortOpenPositions(maxOpenPositions int) int {
+	switch {
+	case maxOpenPositions <= 1:
+		return 1
+	case maxOpenPositions >= 4:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func inferMaxShortExposurePct(maxExposurePct float64) float64 {
+	if maxExposurePct <= 0 {
+		return 0.20
+	}
+	shortExposure := round2(maxExposurePct * 0.45)
+	if shortExposure < 0.15 {
+		shortExposure = 0.15
+	}
+	if shortExposure > 0.40 {
+		shortExposure = 0.40
+	}
+	return shortExposure
 }

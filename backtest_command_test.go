@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
+	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 )
 
 func TestInferBacktestWindowsReturnsRequestedWindow(t *testing.T) {
@@ -107,5 +110,32 @@ func TestBacktestSummaryLinesAreHumanReadable(t *testing.T) {
 		if !strings.Contains(joined, fragment) {
 			t.Fatalf("expected summary to contain %q, got:\n%s", fragment, joined)
 		}
+	}
+}
+
+func TestLogClosedTradeSamplesIncludesSide(t *testing.T) {
+	var buffer bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	defer log.SetOutput(originalWriter)
+	defer log.SetFlags(originalFlags)
+
+	logClosedTradeSamples([]domain.ClosedTrade{{
+		Symbol:     "GOAI",
+		Side:       domain.DirectionShort,
+		Quantity:   100,
+		EntryPrice: 5.30,
+		ExitPrice:  4.85,
+		PnL:        45.00,
+		OpenedAt:   time.Date(2026, 3, 19, 15, 30, 0, 0, time.UTC),
+		ClosedAt:   time.Date(2026, 3, 19, 16, 0, 0, 0, time.UTC),
+		ExitReason: "profit-target",
+	}})
+
+	output := buffer.String()
+	if !strings.Contains(output, "side=short") {
+		t.Fatalf("expected closed-trade log output to include side, got:\n%s", output)
 	}
 }

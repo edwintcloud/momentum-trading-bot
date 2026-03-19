@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,8 +26,10 @@ var easternLocation = mustLoadLocation("America/New_York")
 
 // Client wraps Alpaca trading and market data APIs.
 type Client struct {
+	mu         sync.RWMutex
 	cfg        config.AlpacaConfig
 	httpClient *http.Client
+	assets     map[string]AssetMetadata
 }
 
 // MarketDataCapabilities captures plan-dependent market-data behavior detected at runtime.
@@ -51,14 +54,26 @@ type BrokerPosition struct {
 	Qty           string `json:"qty"`
 	AvgEntryPrice string `json:"avg_entry_price"`
 	CurrentPrice  string `json:"current_price"`
+	Side          string `json:"side"`
 }
 
 type asset struct {
-	Symbol     string `json:"symbol"`
-	Exchange   string `json:"exchange"`
-	Tradable   bool   `json:"tradable"`
-	AssetClass string `json:"class"`
-	Status     string `json:"status"`
+	Symbol       string `json:"symbol"`
+	Exchange     string `json:"exchange"`
+	Tradable     bool   `json:"tradable"`
+	Shortable    bool   `json:"shortable"`
+	EasyToBorrow bool   `json:"easy_to_borrow"`
+	Marginable   bool   `json:"marginable"`
+	AssetClass   string `json:"class"`
+	Status       string `json:"status"`
+}
+
+type AssetMetadata struct {
+	Symbol       string
+	Tradable     bool
+	Shortable    bool
+	EasyToBorrow bool
+	Marginable   bool
 }
 
 // RESTBar is a REST representation of an Alpaca stock bar.
@@ -210,6 +225,7 @@ func NewClient(cfg config.AlpacaConfig) *Client {
 	return &Client{
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: 20 * time.Second},
+		assets:     make(map[string]AssetMetadata),
 	}
 }
 
@@ -485,17 +501,41 @@ func (c *Client) ListActiveEquitySymbols(ctx context.Context) ([]string, error) 
 	}
 
 	symbols := make([]string, 0, len(assets))
+	metadata := make(map[string]AssetMetadata, len(assets))
 	for _, item := range assets {
+		symbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		metadata[symbol] = AssetMetadata{
+			Symbol:       symbol,
+			Tradable:     item.Tradable,
+			Shortable:    item.Shortable,
+			EasyToBorrow: item.EasyToBorrow,
+			Marginable:   item.Marginable,
+		}
 		if !item.Tradable {
 			continue
 		}
 		if _, ok := allowedPrimaryExchanges[strings.ToUpper(strings.TrimSpace(item.Exchange))]; !ok {
 			continue
 		}
-		symbols = append(symbols, strings.ToUpper(strings.TrimSpace(item.Symbol)))
+		symbols = append(symbols, symbol)
 	}
+	c.mu.Lock()
+	c.assets = metadata
+	c.mu.Unlock()
 	sort.Strings(symbols)
 	return symbols, nil
+}
+
+// IsShortable reports whether the latest known Alpaca asset metadata marks a
+// symbol as both shortable and easy to borrow.
+func (c *Client) IsShortable(symbol string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	metadata, ok := c.assets[strings.ToUpper(strings.TrimSpace(symbol))]
+	if !ok {
+		return false
+	}
+	return metadata.Shortable && metadata.EasyToBorrow
 }
 
 // NewsCatalyst holds a headline and its source URL.
