@@ -153,9 +153,9 @@ func protectiveStop(cfg config.TradingConfig, position domain.Position, watermar
 		}
 	}
 
-	if peakR >= cfg.ProfitTargetR {
-		return roundPrice(currentPrice), "profit-target"
-	}
+	// if peakR >= cfg.ProfitTargetR {
+	// 	return roundPrice(currentPrice), "profit-target"
+	// }
 
 	if peakR >= cfg.TrailActivationR && currentR >= cfg.StructureConfirmR {
 		trailWidth := math.Max(position.EntryATR*cfg.TrailATRMultiplier, riskPerShare*1.25)

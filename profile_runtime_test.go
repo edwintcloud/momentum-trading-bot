@@ -12,31 +12,31 @@ import (
 
 func TestApplyConfiguredTradingProfileRequiresExplicitSelection(t *testing.T) {
 	base := config.TuneTradingConfig(config.DefaultTradingConfig(), 25_000, 600)
+	profileConfig := base
+	profileConfig.RiskPerTradePct = 0.01
+	profileConfig.MaxTradesPerDay = 8
+	profileConfig.MaxOpenPositions = 2
+	profileConfig.MinEntryScore = 16
+	profileConfig.MinOneMinuteReturnPct = 0.50
+	profileConfig.MinThreeMinuteReturnPct = 0.95
+	profileConfig.MinVolumeRate = 1.55
+	profileConfig.MaxPriceVsOpenPct = 24
+	profileConfig.EntryCooldownSec = 60
+	profileConfig.BreakEvenHoldMinutes = 4
+	profileConfig.BreakEvenMinR = 0.45
+	profileConfig.TrailActivationR = 0.60
+	profileConfig.TrailATRMultiplier = 1.25
+	profileConfig.TightTrailTriggerR = 1.00
+	profileConfig.TightTrailATRMultiplier = 0.55
+	profileConfig.ProfitTargetR = 1.00
+	profileConfig.FailedBreakoutCutR = 0.04
+	profileConfig.StructureConfirmR = 0.08
 	profilePath := writeRootTestTradingProfile(t, config.TradingProfile{
 		Name:        config.StrategyProfileHighConviction,
 		Version:     "20260320-high-conviction",
 		GeneratedAt: time.Date(2026, time.March, 20, 21, 0, 0, 0, time.UTC),
 		AsOf:        time.Date(2026, time.March, 20, 20, 0, 0, 0, time.UTC),
-		Config: config.TradingConfig{
-			RiskPerTradePct:         0.01,
-			MaxTradesPerDay:         8,
-			MaxOpenPositions:        2,
-			MinEntryScore:           16,
-			MinOneMinuteReturnPct:   0.50,
-			MinThreeMinuteReturnPct: 0.95,
-			MinVolumeRate:           1.55,
-			MaxPriceVsOpenPct:       24,
-			EntryCooldownSec:        60,
-			BreakEvenHoldMinutes:    4,
-			BreakEvenMinR:           0.45,
-			TrailActivationR:        0.60,
-			TrailATRMultiplier:      1.25,
-			TightTrailTriggerR:      1.00,
-			TightTrailATRMultiplier: 0.55,
-			ProfitTargetR:           1.00,
-			FailedBreakoutCutR:      0.04,
-			StructureConfirmR:       0.08,
-		},
+		Config:      profileConfig,
 	})
 
 	unchanged, label, err := applyConfiguredTradingProfile(base, "")

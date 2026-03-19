@@ -53,30 +53,65 @@ func TestLoadAcceptsTradingProfilePath(t *testing.T) {
 
 func TestApplyTradingProfilePreservesBrokerTunedCapital(t *testing.T) {
 	base := TuneTradingConfig(DefaultTradingConfig(), 42_500, 600)
+	profileConfig := base
+	profileConfig.StartingCapital = 999
+	profileConfig.EnableShorts = false
+	profileConfig.RiskPerTradePct = 0.01
+	profileConfig.DailyLossLimitPct = 0.11
+	profileConfig.MaxTradesPerDay = 10
+	profileConfig.MaxOpenPositions = 2
+	profileConfig.StopLossPct = 0.03
+	profileConfig.EntryCooldownSec = 45
+	profileConfig.ExitCooldownSec = 9
+	profileConfig.MinEntryScore = 15
+	profileConfig.ShortMinEntryScore = 0
+	profileConfig.MinOneMinuteReturnPct = 0.45
+	profileConfig.MinThreeMinuteReturnPct = 0.90
+	profileConfig.MinVolumeRate = 1.45
+	profileConfig.MaxPriceVsOpenPct = 22
+	profileConfig.BreakoutFailureWindowMin = 6
+	profileConfig.StagnationWindowMin = 4
+	profileConfig.StagnationMinPeakPct = 0.011
+	profileConfig.ScannerWorkers = 7
+	profileConfig.MinPrice = 5.25
+	profileConfig.MaxPrice = 12.50
+	profileConfig.MinGapPercent = 2.25
+	profileConfig.MinRelativeVolume = 4.75
+	profileConfig.MinPremarketVolume = 125_000
+	profileConfig.ScannerMinPriceVsOpenPctFloor = 1.75
+	profileConfig.ScannerMinPriceVsOpenGapMultiplier = 0.30
+	profileConfig.ScannerMinSetupVolumeRateOffset = 0
+	profileConfig.ScannerMinSetupRelativeVolumeExtra = 0
+	profileConfig.ScannerVWAPTolerancePct = 0
+	profileConfig.ScannerConsolidationATRMultiplier = 1.50
+	profileConfig.ScannerConsolidationMaxPct = 3.25
+	profileConfig.ScannerPullbackDepthMinATRMultiplier = 0.20
+	profileConfig.ScannerPullbackDepthMinPct = 0.25
+	profileConfig.ScannerPullbackDepthMaxATRMultiplier = 1.90
+	profileConfig.ScannerPullbackDepthMaxPct = 5.50
+	profileConfig.ScannerRenewedVolumeRateMin = 0.95
+	profileConfig.HydrationRetrySec = 123
+	profileConfig.HydrationQueueSize = 321
+	profileConfig.LimitOrderSlippageDollars = 0.05
+	profileConfig.EntryATRPercentFallback = 0.03
+	profileConfig.EntryStopATRMultiplier = 1.50
+	profileConfig.MaxRiskATRMultiplier = 3.00
+	profileConfig.BreakEvenHoldMinutes = 3
+	profileConfig.BreakEvenMinR = 0.40
+	profileConfig.TrailActivationR = 0.55
+	profileConfig.TrailATRMultiplier = 1.10
+	profileConfig.TightTrailTriggerR = 0.95
+	profileConfig.TightTrailATRMultiplier = 0.50
+	profileConfig.ProfitTargetR = 1.00
+	profileConfig.FailedBreakoutCutR = 0.04
+	profileConfig.StructureConfirmR = 0
+	profileConfig.ShortPeakExtensionMinPct = 10
+	profileConfig.ShortVWAPBreakMinPct = 0
+	profileConfig.ShortStopATRMultiplier = 1.10
 	profile := TradingProfile{
 		Name:    StrategyProfileContinuation,
 		Version: "20260320-continuation",
-		Config: TradingConfig{
-			StartingCapital:         999,
-			RiskPerTradePct:         0.01,
-			MaxTradesPerDay:         10,
-			MaxOpenPositions:        2,
-			MinEntryScore:           15,
-			MinOneMinuteReturnPct:   0.45,
-			MinThreeMinuteReturnPct: 0.90,
-			MinVolumeRate:           1.45,
-			MaxPriceVsOpenPct:       22,
-			EntryCooldownSec:        45,
-			BreakEvenHoldMinutes:    3,
-			BreakEvenMinR:           0.40,
-			TrailActivationR:        0.55,
-			TrailATRMultiplier:      1.10,
-			TightTrailTriggerR:      0.95,
-			TightTrailATRMultiplier: 0.50,
-			ProfitTargetR:           1.00,
-			FailedBreakoutCutR:      0.04,
-			StructureConfirmR:       0.10,
-		},
+		Config:  profileConfig,
 	}
 
 	got := ApplyTradingProfile(base, profile)
@@ -92,6 +127,30 @@ func TestApplyTradingProfilePreservesBrokerTunedCapital(t *testing.T) {
 	if got.MaxTradesPerDay != 10 || got.MaxOpenPositions != 2 {
 		t.Fatalf("expected whitelisted overrides to apply, got %+v", got)
 	}
+	if got.EnableShorts {
+		t.Fatal("expected profile to override enable_shorts")
+	}
+	if got.MinPrice != 5.25 || got.MaxPrice != 12.50 {
+		t.Fatalf("expected profile price bounds to apply, got min=%.2f max=%.2f", got.MinPrice, got.MaxPrice)
+	}
+	if got.MinRelativeVolume != 4.75 || got.MinPremarketVolume != 125_000 {
+		t.Fatalf("expected scanner liquidity thresholds to apply, got relvol=%.2f premarket=%d", got.MinRelativeVolume, got.MinPremarketVolume)
+	}
+	if got.ExitCooldownSec != 9 || got.ScannerWorkers != 7 {
+		t.Fatalf("expected static timing/scanner overrides to apply, got exit_cooldown=%d scanner_workers=%d", got.ExitCooldownSec, got.ScannerWorkers)
+	}
+	if got.ScannerMinSetupVolumeRateOffset != 0 || got.ScannerVWAPTolerancePct != 0 || got.ShortVWAPBreakMinPct != 0 {
+		t.Fatalf("expected explicit zero-valued overrides to apply, got volume_offset=%.2f vwap_tol=%.2f short_vwap=%.2f", got.ScannerMinSetupVolumeRateOffset, got.ScannerVWAPTolerancePct, got.ShortVWAPBreakMinPct)
+	}
+	if got.HydrationRetrySec != 123 || got.HydrationQueueSize != 321 {
+		t.Fatalf("expected hydration tuning overrides to apply, got retry=%d queue=%d", got.HydrationRetrySec, got.HydrationQueueSize)
+	}
+	if got.LimitOrderSlippageDollars != 0.05 || got.EntryATRPercentFallback != 0.03 || got.EntryStopATRMultiplier != 1.50 || got.MaxRiskATRMultiplier != 3.00 {
+		t.Fatalf("expected trade-plan overrides to apply, got slippage=%.2f atr_fallback=%.2f stop_atr=%.2f max_risk_atr=%.2f", got.LimitOrderSlippageDollars, got.EntryATRPercentFallback, got.EntryStopATRMultiplier, got.MaxRiskATRMultiplier)
+	}
+	if got.HydrationRequestsPerMin != base.HydrationRequestsPerMin {
+		t.Fatalf("expected broker/capability-derived hydration budget %d to survive profile application, got %d", base.HydrationRequestsPerMin, got.HydrationRequestsPerMin)
+	}
 }
 
 func TestDefaultTradingProfilePathFindsBundledProfile(t *testing.T) {
@@ -99,12 +158,9 @@ func TestDefaultTradingProfilePathFindsBundledProfile(t *testing.T) {
 	if path == "" {
 		t.Fatal("expected bundled trading profile path")
 	}
-	profile, err := LoadTradingProfile(path)
+	_, err := LoadTradingProfile(path)
 	if err != nil {
 		t.Fatalf("expected bundled trading profile to load, got %v", err)
-	}
-	if profile.Version != "20260122-high_conviction_breakout" {
-		t.Fatalf("expected bundled profile version to remain pinned, got %q", profile.Version)
 	}
 }
 

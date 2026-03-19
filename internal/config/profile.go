@@ -142,24 +142,43 @@ func searchUpwardsForFile(start, relativePath string) string {
 	}
 }
 
-// ApplyTradingProfile applies whitelisted strategy and risk overrides after
-// broker-aware tuning so profile promotion stays reproducible without
-// clobbering startup-derived account values.
+// ApplyTradingProfile applies profile-controlled strategy and risk overrides
+// after broker-aware tuning while preserving startup-derived account and
+// capability values such as capital and hydration budget.
 func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConfig {
 	cfg := base
 	overrides := profile.Config
 
 	cfg.StrategyProfileName = string(profile.Name)
 	cfg.StrategyProfileVersion = profile.Version
+	cfg.EnableShorts = overrides.EnableShorts
 	cfg.RiskPerTradePct = overrides.RiskPerTradePct
+	cfg.DailyLossLimitPct = overrides.DailyLossLimitPct
 	cfg.MaxTradesPerDay = overrides.MaxTradesPerDay
 	cfg.MaxOpenPositions = overrides.MaxOpenPositions
+	cfg.StopLossPct = overrides.StopLossPct
+	cfg.ExitCooldownSec = overrides.ExitCooldownSec
 	cfg.MinEntryScore = overrides.MinEntryScore
 	cfg.MinOneMinuteReturnPct = overrides.MinOneMinuteReturnPct
 	cfg.MinThreeMinuteReturnPct = overrides.MinThreeMinuteReturnPct
 	cfg.MinVolumeRate = overrides.MinVolumeRate
 	cfg.MaxPriceVsOpenPct = overrides.MaxPriceVsOpenPct
+	cfg.BreakoutFailureWindowMin = overrides.BreakoutFailureWindowMin
+	cfg.StagnationWindowMin = overrides.StagnationWindowMin
+	cfg.StagnationMinPeakPct = overrides.StagnationMinPeakPct
+	cfg.ScannerWorkers = overrides.ScannerWorkers
+	cfg.MinPrice = overrides.MinPrice
+	cfg.MaxPrice = overrides.MaxPrice
+	cfg.MinGapPercent = overrides.MinGapPercent
+	cfg.MinRelativeVolume = overrides.MinRelativeVolume
+	cfg.MinPremarketVolume = overrides.MinPremarketVolume
 	cfg.EntryCooldownSec = overrides.EntryCooldownSec
+	cfg.HydrationRetrySec = overrides.HydrationRetrySec
+	cfg.HydrationQueueSize = overrides.HydrationQueueSize
+	cfg.LimitOrderSlippageDollars = overrides.LimitOrderSlippageDollars
+	cfg.EntryATRPercentFallback = overrides.EntryATRPercentFallback
+	cfg.EntryStopATRMultiplier = overrides.EntryStopATRMultiplier
+	cfg.MaxRiskATRMultiplier = overrides.MaxRiskATRMultiplier
 	cfg.BreakEvenHoldMinutes = overrides.BreakEvenHoldMinutes
 	cfg.BreakEvenMinR = overrides.BreakEvenMinR
 	cfg.TrailActivationR = overrides.TrailActivationR
@@ -169,63 +188,28 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.ProfitTargetR = overrides.ProfitTargetR
 	cfg.FailedBreakoutCutR = overrides.FailedBreakoutCutR
 	cfg.StructureConfirmR = overrides.StructureConfirmR
-	if overrides.EnableShorts {
-		cfg.EnableShorts = true
-	}
 	if overrides.MaxShortOpenPositions > 0 {
 		cfg.MaxShortOpenPositions = overrides.MaxShortOpenPositions
 	}
 	if overrides.MaxShortExposurePct > 0 {
 		cfg.MaxShortExposurePct = overrides.MaxShortExposurePct
 	}
-	if overrides.ShortMinEntryScore > 0 {
-		cfg.ShortMinEntryScore = overrides.ShortMinEntryScore
-	}
-	if overrides.ShortPeakExtensionMinPct > 0 {
-		cfg.ShortPeakExtensionMinPct = overrides.ShortPeakExtensionMinPct
-	}
-	if overrides.ShortVWAPBreakMinPct != 0 {
-		cfg.ShortVWAPBreakMinPct = overrides.ShortVWAPBreakMinPct
-	}
-	if overrides.ShortStopATRMultiplier > 0 {
-		cfg.ShortStopATRMultiplier = overrides.ShortStopATRMultiplier
-	}
-	if overrides.ScannerMinPriceVsOpenPctFloor > 0 {
-		cfg.ScannerMinPriceVsOpenPctFloor = overrides.ScannerMinPriceVsOpenPctFloor
-	}
-	if overrides.ScannerMinPriceVsOpenGapMultiplier > 0 {
-		cfg.ScannerMinPriceVsOpenGapMultiplier = overrides.ScannerMinPriceVsOpenGapMultiplier
-	}
-	if overrides.ScannerMinSetupVolumeRateOffset != 0 {
-		cfg.ScannerMinSetupVolumeRateOffset = overrides.ScannerMinSetupVolumeRateOffset
-	}
-	if overrides.ScannerMinSetupRelativeVolumeExtra != 0 {
-		cfg.ScannerMinSetupRelativeVolumeExtra = overrides.ScannerMinSetupRelativeVolumeExtra
-	}
-	if overrides.ScannerVWAPTolerancePct != 0 {
-		cfg.ScannerVWAPTolerancePct = overrides.ScannerVWAPTolerancePct
-	}
-	if overrides.ScannerConsolidationATRMultiplier > 0 {
-		cfg.ScannerConsolidationATRMultiplier = overrides.ScannerConsolidationATRMultiplier
-	}
-	if overrides.ScannerConsolidationMaxPct > 0 {
-		cfg.ScannerConsolidationMaxPct = overrides.ScannerConsolidationMaxPct
-	}
-	if overrides.ScannerPullbackDepthMinATRMultiplier > 0 {
-		cfg.ScannerPullbackDepthMinATRMultiplier = overrides.ScannerPullbackDepthMinATRMultiplier
-	}
-	if overrides.ScannerPullbackDepthMinPct > 0 {
-		cfg.ScannerPullbackDepthMinPct = overrides.ScannerPullbackDepthMinPct
-	}
-	if overrides.ScannerPullbackDepthMaxATRMultiplier > 0 {
-		cfg.ScannerPullbackDepthMaxATRMultiplier = overrides.ScannerPullbackDepthMaxATRMultiplier
-	}
-	if overrides.ScannerPullbackDepthMaxPct > 0 {
-		cfg.ScannerPullbackDepthMaxPct = overrides.ScannerPullbackDepthMaxPct
-	}
-	if overrides.ScannerRenewedVolumeRateMin > 0 {
-		cfg.ScannerRenewedVolumeRateMin = overrides.ScannerRenewedVolumeRateMin
-	}
+	cfg.ShortMinEntryScore = overrides.ShortMinEntryScore
+	cfg.ShortPeakExtensionMinPct = overrides.ShortPeakExtensionMinPct
+	cfg.ShortVWAPBreakMinPct = overrides.ShortVWAPBreakMinPct
+	cfg.ShortStopATRMultiplier = overrides.ShortStopATRMultiplier
+	cfg.ScannerMinPriceVsOpenPctFloor = overrides.ScannerMinPriceVsOpenPctFloor
+	cfg.ScannerMinPriceVsOpenGapMultiplier = overrides.ScannerMinPriceVsOpenGapMultiplier
+	cfg.ScannerMinSetupVolumeRateOffset = overrides.ScannerMinSetupVolumeRateOffset
+	cfg.ScannerMinSetupRelativeVolumeExtra = overrides.ScannerMinSetupRelativeVolumeExtra
+	cfg.ScannerVWAPTolerancePct = overrides.ScannerVWAPTolerancePct
+	cfg.ScannerConsolidationATRMultiplier = overrides.ScannerConsolidationATRMultiplier
+	cfg.ScannerConsolidationMaxPct = overrides.ScannerConsolidationMaxPct
+	cfg.ScannerPullbackDepthMinATRMultiplier = overrides.ScannerPullbackDepthMinATRMultiplier
+	cfg.ScannerPullbackDepthMinPct = overrides.ScannerPullbackDepthMinPct
+	cfg.ScannerPullbackDepthMaxATRMultiplier = overrides.ScannerPullbackDepthMaxATRMultiplier
+	cfg.ScannerPullbackDepthMaxPct = overrides.ScannerPullbackDepthMaxPct
+	cfg.ScannerRenewedVolumeRateMin = overrides.ScannerRenewedVolumeRateMin
 	return cfg
 }
 
