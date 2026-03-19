@@ -94,6 +94,20 @@ func TestApplyTradingProfilePreservesBrokerTunedCapital(t *testing.T) {
 	}
 }
 
+func TestDefaultTradingProfilePathFindsBundledProfile(t *testing.T) {
+	path := DefaultTradingProfilePath()
+	if path == "" {
+		t.Fatal("expected bundled trading profile path")
+	}
+	profile, err := LoadTradingProfile(path)
+	if err != nil {
+		t.Fatalf("expected bundled trading profile to load, got %v", err)
+	}
+	if profile.Version != "20260122-high_conviction_breakout" {
+		t.Fatalf("expected bundled profile version to remain pinned, got %q", profile.Version)
+	}
+}
+
 func writeTestTradingProfile(t *testing.T, profile TradingProfile) string {
 	t.Helper()
 	dir := t.TempDir()

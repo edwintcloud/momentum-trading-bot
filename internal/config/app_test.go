@@ -35,6 +35,9 @@ func TestLoadUsesSimpleDefaults(t *testing.T) {
 	if !cfg.Alpaca.SubscribeAllBars {
 		t.Fatal("expected wildcard subscriptions when no symbols are provided")
 	}
+	if cfg.TradingProfilePath == "" {
+		t.Fatal("expected bundled trading profile to load by default")
+	}
 }
 
 func TestLoadRejectsMissingControlPlaneAuthToken(t *testing.T) {

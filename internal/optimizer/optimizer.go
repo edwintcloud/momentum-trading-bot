@@ -511,6 +511,32 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		return OptimizationReport{}, nil, err
 	}
 
+	if len(holdoutWeeks) == 0 {
+		finalists := topCandidates(validationCandidates, 10, func(candidate OptimizerCandidate) PeriodSummary {
+			return candidate.ValidationSummary
+		})
+		report.Run.Finalists = len(finalists)
+		tracker.RegisterStage("finalize", 1)
+		if err := updateProgress("finalize", 1, 1, "writing single-window optimizer artifacts"); err != nil {
+			return OptimizationReport{}, nil, err
+		}
+		finalized := finalizeWithoutHoldout(finalists)
+		report.Candidates = finalized
+		if len(finalized) > 0 {
+			winner := finalized[0]
+			report.Winner = &winner
+			profile := buildTradingProfile(winner, report.Run)
+			if err := writeArtifacts(params.ArtifactDir, &report, &profile); err != nil {
+				return OptimizationReport{}, nil, err
+			}
+			return report, &profile, nil
+		}
+		if err := writeArtifacts(params.ArtifactDir, &report, nil); err != nil {
+			return OptimizationReport{}, nil, err
+		}
+		return report, nil, nil
+	}
+
 	refinedSeeds := buildRefinedSeeds(base, validationAnchors)
 	report.Run.RefinedCandidates = len(refinedSeeds)
 	tracker.RegisterStage("refinement", len(refinedSeeds)*len(validationWeeks))
@@ -542,28 +568,6 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		tracker.RegisterStage("finalize", 1)
 		if err := updateProgress("finalize", 1, 1, "writing final optimizer artifacts"); err != nil {
 			return OptimizationReport{}, nil, err
-		}
-		if err := writeArtifacts(params.ArtifactDir, &report, nil); err != nil {
-			return OptimizationReport{}, nil, err
-		}
-		return report, nil, nil
-	}
-
-	if len(holdoutWeeks) == 0 {
-		tracker.RegisterStage("finalize", 1)
-		if err := updateProgress("finalize", 1, 1, "writing single-window optimizer artifacts"); err != nil {
-			return OptimizationReport{}, nil, err
-		}
-		finalized := finalizeWithoutHoldout(finalists)
-		report.Candidates = finalized
-		if len(finalized) > 0 {
-			winner := finalized[0]
-			report.Winner = &winner
-			profile := buildTradingProfile(winner, report.Run)
-			if err := writeArtifacts(params.ArtifactDir, &report, &profile); err != nil {
-				return OptimizationReport{}, nil, err
-			}
-			return report, &profile, nil
 		}
 		if err := writeArtifacts(params.ArtifactDir, &report, nil); err != nil {
 			return OptimizationReport{}, nil, err

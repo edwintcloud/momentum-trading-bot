@@ -19,6 +19,8 @@ const (
 	StrategyProfileContinuation   StrategyProfile = "continuation_breakout"
 )
 
+const bundledTradingProfileRelPath = "profiles/20260122-high_conviction_breakout.json"
+
 var supportedStrategyProfiles = map[StrategyProfile]struct{}{
 	StrategyProfileBaseline:       {},
 	StrategyProfileHighConviction: {},
@@ -76,6 +78,37 @@ func LoadTradingProfile(path string) (TradingProfile, error) {
 	profile.Version = strings.TrimSpace(profile.Version)
 	profile.SourceReportPath = strings.TrimSpace(profile.SourceReportPath)
 	return profile, nil
+}
+
+// ResolveTradingProfilePath returns an explicit profile path when one is
+// provided, otherwise it falls back to the bundled repo profile when present.
+func ResolveTradingProfilePath(explicit string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return strings.TrimSpace(explicit)
+	}
+	return DefaultTradingProfilePath()
+}
+
+// DefaultTradingProfilePath returns the bundled repo profile path when the
+// process is running somewhere inside the repository tree.
+func DefaultTradingProfilePath() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	current := wd
+	for {
+		candidate := filepath.Join(current, bundledTradingProfileRelPath)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		current = parent
+	}
 }
 
 // ApplyTradingProfile applies whitelisted strategy and risk overrides after

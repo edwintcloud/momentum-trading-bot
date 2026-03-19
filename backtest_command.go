@@ -45,6 +45,7 @@ func runBacktest(args []string) error {
 	log.Printf("Backtest window start=%s end=%s", formatLogTime(start), formatLogTime(end))
 
 	cfg := config.DefaultTradingConfig()
+	profilePath := config.ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH"))
 	runCfg := backtest.RunConfig{
 		DataPath: *dataPath,
 		Start:    start,
@@ -77,8 +78,6 @@ func runBacktest(args []string) error {
 		} else {
 			log.Printf("Backtest account tuning skipped: %v", accountErr)
 		}
-		logBacktestConfig(cfg)
-
 		symbols, err := resolveBacktestSymbols(setupCtx, client)
 		if err != nil {
 			return err
@@ -95,6 +94,15 @@ func runBacktest(args []string) error {
 		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
 		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 	}
+	profileLabel := ""
+	cfg, profileLabel, err = applyConfiguredTradingProfile(cfg, profilePath)
+	if err != nil {
+		return err
+	}
+	if profileLabel != "" {
+		log.Printf("Backtest loaded trading profile %s", profileLabel)
+	}
+	logBacktestConfig(cfg)
 
 	result, err := backtest.Run(context.Background(), cfg, runCfg)
 	if err != nil {

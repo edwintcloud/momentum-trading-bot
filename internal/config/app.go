@@ -59,7 +59,7 @@ func Load() (AppConfig, error) {
 		HTTPAddr:                   ":8080",
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		ControlPlaneAuthToken:      strings.TrimSpace(os.Getenv("CONTROL_PLANE_AUTH_TOKEN")),
-		TradingProfilePath:         strings.TrimSpace(os.Getenv("TRADING_PROFILE_PATH")),
+		TradingProfilePath:         ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH")),
 		SnapshotPersistIntervalSec: 10,
 		StartupTimeoutSec:          30,
 		ShutdownTimeoutSec:         10,

@@ -161,8 +161,8 @@ Promotion behavior:
 
 - the optimizer always writes the top-ranked recommendation
 - the recommendation includes a promotion status such as `pending-paper-validation` or `blocked-research-gates`
-- no profile is activated automatically
-- live startup only uses a profile if `TRADING_PROFILE_PATH` explicitly points to one
+- the repo ships with a bundled default profile at `profiles/20260122-high_conviction_breakout.json`
+- live startup and backtests load that bundled profile automatically unless `TRADING_PROFILE_PATH` explicitly points somewhere else
 
 To start the bot with a selected profile:
 
@@ -175,7 +175,7 @@ Recommended operator workflow:
 1. Run `go run . optimize -as-of YYYY-MM-DD`
 2. Review `.cache/optimizer/latest-report.json`
 3. If the candidate is acceptable, deploy the generated profile in paper mode first
-4. After paper validation, point `TRADING_PROFILE_PATH` at the selected profile and restart the bot
+4. Replace the bundled repo profile or point `TRADING_PROFILE_PATH` at the selected profile and restart the bot
 
 Dashboard visibility:
 

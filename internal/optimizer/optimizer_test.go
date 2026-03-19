@@ -245,6 +245,9 @@ func TestRunSupportsSingleWindowMode(t *testing.T) {
 	if len(report.Run.SearchWeeks) != 1 || len(report.Run.ValidationWeeks) != 1 || len(report.Run.HoldoutWeeks) != 0 {
 		t.Fatalf("unexpected single-window partitions: %+v", report.Run)
 	}
+	if report.Run.RefinedCandidates != 0 {
+		t.Fatalf("expected single-window optimizer run to skip refinement, got %+v", report.Run)
+	}
 	if report.Winner == nil || profile == nil {
 		t.Fatalf("expected single-window winner and profile, got winner=%+v", report.Winner)
 	}
