@@ -21,7 +21,11 @@ import (
 const (
 	historicalBatchSize    = 100
 	historicalMaxRetries   = 5
-	historicalCacheVersion = "v2"
+	historicalCacheVersion = "v3"
+
+	historicalOutlierWickThresholdPct = 0.12
+	historicalBodyDriftTolerancePct   = 0.05
+	historicalNeighborGapMax          = 5 * time.Minute
 )
 
 var historicalCacheRoot = filepath.Join(".cache", "backtest", "historical-bars")
@@ -127,6 +131,7 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 	result := historicalFetchResult{
 		bars: make([]backtest.InputBar, 0, 1024),
 	}
+	barsBySymbol := make(map[string][]backtest.InputBar, len(job.symbols))
 	for {
 		page, err := fetchHistoricalPageWithRetry(ctx, client, limiter, job, pageToken)
 		if err != nil {
@@ -134,10 +139,11 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 		}
 		result.pageHits++
 		for symbol, bars := range page.Bars {
+			normalizedSymbol := strings.ToUpper(symbol)
 			for _, item := range bars {
-				result.bars = append(result.bars, backtest.InputBar{
+				barsBySymbol[normalizedSymbol] = append(barsBySymbol[normalizedSymbol], backtest.InputBar{
 					Timestamp: item.Timestamp.UTC(),
-					Symbol:    strings.ToUpper(symbol),
+					Symbol:    normalizedSymbol,
 					Open:      item.Open,
 					High:      item.High,
 					Low:       item.Low,
@@ -148,7 +154,12 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 		}
 		applyRateLimitHeaders(limiter, page.Headers)
 		if page.NextPageToken == "" {
+			sanitizedBars, sanitizedCount := flattenAndSanitizeHistoricalBars(barsBySymbol)
+			result.bars = sanitizedBars
 			sortHistoricalBars(result.bars)
+			if sanitizedCount > 0 {
+				log.Printf("Historical bar sanity filter adjusted bars=%d job=%d symbols=%d window=%s..%s", sanitizedCount, job.index, len(job.symbols), job.start.Format(time.RFC3339), job.end.Format(time.RFC3339))
+			}
 			if err := saveHistoricalJobCache(job, feed, result); err != nil {
 				log.Printf("Historical cache write failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
 			}
@@ -380,4 +391,114 @@ func sortHistoricalBars(bars []backtest.InputBar) {
 		}
 		return bars[i].Timestamp.Before(bars[j].Timestamp)
 	})
+}
+
+func flattenAndSanitizeHistoricalBars(barsBySymbol map[string][]backtest.InputBar) ([]backtest.InputBar, int) {
+	if len(barsBySymbol) == 0 {
+		return nil, 0
+	}
+	symbols := make([]string, 0, len(barsBySymbol))
+	total := 0
+	for symbol, bars := range barsBySymbol {
+		symbols = append(symbols, symbol)
+		total += len(bars)
+	}
+	sort.Strings(symbols)
+
+	out := make([]backtest.InputBar, 0, total)
+	sanitized := 0
+	for _, symbol := range symbols {
+		bars := append([]backtest.InputBar(nil), barsBySymbol[symbol]...)
+		sort.Slice(bars, func(i, j int) bool {
+			return bars[i].Timestamp.Before(bars[j].Timestamp)
+		})
+		bars, adjusted := sanitizeHistoricalBarSeries(bars)
+		sanitized += adjusted
+		out = append(out, bars...)
+	}
+	return out, sanitized
+}
+
+func sanitizeHistoricalBarSeries(bars []backtest.InputBar) ([]backtest.InputBar, int) {
+	if len(bars) < 3 {
+		return bars, 0
+	}
+	adjusted := 0
+	for index := 1; index < len(bars)-1; index++ {
+		prev := bars[index-1]
+		current := bars[index]
+		next := bars[index+1]
+		if prev.Symbol != current.Symbol || next.Symbol != current.Symbol {
+			continue
+		}
+		if prev.Timestamp.IsZero() || current.Timestamp.IsZero() || next.Timestamp.IsZero() {
+			continue
+		}
+		if current.Timestamp.Sub(prev.Timestamp) > historicalNeighborGapMax || next.Timestamp.Sub(current.Timestamp) > historicalNeighborGapMax {
+			continue
+		}
+
+		currentBodyLow := math.Min(current.Open, current.Close)
+		currentBodyHigh := math.Max(current.Open, current.Close)
+		prevBodyLow := math.Min(prev.Open, prev.Close)
+		prevBodyHigh := math.Max(prev.Open, prev.Close)
+		nextBodyLow := math.Min(next.Open, next.Close)
+		nextBodyHigh := math.Max(next.Open, next.Close)
+		refLow := median3(prevBodyLow, currentBodyLow, nextBodyLow)
+		refHigh := median3(prevBodyHigh, currentBodyHigh, nextBodyHigh)
+
+		if isSuspiciousLowWick(current, currentBodyLow, prevBodyLow, nextBodyLow, refLow) {
+			replacement := math.Min(currentBodyLow, math.Min(prevBodyLow, nextBodyLow))
+			if replacement > 0 && replacement > current.Low {
+				bars[index].Low = math.Round(replacement*10_000) / 10_000
+				if bars[index].High < bars[index].Low {
+					bars[index].High = bars[index].Low
+				}
+				adjusted++
+			}
+		}
+		if isSuspiciousHighWick(current, currentBodyHigh, prevBodyHigh, nextBodyHigh, refHigh) {
+			replacement := math.Max(currentBodyHigh, math.Max(prevBodyHigh, nextBodyHigh))
+			if replacement > 0 && replacement < current.High {
+				bars[index].High = math.Round(replacement*10_000) / 10_000
+				if bars[index].Low > bars[index].High {
+					bars[index].Low = bars[index].High
+				}
+				adjusted++
+			}
+		}
+	}
+	return bars, adjusted
+}
+
+func isSuspiciousLowWick(current backtest.InputBar, currentBodyLow, prevBodyLow, nextBodyLow, referenceLow float64) bool {
+	if current.Low <= 0 || currentBodyLow <= 0 || referenceLow <= 0 {
+		return false
+	}
+	if currentBodyLow < referenceLow*(1-historicalBodyDriftTolerancePct) {
+		return false
+	}
+	if prevBodyLow < referenceLow*(1-historicalBodyDriftTolerancePct) || nextBodyLow < referenceLow*(1-historicalBodyDriftTolerancePct) {
+		return false
+	}
+	return current.Low < referenceLow*(1-historicalOutlierWickThresholdPct)
+}
+
+func isSuspiciousHighWick(current backtest.InputBar, currentBodyHigh, prevBodyHigh, nextBodyHigh, referenceHigh float64) bool {
+	if current.High <= 0 || currentBodyHigh <= 0 || referenceHigh <= 0 {
+		return false
+	}
+	if currentBodyHigh > referenceHigh*(1+historicalBodyDriftTolerancePct) {
+		return false
+	}
+	if prevBodyHigh > referenceHigh*(1+historicalBodyDriftTolerancePct) || nextBodyHigh > referenceHigh*(1+historicalBodyDriftTolerancePct) {
+		return false
+	}
+	return current.High > referenceHigh*(1+historicalOutlierWickThresholdPct)
+}
+
+func median3(a, b, c float64) float64 {
+	values := []float64{a, b, c}
+	sort.Float64s(values)
+	return values[1]
 }
