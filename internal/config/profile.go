@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -98,6 +99,9 @@ func DefaultTradingProfilePath() string {
 	}
 	if executablePath, err := os.Executable(); err == nil && strings.TrimSpace(executablePath) != "" {
 		searchRoots = append(searchRoots, filepath.Dir(executablePath))
+	}
+	if _, sourceFile, _, ok := runtime.Caller(0); ok && strings.TrimSpace(sourceFile) != "" {
+		searchRoots = append(searchRoots, filepath.Dir(sourceFile))
 	}
 	return locateBundledTradingProfilePath(searchRoots...)
 }

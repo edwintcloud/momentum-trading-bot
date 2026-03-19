@@ -163,6 +163,7 @@ Promotion behavior:
 - the recommendation includes a promotion status such as `pending-paper-validation` or `blocked-research-gates`
 - the repo ships with a bundled default profile at `profiles/20260122-high_conviction_breakout.json`
 - live startup and backtests load that bundled profile automatically unless `TRADING_PROFILE_PATH` explicitly points somewhere else
+- Docker Compose pins `TRADING_PROFILE_PATH` to `/app/profiles/20260122-high_conviction_breakout.json` inside the container image
 
 To start the bot with a selected profile:
 

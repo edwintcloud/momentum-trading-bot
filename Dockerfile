@@ -11,6 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
 COPY internal ./internal
+COPY profiles ./profiles
 COPY --from=web-builder /build/web/dist ./web/dist
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 RUN go build -o /out/momentum-bot .
@@ -22,6 +23,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 	&& adduser -S -G app app
 COPY --from=go-builder /out/momentum-bot /app/momentum-bot
 COPY --from=go-builder /build/web/dist /app/web/dist
+COPY --from=go-builder /build/profiles /app/profiles
 RUN chown -R app:app /app
 USER app
 EXPOSE 8080

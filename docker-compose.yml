@@ -28,6 +28,8 @@ services:
         condition: service_healthy
     env_file:
       - .env
+    environment:
+      TRADING_PROFILE_PATH: ${TRADING_PROFILE_PATH:-/app/profiles/20260122-high_conviction_breakout.json}
     volumes:
       - ./logs:/app/logs
     ports:
