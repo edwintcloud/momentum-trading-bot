@@ -1522,7 +1522,13 @@ func writeArtifacts(artifactDir string, report *OptimizationReport, winnerProfil
 	if err := writeReportArtifact(artifactDir, report); err != nil {
 		return err
 	}
-	return writeProfileArtifact(artifactDir, report, winnerProfile)
+	if err := writeProfileArtifact(artifactDir, report, winnerProfile); err != nil {
+		return err
+	}
+	if winnerProfile != nil {
+		return writeReportArtifact(artifactDir, report)
+	}
+	return nil
 }
 
 func writeReportArtifact(artifactDir string, report *OptimizationReport) error {

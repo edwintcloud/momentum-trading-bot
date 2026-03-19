@@ -92,13 +92,40 @@ func ResolveTradingProfilePath(explicit string) string {
 // DefaultTradingProfilePath returns the bundled repo profile path when the
 // process is running somewhere inside the repository tree.
 func DefaultTradingProfilePath() string {
-	wd, err := os.Getwd()
-	if err != nil {
+	searchRoots := make([]string, 0, 2)
+	if wd, err := os.Getwd(); err == nil && strings.TrimSpace(wd) != "" {
+		searchRoots = append(searchRoots, wd)
+	}
+	if executablePath, err := os.Executable(); err == nil && strings.TrimSpace(executablePath) != "" {
+		searchRoots = append(searchRoots, filepath.Dir(executablePath))
+	}
+	return locateBundledTradingProfilePath(searchRoots...)
+}
+
+func locateBundledTradingProfilePath(searchRoots ...string) string {
+	seen := make(map[string]struct{}, len(searchRoots))
+	for _, root := range searchRoots {
+		path := searchUpwardsForFile(root, bundledTradingProfileRelPath)
+		if path == "" {
+			continue
+		}
+		cleaned := filepath.Clean(path)
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		return cleaned
+	}
+	return ""
+}
+
+func searchUpwardsForFile(start, relativePath string) string {
+	if strings.TrimSpace(start) == "" {
 		return ""
 	}
-	current := wd
+	current := filepath.Clean(start)
 	for {
-		candidate := filepath.Join(current, bundledTradingProfileRelPath)
+		candidate := filepath.Join(current, relativePath)
 		info, err := os.Stat(candidate)
 		if err == nil && !info.IsDir() {
 			return candidate

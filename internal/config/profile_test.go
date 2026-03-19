@@ -108,6 +108,38 @@ func TestDefaultTradingProfilePathFindsBundledProfile(t *testing.T) {
 	}
 }
 
+func TestLocateBundledTradingProfilePathSearchesParentDirectories(t *testing.T) {
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "profiles")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profileDir, "20260122-high_conviction_breakout.json")
+	raw, err := json.Marshal(TradingProfile{
+		Name:    StrategyProfileHighConviction,
+		Version: "test-bundled-profile",
+		Config: TradingConfig{
+			RiskPerTradePct: 0.01,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profilePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deepChild := filepath.Join(root, "var", "run", "bot")
+	if err := os.MkdirAll(deepChild, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := locateBundledTradingProfilePath(deepChild)
+	if got != profilePath {
+		t.Fatalf("expected upward profile lookup to find %q, got %q", profilePath, got)
+	}
+}
+
 func writeTestTradingProfile(t *testing.T, profile TradingProfile) string {
 	t.Helper()
 	dir := t.TempDir()

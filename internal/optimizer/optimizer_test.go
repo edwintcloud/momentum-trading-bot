@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -256,6 +257,65 @@ func TestRunSupportsSingleWindowMode(t *testing.T) {
 	}
 	if profile.Promotion.Status != "blocked-research-gates" {
 		t.Fatalf("expected single-window profile to stay blocked for promotion, got %+v", profile.Promotion)
+	}
+}
+
+func TestRunWritesFinalSingleWindowReportArtifact(t *testing.T) {
+	asOf := time.Date(2026, time.June, 1, 12, 0, 0, 0, marketLocation)
+	bars := optimizerFixtureBars(asOf)
+	dir := t.TempDir()
+	window := BuildWeeklyWindows(PriorCompletedWeekEnd(asOf), 1)[0]
+	baseConfig := config.TuneTradingConfig(config.DefaultTradingConfig(), 25_000, 1_000)
+	baseConfig.MinEntryScore = 10
+	baseConfig.MinOneMinuteReturnPct = 0.10
+	baseConfig.MinThreeMinuteReturnPct = 0.20
+	baseConfig.MinVolumeRate = 1.05
+	baseConfig.MaxPriceVsOpenPct = 40
+	baseConfig.LimitOrderSlippageDollars = 0
+
+	report, profile, err := Run(context.Background(), Params{
+		BaseConfig:      baseConfig,
+		Bars:            bars,
+		AsOf:            window.End,
+		ArtifactDir:     dir,
+		SearchWeeks:     []WeeklyWindow{window},
+		ValidationWeeks: []WeeklyWindow{window},
+	})
+	if err != nil {
+		t.Fatalf("expected single-window optimizer run to succeed, got %v", err)
+	}
+	if report.Winner == nil || profile == nil {
+		t.Fatalf("expected winner and profile, got winner=%+v", report.Winner)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "latest-report.json"))
+	if err != nil {
+		t.Fatalf("expected latest report artifact, got %v", err)
+	}
+	var disk OptimizationReport
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		t.Fatalf("expected latest report artifact to decode, got %v", err)
+	}
+	if disk.Winner == nil {
+		t.Fatal("expected disk report to include winner")
+	}
+	if disk.Winner.CandidateID != report.Winner.CandidateID {
+		t.Fatalf("expected disk winner %q, got %q", report.Winner.CandidateID, disk.Winner.CandidateID)
+	}
+	if disk.Run.Finalists != report.Run.Finalists || disk.Run.RefinedCandidates != report.Run.RefinedCandidates {
+		t.Fatalf("expected disk run counts %+v to match returned report %+v", disk.Run, report.Run)
+	}
+	if disk.ProfilePath != report.ProfilePath || disk.ProfilePath == "" {
+		t.Fatalf("expected disk profile path %q to match returned report %q", report.ProfilePath, disk.ProfilePath)
+	}
+	if len(disk.Candidates) != len(report.Candidates) {
+		t.Fatalf("expected disk candidates len %d, got %d", len(report.Candidates), len(disk.Candidates))
+	}
+	if len(disk.Candidates) == 0 {
+		t.Fatal("expected disk report candidates")
+	}
+	if disk.Candidates[0].CandidateID != report.Candidates[0].CandidateID {
+		t.Fatalf("expected disk top candidate %q, got %q", report.Candidates[0].CandidateID, disk.Candidates[0].CandidateID)
 	}
 }
 
