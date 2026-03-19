@@ -123,6 +123,49 @@ func TestProgressTrackerEstimatesStageAndOverallETA(t *testing.T) {
 	}
 }
 
+func TestEvaluateAllProgressIncludesPartialCandidateResults(t *testing.T) {
+	asOf := time.Date(2026, time.June, 1, 12, 0, 0, 0, marketLocation)
+	windows := BuildWeeklyWindows(PriorCompletedWeekEnd(asOf), 2)
+	bars := optimizerFixtureBars(asOf)
+	base := config.TuneTradingConfig(config.DefaultTradingConfig(), 25_000, 1_000)
+	base.MinEntryScore = 10
+	base.MinOneMinuteReturnPct = 0.10
+	base.MinThreeMinuteReturnPct = 0.20
+	base.MinVolumeRate = 1.05
+	base.MaxPriceVsOpenPct = 40
+	base.LimitOrderSlippageDollars = 0
+
+	var sawPartial bool
+	_, err := evaluateAll(context.Background(), []candidateSeed{{
+		id:      "baseline",
+		profile: config.StrategyProfileBaseline,
+		config:  base,
+	}}, windows, func(_ context.Context, window WeeklyWindow) ([]backtest.InputBar, error) {
+		filtered := make([]backtest.InputBar, 0)
+		for _, bar := range bars {
+			if bar.Timestamp.Before(window.Start) || bar.Timestamp.After(window.End) {
+				continue
+			}
+			filtered = append(filtered, bar)
+		}
+		return filtered, nil
+	}, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
+		candidate.SearchSummary = summary
+		candidate.ValidationWeeks = weeks
+	}, func(completed, total int, _ string, candidates []OptimizerCandidate) error {
+		if completed > 0 && total == 2 && len(candidates) == 1 && candidates[0].SearchSummary.Weeks > 0 {
+			sawPartial = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected evaluateAll to succeed, got %v", err)
+	}
+	if !sawPartial {
+		t.Fatal("expected progress callback to receive partial candidate results")
+	}
+}
+
 func TestRunEmitsArtifactsAndWinner(t *testing.T) {
 	asOf := time.Date(2026, time.June, 1, 12, 0, 0, 0, marketLocation)
 	bars := optimizerFixtureBars(asOf)

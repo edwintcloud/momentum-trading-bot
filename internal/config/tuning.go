@@ -23,36 +23,36 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 		cfg.DailyLossLimitPct = 0.015
 		cfg.MaxTradesPerDay = 6
 		cfg.MaxOpenPositions = 2
-		cfg.MinPrice = 1.0
+		cfg.MinPrice = 5.0
 	case equity < 100_000:
 		cfg.RiskPerTradePct = 0.035
 		cfg.DailyLossLimitPct = 0.200
 		cfg.MaxTradesPerDay = 30
 		cfg.MaxOpenPositions = 5
-		cfg.MinPrice = 1.0
+		cfg.MinPrice = 5.0
 	default:
 		cfg.RiskPerTradePct = 0.015
 		cfg.DailyLossLimitPct = 0.080
 		cfg.MaxTradesPerDay = 20
 		cfg.MaxOpenPositions = 5
-		cfg.MinPrice = 1.0
+		cfg.MinPrice = 5.0
 	}
 
 	cfg.StopLossPct = 0.03
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
-	cfg.MinEntryScore = 14.0
+	cfg.MinEntryScore = 20.0
 	cfg.MinOneMinuteReturnPct = 0.40
-	cfg.MinThreeMinuteReturnPct = 0.80
-	cfg.MinVolumeRate = 1.40
-	cfg.MaxPriceVsOpenPct = 30.0
+	cfg.MinThreeMinuteReturnPct = 1.50
+	cfg.MinVolumeRate = 2.00
+	cfg.MaxPriceVsOpenPct = 22.0
 	cfg.BreakoutFailureWindowMin = 3
 	cfg.StagnationWindowMin = 3
 	cfg.StagnationMinPeakPct = 0.005
-	cfg.MinGapPercent = 0.0
-	cfg.MaxPrice = 100.0
-	cfg.MinRelativeVolume = 1.5
-	cfg.MinPremarketVolume = 100_000
+	cfg.MinGapPercent = 6.0
+	cfg.MaxPrice = 40.0
+	cfg.MinRelativeVolume = 4.0
+	cfg.MinPremarketVolume = 1_000_000
 	cfg.ScannerWorkers = 4
 	cfg.LimitOrderSlippageDollars = 0.02
 	cfg.EntryATRPercentFallback = 0.02
@@ -60,10 +60,10 @@ func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPe
 	cfg.MaxRiskATRMultiplier = 4.00
 	cfg.BreakEvenHoldMinutes = 5
 	cfg.BreakEvenMinR = 0.50
-	cfg.TrailActivationR = 0.70
-	cfg.TrailATRMultiplier = 1.50
-	cfg.TightTrailTriggerR = 1.20
-	cfg.TightTrailATRMultiplier = 0.70
+	cfg.TrailActivationR = 0.60
+	cfg.TrailATRMultiplier = 1.25
+	cfg.TightTrailTriggerR = 1.00
+	cfg.TightTrailATRMultiplier = 0.55
 	cfg.ProfitTargetR = 1.20
 	cfg.FailedBreakoutCutR = 0.05
 	cfg.StructureConfirmR = 0.00

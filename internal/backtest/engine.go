@@ -682,7 +682,7 @@ func incrementReason(counts map[string]int, reason string) {
 }
 
 func rememberEntrySignalSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {
-	if len(diag.EntrySignalSamples) >= 3 {
+	if len(diag.EntrySignalSamples) >= 20 {
 		return
 	}
 	diag.EntrySignalSamples = append(diag.EntrySignalSamples, buildEntrySample(candidate, decision))

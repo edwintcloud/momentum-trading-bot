@@ -229,16 +229,22 @@ func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct floa
 	if metrics.setupType == "" {
 		return false
 	}
-	if priceVsOpenPct < maxFloat(2.5, s.config.MinGapPercent*0.25) {
+	if priceVsOpenPct < maxFloat(3.0, s.config.MinGapPercent*0.35) {
 		return false
 	}
-	if metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
+	if metrics.threeMinuteReturn < maxFloat(s.config.MinThreeMinuteReturnPct, 0.90) {
 		return false
 	}
-	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
+	if metrics.oneMinuteReturn < maxFloat(s.config.MinOneMinuteReturnPct, 0.05) {
 		return false
 	}
-	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25
+	if metrics.volumeRate < maxFloat(1.10, s.config.MinVolumeRate-0.10) {
+		return false
+	}
+	if tick.RelativeVolume < maxFloat(s.config.MinRelativeVolume+0.25, 3.0) {
+		return false
+	}
+	return true
 }
 
 func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {

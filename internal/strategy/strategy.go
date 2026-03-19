@@ -503,7 +503,7 @@ var knownLeveragedETFs = map[string]bool{
 	"BOIL": true, "KOLD": true, "UCO": true, "SCO": true, "YINN": true, "YANG": true,
 	"CWEB": true, "KORU": true, "EURL": true, "EDC": true, "EDZ": true, "INDL": true,
 	"LBJ": true, "GUSH": true, "DRIP": true, "NRGU": true, "NRGD": true, "UAMY": true,
-	"BITX": true, "BITI": true, "MSTU": true, "TSLL": true, "TSLQ": true, "CONL": true,
+	"BITX": true, "BITI": true, "ETHU": true, "ETHD": true, "MSTU": true, "TSLL": true, "TSLQ": true, "CONL": true,
 	"GDXD": true, "GDXU": true, "AAPU": true, "AAPD": true, "AMZU": true, "AMZD": true,
 	"NVDL": true, "NVDD": true, "NVDU": true, "MSFU": true, "MSFD": true, "GOOU": true,
 	"GOOD": true, "COINU": true, "COIND": true, "DPST": true, "LABU": true, "LABD": true,
@@ -523,24 +523,24 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
-	minLeaderPct := 0.05
-	maxLeaderRank := 10
+	minLeaderPct := 0.12
+	maxLeaderRank := 5
 	if s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp) {
-		minLeaderPct = 0.10
-		maxLeaderRank = 5
+		minLeaderPct = 0.18
+		maxLeaderRank = 3
 	}
 	if strongSqueeze {
-		minLeaderPct -= 0.02
-		maxLeaderRank += 2
+		minLeaderPct -= 0.03
+		maxLeaderRank += 1
 	}
-	if minLeaderPct < 0.04 {
-		minLeaderPct = 0.04
+	if minLeaderPct < 0.08 {
+		minLeaderPct = 0.08
 	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
 	}
-	if s.isEarlyPremarket(candidate.Timestamp) && entryDollarVolume(candidate) < 2_000_000 {
-		return false, "thin-premarket"
+	if !s.isPremarket(candidate.Timestamp) && sessionMinutesSinceOpen(candidate.Timestamp) > 90 && !strongSqueeze {
+		return false, "post-open-chop"
 	}
 	if s.isOpeningSession(candidate.Timestamp) &&
 		candidate.RelativeVolume >= 40 &&
@@ -551,6 +551,15 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	if s.isParabolicEntry(candidate) {
 		return false, "parabolic-spike"
+	}
+	if candidate.Volume > 0 {
+		dollarVolume := entryDollarVolume(candidate)
+		if s.isEarlyPremarket(candidate.Timestamp) && dollarVolume < 4_000_000 {
+			return false, "thin-premarket"
+		}
+		if !s.isPremarket(candidate.Timestamp) && dollarVolume < 10_000_000 {
+			return false, "thin-session"
+		}
 	}
 	if s.leaderRank(candidate) > maxLeaderRank {
 		return false, "secondary-volume"
@@ -617,6 +626,9 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	if candidate.CloseOffHighPct > 38 {
 		return false, "weak-close"
+	}
+	if candidate.SetupType == "opening-range-breakout" && candidate.BreakoutPct < 0.10 && !strongSqueeze {
+		return false, "weak-breakout-commit"
 	}
 	if candidate.ATRPct <= 0 {
 		return false, "missing-atr"
@@ -896,4 +908,13 @@ func tradingDayKey(at time.Time) string {
 		return ""
 	}
 	return at.In(markethours.Location()).Format("2006-01-02")
+}
+
+func sessionMinutesSinceOpen(at time.Time) float64 {
+	if at.IsZero() {
+		return 0
+	}
+	local := at.In(markethours.Location())
+	open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, local.Location())
+	return maxFloat(0, local.Sub(open).Minutes())
 }

@@ -435,7 +435,8 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	}
 	searchShortlist, searchCandidates, err := evaluateShortlist(ctx, coarseSeeds, searchWeeks, loadWeek, 25, func(candidate *OptimizerCandidate, summary PeriodSummary) {
 		candidate.SearchSummary = summary
-	}, func(completed, total int, message string) error {
+	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
+		report.Candidates = candidates
 		return updateProgress("coarse-search", completed, total, message)
 	})
 	if err != nil {
@@ -452,7 +453,8 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	}
 	validationAnchors, validationCandidates, err := evaluateShortlist(ctx, searchShortlist, validationWeeks, loadWeek, 10, func(candidate *OptimizerCandidate, summary PeriodSummary) {
 		candidate.ValidationSummary = summary
-	}, func(completed, total int, message string) error {
+	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
+		report.Candidates = candidates
 		return updateProgress("validation-shortlist", completed, total, message)
 	})
 	if err != nil {
@@ -472,7 +474,8 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	refinedCandidates, err := evaluateAll(ctx, refinedSeeds, validationWeeks, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
 		candidate.ValidationSummary = summary
 		candidate.ValidationWeeks = weeks
-	}, func(completed, total int, message string) error {
+	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
+		report.Candidates = candidates
 		return updateProgress("refinement", completed, total, message)
 	})
 	if err != nil {
@@ -517,7 +520,8 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	holdoutCandidates, err := evaluateAll(ctx, finalistSeeds, holdoutWeeks, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
 		candidate.HoldoutSummary = summary
 		candidate.HoldoutWeeks = weeks
-	}, func(completed, total int, message string) error {
+	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
+		report.Candidates = mergeCandidateProgress(finalistsByID, candidates)
 		return updateProgress("holdout", completed, total, message)
 	})
 	if err != nil {
@@ -807,7 +811,7 @@ func evaluateShortlist(
 	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
 	limit int,
 	assign func(*OptimizerCandidate, PeriodSummary),
-	onProgress func(completed, total int, message string) error,
+	onProgress func(completed, total int, message string, candidates []OptimizerCandidate) error,
 ) ([]candidateSeed, []OptimizerCandidate, error) {
 	candidates, err := evaluateAll(ctx, seeds, windows, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, _ []WeeklyPerformance) {
 		assign(candidate, summary)
@@ -838,9 +842,17 @@ func evaluateAll(
 	windows []WeeklyWindow,
 	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
 	assign func(*OptimizerCandidate, PeriodSummary, []WeeklyPerformance),
-	onProgress func(completed, total int, message string) error,
+	onProgress func(completed, total int, message string, candidates []OptimizerCandidate) error,
 ) ([]OptimizerCandidate, error) {
 	performanceByCandidate := make([][]WeeklyPerformance, len(seeds))
+	results := make([]OptimizerCandidate, len(seeds))
+	for index, seed := range seeds {
+		results[index] = OptimizerCandidate{
+			CandidateID: seed.id,
+			Profile:     seed.profile,
+			Config:      seed.config,
+		}
+	}
 	total := len(seeds) * len(windows)
 	completed := 0
 
@@ -855,7 +867,7 @@ func evaluateAll(
 			return nil, fmt.Errorf("load week %s: %w", window.Label, err)
 		}
 		if onProgress != nil {
-			if err := onProgress(completed, total, fmt.Sprintf("loaded week=%s bars=%d week_index=%d/%d", window.Label, len(bars), weekIndex+1, len(windows))); err != nil {
+			if err := onProgress(completed, total, fmt.Sprintf("loaded week=%s bars=%d week_index=%d/%d", window.Label, len(bars), weekIndex+1, len(windows)), results); err != nil {
 				return nil, err
 			}
 		}
@@ -865,6 +877,9 @@ func evaluateAll(
 				return nil, err
 			}
 			performanceByCandidate[candidateIndex] = append(performanceByCandidate[candidateIndex], performance)
+			candidate := results[candidateIndex]
+			assign(&candidate, summarizeWeeks(performanceByCandidate[candidateIndex]), performanceByCandidate[candidateIndex])
+			results[candidateIndex] = candidate
 			completed++
 			if onProgress != nil {
 				message := fmt.Sprintf(
@@ -876,23 +891,11 @@ func evaluateAll(
 					weekIndex+1,
 					len(windows),
 				)
-				if err := onProgress(completed, total, message); err != nil {
+				if err := onProgress(completed, total, message, results); err != nil {
 					return nil, err
 				}
 			}
 		}
-	}
-
-	results := make([]OptimizerCandidate, 0, len(seeds))
-	for index, seed := range seeds {
-		summary := summarizeWeeks(performanceByCandidate[index])
-		candidate := OptimizerCandidate{
-			CandidateID: seed.id,
-			Profile:     seed.profile,
-			Config:      seed.config,
-		}
-		assign(&candidate, summary, performanceByCandidate[index])
-		results = append(results, candidate)
 	}
 	return results, nil
 }
@@ -1077,6 +1080,20 @@ func compareFinalCandidates(a, b OptimizerCandidate) int {
 	default:
 		return strings.Compare(a.CandidateID, b.CandidateID)
 	}
+}
+
+func mergeCandidateProgress(base map[string]OptimizerCandidate, partial []OptimizerCandidate) []OptimizerCandidate {
+	merged := make([]OptimizerCandidate, 0, len(partial))
+	for _, candidate := range partial {
+		if existing, ok := base[candidate.CandidateID]; ok {
+			existing.HoldoutSummary = candidate.HoldoutSummary
+			existing.HoldoutWeeks = candidate.HoldoutWeeks
+			merged = append(merged, existing)
+			continue
+		}
+		merged = append(merged, candidate)
+	}
+	return merged
 }
 
 func newProgressTracker(runStartedAt time.Time) *progressTracker {
