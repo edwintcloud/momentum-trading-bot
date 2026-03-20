@@ -104,21 +104,24 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 		filledQty, filledPrice := filledOrderState(current, order)
 		if filledQty > appliedQty {
 			deltaQty := filledQty - appliedQty
-			portfolioManager.ApplyExecution(domain.ExecutionReport{
-				Symbol:        order.Symbol,
+				portfolioManager.ApplyExecution(domain.ExecutionReport{
+					Symbol:        order.Symbol,
 				Side:          order.Side,
 				Price:         filledPrice,
 				Quantity:      deltaQty,
 				Intent:        order.Intent,
 				PositionSide:  order.PositionSide,
 				StopPrice:     order.StopPrice,
-				RiskPerShare:  order.RiskPerShare,
-				EntryATR:      order.EntryATR,
-				SetupType:     order.SetupType,
-				Reason:        order.Reason,
-				BrokerOrderID: current.ID,
-				BrokerStatus:  current.Status,
-				FilledAt:      time.Now().UTC(),
+					RiskPerShare:  order.RiskPerShare,
+					EntryATR:      order.EntryATR,
+					SetupType:     order.SetupType,
+					Reason:        order.Reason,
+					MarketRegime:  order.MarketRegime,
+					RegimeConfidence: order.RegimeConfidence,
+					Playbook:      order.Playbook,
+					BrokerOrderID: current.ID,
+					BrokerStatus:  current.Status,
+					FilledAt:      time.Now().UTC(),
 			})
 			appliedQty = filledQty
 			e.runtime.RecordLog("info", "execution", fmt.Sprintf("%s %s filled %d/%d via Alpaca (%s)", order.Side, order.Symbol, appliedQty, order.Quantity, current.Status))

@@ -151,11 +151,13 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 
 	cfg.StrategyProfileName = string(profile.Name)
 	cfg.StrategyProfileVersion = profile.Version
+	cfg.EnableMarketRegime = overrides.EnableMarketRegime
 	cfg.EnableShorts = overrides.EnableShorts
 	cfg.RiskPerTradePct = overrides.RiskPerTradePct
 	cfg.DailyLossLimitPct = overrides.DailyLossLimitPct
 	cfg.MaxTradesPerDay = overrides.MaxTradesPerDay
 	cfg.MaxOpenPositions = overrides.MaxOpenPositions
+	cfg.MaxExposurePct = overrides.MaxExposurePct
 	cfg.StopLossPct = overrides.StopLossPct
 	cfg.ExitCooldownSec = overrides.ExitCooldownSec
 	cfg.MinEntryScore = overrides.MinEntryScore
@@ -210,6 +212,21 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.ScannerPullbackDepthMaxATRMultiplier = overrides.ScannerPullbackDepthMaxATRMultiplier
 	cfg.ScannerPullbackDepthMaxPct = overrides.ScannerPullbackDepthMaxPct
 	cfg.ScannerRenewedVolumeRateMin = overrides.ScannerRenewedVolumeRateMin
+	if len(overrides.MarketRegimeBenchmarkSymbols) > 0 {
+		cfg.MarketRegimeBenchmarkSymbols = append([]string(nil), overrides.MarketRegimeBenchmarkSymbols...)
+	}
+	if overrides.MarketRegimeMinBenchmarks > 0 {
+		cfg.MarketRegimeMinBenchmarks = overrides.MarketRegimeMinBenchmarks
+	}
+	if overrides.MarketRegimeEMAFastPeriod > 0 {
+		cfg.MarketRegimeEMAFastPeriod = overrides.MarketRegimeEMAFastPeriod
+	}
+	if overrides.MarketRegimeEMASlowPeriod > 0 {
+		cfg.MarketRegimeEMASlowPeriod = overrides.MarketRegimeEMASlowPeriod
+	}
+	if overrides.MarketRegimeReturnLookbackMin > 0 {
+		cfg.MarketRegimeReturnLookbackMin = overrides.MarketRegimeReturnLookbackMin
+	}
 	return cfg
 }
 

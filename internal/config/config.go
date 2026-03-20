@@ -5,6 +5,7 @@ type TradingConfig struct {
 	StartingCapital                      float64
 	StrategyProfileName                  string
 	StrategyProfileVersion               string
+	EnableMarketRegime                   bool
 	EnableShorts                         bool
 	RiskPerTradePct                      float64
 	DailyLossLimitPct                    float64
@@ -43,6 +44,11 @@ type TradingConfig struct {
 	ScannerPullbackDepthMaxATRMultiplier float64
 	ScannerPullbackDepthMaxPct           float64
 	ScannerRenewedVolumeRateMin          float64
+	MarketRegimeBenchmarkSymbols         []string
+	MarketRegimeMinBenchmarks            int
+	MarketRegimeEMAFastPeriod            int
+	MarketRegimeEMASlowPeriod            int
+	MarketRegimeReturnLookbackMin        int
 	HydrationRequestsPerMin              int
 	HydrationRetrySec                    int
 	HydrationQueueSize                   int

@@ -9,6 +9,7 @@
     "StrategyProfileName": "high_conviction_breakout",
     "StrategyProfileVersion": "20260108-high_conviction_breakout",
     "EnableShorts": true,
+    "EnableMarketRegime": true,
     "RiskPerTradePct": 0.5,
     "DailyLossLimitPct": 0.2,
     "MaxTradesPerDay": 16,
@@ -19,8 +20,8 @@
     "StopLossPct": 0.05,
     "EntryCooldownSec": 60,
     "ExitCooldownSec": 5,
-    "MinEntryScore": 100,
-    "ShortMinEntryScore": 100,
+    "MinEntryScore": 19.5,
+    "ShortMinEntryScore": 20,
     "MinOneMinuteReturnPct": 0.5,
     "MinThreeMinuteReturnPct": 1,
     "MinVolumeRate": 1.95,
@@ -34,7 +35,7 @@
     "MinGapPercent": 1,
     "MinRelativeVolume": 4.4,
     "MinPremarketVolume": 60000,
-    "ScannerMinPriceVsOpenPctFloor": 0,
+    "ScannerMinPriceVsOpenPctFloor": 2.5,
     "ScannerMinPriceVsOpenGapMultiplier": 0.25,
     "ScannerMinSetupVolumeRateOffset": -0.05,
     "ScannerMinSetupRelativeVolumeExtra": 0.25,
@@ -64,7 +65,7 @@
     "StructureConfirmR": 0.05,
     "ShortPeakExtensionMinPct": 12,
     "ShortVWAPBreakMinPct": -1,
-    "ShortStopATRMultiplier": 0.55
+    "ShortStopATRMultiplier": 2
   },
   "promotion": {
     "deploymentMode": "paper",

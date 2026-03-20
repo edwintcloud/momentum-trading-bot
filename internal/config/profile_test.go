@@ -60,6 +60,7 @@ func TestApplyTradingProfilePreservesBrokerTunedCapital(t *testing.T) {
 	profileConfig.DailyLossLimitPct = 0.11
 	profileConfig.MaxTradesPerDay = 10
 	profileConfig.MaxOpenPositions = 2
+	profileConfig.MaxExposurePct = 0.17
 	profileConfig.StopLossPct = 0.03
 	profileConfig.EntryCooldownSec = 45
 	profileConfig.ExitCooldownSec = 9
@@ -126,6 +127,9 @@ func TestApplyTradingProfilePreservesBrokerTunedCapital(t *testing.T) {
 	}
 	if got.MaxTradesPerDay != 10 || got.MaxOpenPositions != 2 {
 		t.Fatalf("expected whitelisted overrides to apply, got %+v", got)
+	}
+	if got.MaxExposurePct != 0.17 {
+		t.Fatalf("expected max exposure override to apply, got %.2f", got.MaxExposurePct)
 	}
 	if got.EnableShorts {
 		t.Fatal("expected profile to override enable_shorts")

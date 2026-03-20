@@ -236,6 +236,15 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 			if report.SetupType != "" {
 				position.SetupType = report.SetupType
 			}
+			if report.MarketRegime != "" {
+				position.MarketRegime = domain.NormalizeMarketRegime(report.MarketRegime)
+			}
+			if report.RegimeConfidence > 0 {
+				position.RegimeConfidence = report.RegimeConfidence
+			}
+			if report.Playbook != "" {
+				position.Playbook = report.Playbook
+			}
 			position.LastPrice = report.Price
 			position = updatePositionExtrema(position, report.Price)
 			position.MarketValue = float64(position.Quantity) * report.Price
@@ -253,6 +262,9 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 				RiskPerShare:     report.RiskPerShare,
 				EntryATR:         report.EntryATR,
 				SetupType:        report.SetupType,
+				MarketRegime:     domain.NormalizeMarketRegime(report.MarketRegime),
+				RegimeConfidence: report.RegimeConfidence,
+				Playbook:         report.Playbook,
 				LastPrice:        report.Price,
 				MarketValue:      float64(report.Quantity) * report.Price,
 				UnrealizedPnL:    0,
@@ -302,6 +314,18 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 		mergedTrade.PnL = totalPnL
 		mergedTrade.RMultiple = roundRMultiple(totalPnL, position.RiskPerShare, totalQty)
 		mergedTrade.ClosedAt = now
+		if mergedTrade.MarketRegime == "" {
+			mergedTrade.MarketRegime = position.MarketRegime
+		}
+		if mergedTrade.RegimeConfidence == 0 {
+			mergedTrade.RegimeConfidence = position.RegimeConfidence
+		}
+		if mergedTrade.SetupType == "" {
+			mergedTrade.SetupType = position.SetupType
+		}
+		if mergedTrade.Playbook == "" {
+			mergedTrade.Playbook = position.Playbook
+		}
 		if mergeIndex > 0 {
 			m.closedTrades = append(m.closedTrades[:mergeIndex], m.closedTrades[mergeIndex+1:]...)
 			m.closedTrades = append([]domain.ClosedTrade{mergedTrade}, m.closedTrades...)
@@ -332,9 +356,13 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 		ExitPrice:  report.Price,
 		PnL:        round2(pnl),
 		RMultiple:  roundRMultiple(pnl, position.RiskPerShare, closeQty),
+		SetupType:  position.SetupType,
 		OpenedAt:   position.OpenedAt,
 		ClosedAt:   now,
 		ExitReason: report.Reason,
+		MarketRegime: position.MarketRegime,
+		RegimeConfidence: position.RegimeConfidence,
+		Playbook:   position.Playbook,
 	}
 	m.closedTrades = append([]domain.ClosedTrade{closed}, m.closedTrades...)
 	if m.recorder != nil {
@@ -675,6 +703,9 @@ func (m *Manager) statusSnapshotLocked() domain.StatusSnapshot {
 	status.PendingVersion = optimizerStatus.PendingProfileVersion
 	status.LastOptimizerRun = optimizerStatus.LastOptimizerRun
 	status.PaperValidation = optimizerStatus.LastPaperValidationResult
+	regimeSnapshot := m.runtime.MarketRegime()
+	status.CurrentRegime = regimeSnapshot.Regime
+	status.RegimeConfidence = regimeSnapshot.Confidence
 	if m.brokerEquity > 0 {
 		status.DayPnL = round2(m.dayPnL)
 	}

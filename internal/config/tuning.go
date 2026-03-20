@@ -13,6 +13,7 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	}
 	cfg.StartingCapital = round2(capital)
 
+	cfg.EnableMarketRegime = false
 	cfg.EnableShorts = true
 	cfg.RiskPerTradePct = inferRiskPerTradePct(capital)
 	cfg.DailyLossLimitPct = 0.2
@@ -50,6 +51,11 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	cfg.ScannerPullbackDepthMaxATRMultiplier = 2.40
 	cfg.ScannerPullbackDepthMaxPct = 8.00
 	cfg.ScannerRenewedVolumeRateMin = 1.05
+	cfg.MarketRegimeBenchmarkSymbols = []string{"SPY", "QQQ", "IWM"}
+	cfg.MarketRegimeMinBenchmarks = 2
+	cfg.MarketRegimeEMAFastPeriod = 20
+	cfg.MarketRegimeEMASlowPeriod = 60
+	cfg.MarketRegimeReturnLookbackMin = 30
 	cfg.HydrationRequestsPerMin = 120
 	cfg.HydrationRetrySec = 300
 	cfg.HydrationQueueSize = 512

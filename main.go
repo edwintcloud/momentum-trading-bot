@@ -20,6 +20,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/execution"
 	"github.com/edwincloud/momentum-trading-bot/internal/market"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
+	"github.com/edwincloud/momentum-trading-bot/internal/regime"
 	"github.com/edwincloud/momentum-trading-bot/internal/risk"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwincloud/momentum-trading-bot/internal/scanner"
@@ -126,6 +127,7 @@ func main() {
 	if profileLabel != "" {
 		runtimeState.RecordLog("info", "optimizer", "loaded trading profile "+profileLabel)
 	}
+	appConfig.Alpaca = ensureBenchmarkSubscriptions(appConfig.Alpaca, appConfig.Trading)
 	portfolioManager := portfolio.NewManager(appConfig.Trading, runtimeState)
 	portfolioManager.SetRecorder(recorder)
 	runtimeState.SetDependencyStatus("alpaca_trading", true, liveModeLabel(appConfig.Alpaca.Paper))
@@ -154,6 +156,10 @@ func main() {
 
 	// Core components
 	marketEngine := market.NewEngine(alpacaClient, appConfig.Trading, portfolioManager, runtimeState)
+	var regimeTracker *regime.Tracker
+	if appConfig.Trading.EnableMarketRegime {
+		regimeTracker = regime.NewTracker(appConfig.Trading, runtimeState)
+	}
 	scannerEngine := scanner.NewScanner(appConfig.Trading, runtimeState)
 	strategyEngine := strategy.NewStrategy(appConfig.Trading, portfolioManager, runtimeState)
 	riskEngine := risk.NewEngine(appConfig.Trading, portfolioManager, runtimeState, alpacaClient)
@@ -177,6 +183,9 @@ func main() {
 			case tick, ok := <-marketUpdates:
 				if !ok {
 					return
+				}
+				if regimeTracker != nil {
+					regimeTracker.UpdateTick(tick)
 				}
 				select {
 				case <-ctx.Done():
@@ -261,6 +270,7 @@ func main() {
 			case <-ticker.C:
 				recorder.RecordDashboard(domain.DashboardSnapshot{
 					Status:       portfolioManager.StatusSnapshot(),
+					MarketRegime: runtimeState.MarketRegime(),
 					Candidates:   runtimeState.Candidates(),
 					Positions:    portfolioManager.GetPositions(),
 					ClosedTrades: portfolioManager.GetClosedTrades(),
@@ -325,6 +335,38 @@ func recommendedHydrationBudget(limitPerMinute int) int {
 		budget = 2400
 	}
 	return budget
+}
+
+func ensureBenchmarkSubscriptions(alpacaCfg config.AlpacaConfig, tradingCfg config.TradingConfig) config.AlpacaConfig {
+	if alpacaCfg.SubscribeAllBars || !tradingCfg.EnableMarketRegime {
+		return alpacaCfg
+	}
+	seen := make(map[string]struct{}, len(alpacaCfg.Symbols)+len(tradingCfg.MarketRegimeBenchmarkSymbols))
+	out := make([]string, 0, len(alpacaCfg.Symbols)+len(tradingCfg.MarketRegimeBenchmarkSymbols))
+	for _, symbol := range alpacaCfg.Symbols {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	for _, symbol := range tradingCfg.MarketRegimeBenchmarkSymbols {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	alpacaCfg.Symbols = out
+	return alpacaCfg
 }
 
 func seedClosedTradesFromDB(ctx context.Context, recorder *storage.Recorder, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {

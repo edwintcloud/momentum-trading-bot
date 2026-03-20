@@ -124,6 +124,60 @@ func TestMaybeFillPendingOrderSupportsShortEntries(t *testing.T) {
 	}
 }
 
+func TestRunTagsTradesByRegimeAndBreakdowns(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	base := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	bars := make([]InputBar, 0, 120)
+	for index := 0; index < 35; index++ {
+		for _, symbol := range []string{"SPY", "QQQ", "IWM"} {
+			price := 100.0 + float64(index)*0.2
+			bars = append(bars, InputBar{
+				Timestamp: base.Add(time.Duration(index) * time.Minute),
+				Symbol:    symbol,
+				Open:      price - 0.1,
+				High:      price + 0.1,
+				Low:       price - 0.2,
+				Close:     price,
+				Volume:    100_000,
+				PrevClose: 99.5,
+			})
+		}
+	}
+	bars = append(bars,
+		InputBar{Timestamp: base.Add(-24 * time.Hour), Symbol: "APVO", Open: 10.00, High: 10.10, Low: 9.95, Close: 10.05, Volume: 50_000, PrevClose: 9.80},
+		InputBar{Timestamp: base.Add(-23*time.Hour - 59*time.Minute), Symbol: "APVO", Open: 10.05, High: 10.10, Low: 10.00, Close: 10.02, Volume: 50_000, PrevClose: 9.80},
+		InputBar{Timestamp: base.Add(-23*time.Hour - 58*time.Minute), Symbol: "APVO", Open: 10.02, High: 10.08, Low: 10.00, Close: 10.04, Volume: 50_000, PrevClose: 9.80},
+		InputBar{Timestamp: base.Add(-23*time.Hour - 57*time.Minute), Symbol: "APVO", Open: 10.04, High: 10.09, Low: 10.01, Close: 10.03, Volume: 50_000, PrevClose: 9.80},
+		InputBar{Timestamp: base.Add(-23*time.Hour - 56*time.Minute), Symbol: "APVO", Open: 10.03, High: 10.07, Low: 10.00, Close: 10.01, Volume: 50_000, PrevClose: 9.80},
+		InputBar{Timestamp: base.Add(35 * time.Minute), Symbol: "APVO", Open: 11.10, High: 11.30, Low: 11.05, Close: 11.24, Volume: 200_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(36 * time.Minute), Symbol: "APVO", Open: 11.24, High: 11.48, Low: 11.22, Close: 11.46, Volume: 250_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(37 * time.Minute), Symbol: "APVO", Open: 11.46, High: 11.72, Low: 11.44, Close: 11.70, Volume: 400_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(38 * time.Minute), Symbol: "APVO", Open: 11.70, High: 11.86, Low: 11.66, Close: 11.84, Volume: 500_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(39 * time.Minute), Symbol: "APVO", Open: 11.84, High: 12.12, Low: 11.80, Close: 12.10, Volume: 650_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(40 * time.Minute), Symbol: "APVO", Open: 12.10, High: 12.35, Low: 12.06, Close: 12.32, Volume: 700_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(41 * time.Minute), Symbol: "APVO", Open: 12.32, High: 12.42, Low: 12.20, Close: 12.38, Volume: 180_000, PrevClose: 10.01},
+		InputBar{Timestamp: base.Add(42 * time.Minute), Symbol: "APVO", Open: 12.30, High: 12.32, Low: 11.40, Close: 11.55, Volume: 300_000, PrevClose: 10.01},
+		InputBar{Timestamp: time.Date(2026, 3, 10, 20, 56, 0, 0, time.UTC), Symbol: "APVO", Open: 11.55, High: 11.60, Low: 11.40, Close: 11.48, Volume: 320_000, PrevClose: 10.01},
+	)
+
+	result, err := Run(context.Background(), cfg, RunConfig{Bars: bars})
+	if err != nil {
+		t.Fatalf("expected regime-aware replay to complete, got %v", err)
+	}
+	if len(result.ClosedTrades) == 0 {
+		t.Fatalf("expected at least one closed trade, got %+v", result)
+	}
+	if result.ClosedTrades[0].MarketRegime == "" {
+		t.Fatalf("expected closed trade to carry market regime, got %+v", result.ClosedTrades[0])
+	}
+	if result.Diagnostics.ByRegime["bullish"].Trades == 0 {
+		t.Fatalf("expected bullish regime breakdown, got %+v", result.Diagnostics.ByRegime)
+	}
+	if result.Diagnostics.BySide["long"].Trades == 0 {
+		t.Fatalf("expected long side breakdown, got %+v", result.Diagnostics.BySide)
+	}
+}
+
 type testInputBarIterator struct {
 	bars []InputBar
 	next int

@@ -265,6 +265,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) snapshot() domain.DashboardSnapshot {
 	return domain.DashboardSnapshot{
 		Status:       s.portfolio.StatusSnapshot(),
+		MarketRegime: s.runtime.MarketRegime(),
 		Candidates:   s.runtime.Candidates(),
 		Positions:    s.portfolio.GetPositions(),
 		ClosedTrades: s.portfolio.GetClosedTrades(),

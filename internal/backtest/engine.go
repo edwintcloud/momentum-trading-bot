@@ -10,6 +10,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
+	"github.com/edwincloud/momentum-trading-bot/internal/regime"
 	"github.com/edwincloud/momentum-trading-bot/internal/risk"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwincloud/momentum-trading-bot/internal/scanner"
@@ -68,6 +69,13 @@ type Result struct {
 	ClosedTrades        []domain.ClosedTrade
 }
 
+type TradeBreakdown struct {
+	Trades int
+	Wins   int
+	Losses int
+	NetPnL float64
+}
+
 // Diagnostics summarizes how bars moved through the backtest decision funnel.
 type Diagnostics struct {
 	BarsLoaded         int
@@ -83,6 +91,9 @@ type Diagnostics struct {
 	EntryRiskRejects   map[string]int
 	ExitRejects        map[string]int
 	ExitRiskRejects    map[string]int
+	ByRegime           map[string]TradeBreakdown
+	BySetup            map[string]TradeBreakdown
+	BySide             map[string]TradeBreakdown
 	EntrySignalSamples []EntrySample
 	EntryRejectSamples map[string]EntrySample
 }
@@ -154,10 +165,17 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		EntryRiskRejects:   make(map[string]int),
 		ExitRejects:        make(map[string]int),
 		ExitRiskRejects:    make(map[string]int),
+		ByRegime:           make(map[string]TradeBreakdown),
+		BySetup:            make(map[string]TradeBreakdown),
+		BySide:             make(map[string]TradeBreakdown),
 		EntryRejectSamples: make(map[string]EntrySample),
 	}
 
 	book := portfolio.NewManager(cfg, runtimeState)
+	var regimeTracker *regime.Tracker
+	if cfg.EnableMarketRegime {
+		regimeTracker = regime.NewTracker(cfg, runtimeState)
+	}
 	scan := scanner.NewScanner(cfg, runtimeState)
 	strat := strategy.NewStrategy(cfg, book, runtimeState)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
@@ -187,6 +205,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
 		tick := normalizeBar(currentBar, normalizerState)
+		if regimeTracker != nil {
+			regimeTracker.UpdateTick(tick)
+		}
 
 		if pending, exists := pendingEntries[currentBar.Symbol]; exists {
 			if fill, updatedPending, filled, expired := maybeFillPendingOrder(pending, currentBar); filled {
@@ -290,6 +311,11 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	closedTrades := book.GetClosedTrades()
+	for _, trade := range closedTrades {
+		diagnostics.ByRegime[normalizeKey(trade.MarketRegime)] = updateBreakdown(diagnostics.ByRegime[normalizeKey(trade.MarketRegime)], trade)
+		diagnostics.BySetup[normalizeKey(trade.SetupType)] = updateBreakdown(diagnostics.BySetup[normalizeKey(trade.SetupType)], trade)
+		diagnostics.BySide[normalizeKey(trade.Side)] = updateBreakdown(diagnostics.BySide[normalizeKey(trade.Side)], trade)
+	}
 	openPositionsAtEnd := book.OpenPositionCount()
 	wins := 0
 	grossWins := 0.0
@@ -402,6 +428,9 @@ func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.
 		EntryATR:     order.EntryATR,
 		SetupType:    order.SetupType,
 		Reason:       order.Reason,
+		MarketRegime: order.MarketRegime,
+		RegimeConfidence: order.RegimeConfidence,
+		Playbook:     order.Playbook,
 		FilledAt:     at.UTC(),
 	})
 }
@@ -453,6 +482,9 @@ func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionR
 			EntryATR:     pending.order.EntryATR,
 			SetupType:    pending.order.SetupType,
 			Reason:       pending.order.Reason,
+			MarketRegime: pending.order.MarketRegime,
+			RegimeConfidence: pending.order.RegimeConfidence,
+			Playbook:     pending.order.Playbook,
 			FilledAt:     current.Timestamp.UTC(),
 		}, pending, true, true
 	}
@@ -586,6 +618,25 @@ func incrementReason(counts map[string]int, reason string) {
 		reason = "unknown"
 	}
 	counts[reason]++
+}
+
+func normalizeKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func updateBreakdown(summary TradeBreakdown, trade domain.ClosedTrade) TradeBreakdown {
+	summary.Trades++
+	summary.NetPnL = round2(summary.NetPnL + trade.PnL)
+	if trade.PnL > 0 {
+		summary.Wins++
+	} else if trade.PnL < 0 {
+		summary.Losses++
+	}
+	return summary
 }
 
 func rememberEntrySignalSample(diag *Diagnostics, candidate domain.Candidate, decision strategy.CandidateDecision) {

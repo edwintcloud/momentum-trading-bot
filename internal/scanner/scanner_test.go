@@ -342,3 +342,75 @@ func TestScannerScoreCapsExtremeRelativeVolume(t *testing.T) {
 		t.Fatalf("expected extreme relative volume to cap at the same score contribution, base=%.2f extreme=%.2f", base, extreme)
 	}
 }
+
+func TestScannerExcludesBenchmarkSymbolsFromCandidates(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.EnableMarketRegime = true
+	runtimeState := runtime.NewState()
+	engine := NewScanner(cfg, runtimeState)
+
+	_, ok, reason := engine.EvaluateTickDetailed(domain.Tick{
+		Symbol:          "SPY",
+		Price:           510.25,
+		BarOpen:         509.80,
+		BarHigh:         510.40,
+		BarLow:          509.70,
+		Open:            509.50,
+		HighOfDay:       510.40,
+		GapPercent:      1.2,
+		RelativeVolume:  8.0,
+		PreMarketVolume: 0,
+		Volume:          2_000_000,
+		VolumeSpike:     true,
+		Timestamp:       time.Now().UTC(),
+	})
+	if ok {
+		t.Fatal("expected benchmark symbol to be excluded from scanner candidates")
+	}
+	if reason != "market-benchmark" {
+		t.Fatalf("expected benchmark reject reason, got %s", reason)
+	}
+}
+
+func TestScannerEmitsLowerHighBreakdownShort(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.EnableShorts = true
+	cfg.EnableMarketRegime = true
+	cfg.ShortVWAPBreakMinPct = -0.05
+	base := time.Date(2026, 3, 10, 16, 0, 0, 0, time.UTC)
+
+	bars := []symbolBar{
+		{timestamp: base, open: 10.00, high: 10.20, low: 9.95, close: 10.10, volume: 300_000, cumulativeVolume: 300_000, vwap: 10.08},
+		{timestamp: base.Add(time.Minute), open: 10.10, high: 10.60, low: 10.05, close: 10.55, volume: 400_000, cumulativeVolume: 700_000, vwap: 10.35},
+		{timestamp: base.Add(2 * time.Minute), open: 10.55, high: 10.90, low: 10.50, close: 10.80, volume: 500_000, cumulativeVolume: 1_200_000, vwap: 10.56},
+		{timestamp: base.Add(3 * time.Minute), open: 10.80, high: 10.85, low: 10.10, close: 10.18, volume: 150_000, cumulativeVolume: 1_350_000, vwap: 10.51},
+		{timestamp: base.Add(4 * time.Minute), open: 10.18, high: 10.20, low: 10.00, close: 10.05, volume: 150_000, cumulativeVolume: 1_500_000, vwap: 10.47},
+		{timestamp: base.Add(5 * time.Minute), open: 10.05, high: 10.28, low: 10.02, close: 10.22, volume: 140_000, cumulativeVolume: 1_640_000, vwap: 10.45},
+		{timestamp: base.Add(6 * time.Minute), open: 10.22, high: 10.05, low: 9.90, close: 9.92, volume: 560_000, cumulativeVolume: 2_200_000, vwap: 10.30},
+	}
+
+	metrics := deriveMetrics(bars, cfg)
+	if metrics.setupType != "lower-high-breakdown-short" {
+		t.Fatalf("expected lower-high setup metrics, got %+v", metrics)
+	}
+
+	engine := NewScanner(cfg, runtime.NewState())
+	current := bars[len(bars)-1]
+	tick := domain.Tick{
+		Symbol:         "WEAK",
+		Price:          current.close,
+		BarOpen:        current.open,
+		BarHigh:        current.high,
+		BarLow:         current.low,
+		Open:           10.00,
+		HighOfDay:      10.90,
+		GapPercent:     4.0,
+		RelativeVolume: 12.0,
+		Volume:         current.cumulativeVolume,
+		VolumeSpike:    true,
+		Timestamp:      current.timestamp,
+	}
+	if !engine.qualifiesShortMomentumProfile(tick, percentChange(tick.Open, tick.Price), metrics) {
+		t.Fatalf("expected lower-high setup to satisfy short momentum profile, metrics=%+v", metrics)
+	}
+}

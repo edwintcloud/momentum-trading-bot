@@ -24,6 +24,7 @@ type State struct {
 	recorder      domain.EventRecorder
 	dependencies  map[string]DependencyStatus
 	optimizer     OptimizerStatus
+	regime        domain.MarketRegimeSnapshot
 }
 
 var tradingDayLocation = mustLoadLocation("America/New_York")
@@ -194,6 +195,21 @@ func (s *State) OptimizerStatus() OptimizerStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.optimizer
+}
+
+// SetMarketRegime replaces the operator-visible market regime snapshot.
+func (s *State) SetMarketRegime(snapshot domain.MarketRegimeSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.regime = snapshot
+	s.lastUpdate = time.Now().UTC()
+}
+
+// MarketRegime returns the latest market regime snapshot.
+func (s *State) MarketRegime() domain.MarketRegimeSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.regime
 }
 
 // IsReady reports whether all tracked dependencies are healthy.

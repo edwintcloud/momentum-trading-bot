@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -26,6 +28,7 @@ func runBacktest(args []string) error {
 	dataPath := flags.String("data", "", "Optional CSV fallback with timestamp,symbol,open,high,low,close,volume columns")
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
 	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
+	reportOut := flags.String("report-out", ".cache/backtest/latest-report.json", "Optional JSON report artifact path; set empty string to disable")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -95,12 +98,16 @@ func runBacktest(args []string) error {
 		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 	}
 	profileLabel := ""
-	cfg, profileLabel, err = applyConfiguredTradingProfile(cfg, profilePath)
-	if err != nil {
-		return err
-	}
-	if profileLabel != "" {
-		log.Printf("Backtest loaded trading profile %s", profileLabel)
+	if profilePath != "" {
+		cfg, profileLabel, err = applyConfiguredTradingProfile(cfg, profilePath)
+		if err != nil {
+			return err
+		}
+		if profileLabel != "" {
+			log.Printf("Backtest loaded trading profile %s", profileLabel)
+		}
+	} else {
+		log.Printf("Backtest using broker-tuned baseline config (no bundled trading profile found)")
 	}
 	logBacktestConfig(cfg)
 
@@ -111,6 +118,9 @@ func runBacktest(args []string) error {
 	logBacktestDiagnostics(result.Diagnostics)
 	logBacktestSummary(start, end, result)
 	logClosedTradeSamples(result.ClosedTrades)
+	if err := writeBacktestReport(*reportOut, result); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -254,7 +264,7 @@ func logBacktestSummary(start, end time.Time, result backtest.Result) {
 }
 
 func backtestSummaryLines(start, end time.Time, result backtest.Result) []string {
-	return []string{
+	lines := []string{
 		"Backtest Summary",
 		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
 		fmt.Sprintf("  PnL          net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
@@ -285,6 +295,52 @@ func backtestSummaryLines(start, end time.Time, result backtest.Result) []string
 			result.AvgTimeToStopMin,
 		),
 	}
+	lines = append(lines, formatBreakdownLines("  Regimes", result.Diagnostics.ByRegime)...)
+	lines = append(lines, formatBreakdownLines("  Setups", result.Diagnostics.BySetup)...)
+	lines = append(lines, formatBreakdownLines("  Sides", result.Diagnostics.BySide)...)
+	return lines
+}
+
+func formatBreakdownLines(title string, breakdowns map[string]backtest.TradeBreakdown) []string {
+	if len(breakdowns) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(breakdowns))
+	for key := range breakdowns {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := []string{title}
+	for _, key := range keys {
+		summary := breakdowns[key]
+		lines = append(lines, fmt.Sprintf("    %s trades=%d wins=%d losses=%d pnl=%s",
+			key,
+			summary.Trades,
+			summary.Wins,
+			summary.Losses,
+			formatMoney(summary.NetPnL),
+		))
+	}
+	return lines
+}
+
+func writeBacktestReport(path string, result backtest.Result) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	payload, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		return err
+	}
+	log.Printf("Backtest report written to %s", path)
+	return nil
 }
 
 func logReasonCounts(label string, counts map[string]int, total int) {

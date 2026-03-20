@@ -165,6 +165,14 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	candidate = s.normalizeCandidate(candidate)
 	decisionAt := decisionTime(candidate.Timestamp)
 	candidate.Direction = domain.NormalizeDirection(candidate.Direction)
+	candidate.MarketRegime = s.currentMarketRegime(candidate.MarketRegime)
+	candidate.Playbook = domain.TrendAlignedPlaybook(candidate.Direction, candidate.MarketRegime, candidate.SetupType)
+	if s.isRangingCapitulationShort(candidate) {
+		candidate.Playbook = "ranging-capitulation-short"
+	}
+	if candidate.RegimeConfidence <= 0 {
+		candidate.RegimeConfidence = s.runtime.MarketRegime().Confidence
+	}
 	strongSqueeze := s.isStrongSqueeze(candidate)
 	allowedDistance := s.allowedBreakoutSlack(candidate)
 	if !markethours.IsTradableSessionAt(decisionAt) {
@@ -187,6 +195,13 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	symbolState := s.symbolState(candidate.Symbol, decisionAt)
 	if symbolState.entrySignals >= 2 {
 		return CandidateDecision{Reason: "symbol-daily-cap", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
+	if s.config.EnableMarketRegime &&
+		domain.IsShort(candidate.Direction) &&
+		s.currentMarketRegime(candidate.MarketRegime) == domain.MarketRegimeRanging &&
+		candidate.SetupType == "parabolic-failed-reclaim-short" &&
+		symbolState.entrySignals >= 1 {
+		return CandidateDecision{Reason: "ranging-short-one-shot", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
 	if symbolState.lossExits > 0 {
 		return CandidateDecision{Reason: "symbol-loss-lockout", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
@@ -252,8 +267,11 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 		RiskPerShare: plan.RiskPerShare,
 		EntryATR:     plan.EntryATR,
 		SetupType:    plan.SetupType,
-		Reason:       entryReason(candidate.Direction),
+		Reason:       entryReason(candidate.Direction, candidate.SetupType),
 		Confidence:   1.0,
+		MarketRegime: candidate.MarketRegime,
+		RegimeConfidence: candidate.RegimeConfidence,
+		Playbook:     candidate.Playbook,
 		Timestamp:    decisionAt,
 	}
 
@@ -289,6 +307,9 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 				"setupHigh":             candidate.SetupHigh,
 				"setupLow":              candidate.SetupLow,
 				"score":                 candidate.Score,
+				"regimeConfidence":      candidate.RegimeConfidence,
+				"regimeBullish":         boolIndicator(candidate.MarketRegime == domain.MarketRegimeBullish),
+				"regimeBearish":         boolIndicator(candidate.MarketRegime == domain.MarketRegimeBearish),
 				"directionShort":        boolIndicator(domain.IsShort(candidate.Direction)),
 			},
 		})
@@ -330,10 +351,11 @@ func (s *Strategy) evaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, b
 }
 
 func (s *Strategy) evaluateLongExit(position domain.Position, tick domain.Tick, decisionAt time.Time) (domain.TradeSignal, bool, string) {
+	tradeCfg := s.tradeConfigForPosition(position)
 	highWatermark := maxPrice(position.HighestPrice, tick.BarHigh, tick.Price)
-	previousStop, previousReason := protectiveStop(s.config, position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
+	previousStop, previousReason := protectiveStop(tradeCfg, position, position.HighestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
 	if previousStop <= 0 {
-		previousStop, previousReason = protectiveStop(s.config, position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
+		previousStop, previousReason = protectiveStop(tradeCfg, position, highWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barLow := firstPositive(tick.BarLow, tick.Price)
@@ -361,19 +383,19 @@ func (s *Strategy) evaluateLongExit(position domain.Position, tick domain.Tick, 
 		reason = previousReason
 		tick.Price = barOpen
 	case sameDayHold &&
-		holdingTime >= time.Duration(s.config.BreakoutFailureWindowMin)*time.Minute &&
+		holdingTime >= time.Duration(tradeCfg.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
 		barLow > 0 &&
-		barLow <= failedBreakoutPrice(s.config, position):
+		barLow <= failedBreakoutPrice(tradeCfg, position):
 		reason = "failed-breakout"
-		tick.Price = failedBreakoutPrice(s.config, position)
+		tick.Price = failedBreakoutPrice(tradeCfg, position)
 	case sameDayHold &&
-		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
-		peakReturn < s.config.StagnationMinPeakPct:
+		holdingTime >= time.Duration(tradeCfg.StagnationWindowMin)*time.Minute &&
+		peakReturn < tradeCfg.StagnationMinPeakPct:
 		reason = "stagnation-time-stop"
 		tick.Price = barClose
 	case func() bool {
-		stopPrice, stopReason := protectiveStop(s.config, position, highWatermark, barClose, decisionAt)
+		stopPrice, stopReason := protectiveStop(tradeCfg, position, highWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barLow <= 0 || barLow > stopPrice {
 			return false
 		}
@@ -432,15 +454,19 @@ func (s *Strategy) evaluateLongExit(position domain.Position, tick domain.Tick, 
 		SetupType:    position.SetupType,
 		Reason:       reason,
 		Confidence:   1,
+		MarketRegime: position.MarketRegime,
+		RegimeConfidence: position.RegimeConfidence,
+		Playbook:     position.Playbook,
 		Timestamp:    decisionAt,
 	}, true, reason
 }
 
 func (s *Strategy) evaluateShortExit(position domain.Position, tick domain.Tick, decisionAt time.Time) (domain.TradeSignal, bool, string) {
+	tradeCfg := s.tradeConfigForPosition(position)
 	lowWatermark := minPrice(position.LowestPrice, tick.BarLow, tick.Price)
-	previousStop, previousReason := protectiveStop(s.config, position, position.LowestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
+	previousStop, previousReason := protectiveStop(tradeCfg, position, position.LowestPrice, firstPositive(position.LastPrice, position.AvgPrice), decisionAt)
 	if previousStop <= 0 {
-		previousStop, previousReason = protectiveStop(s.config, position, lowWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
+		previousStop, previousReason = protectiveStop(tradeCfg, position, lowWatermark, firstPositive(position.LastPrice, tick.Price), decisionAt)
 	}
 	barOpen := firstPositive(tick.BarOpen, tick.Price)
 	barHigh := firstPositive(tick.BarHigh, tick.Price)
@@ -461,19 +487,19 @@ func (s *Strategy) evaluateShortExit(position domain.Position, tick domain.Tick,
 		reason = previousReason
 		tick.Price = barOpen
 	case sameDayHold &&
-		holdingTime >= time.Duration(s.config.BreakoutFailureWindowMin)*time.Minute &&
+		holdingTime >= time.Duration(tradeCfg.BreakoutFailureWindowMin)*time.Minute &&
 		peakReturn < 1.0 &&
 		barHigh > 0 &&
-		barHigh >= failedBreakoutPrice(s.config, position):
+		barHigh >= failedBreakoutPrice(tradeCfg, position):
 		reason = "failed-breakdown"
-		tick.Price = failedBreakoutPrice(s.config, position)
+		tick.Price = failedBreakoutPrice(tradeCfg, position)
 	case sameDayHold &&
-		holdingTime >= time.Duration(s.config.StagnationWindowMin)*time.Minute &&
-		peakReturn < s.config.StagnationMinPeakPct:
+		holdingTime >= time.Duration(tradeCfg.StagnationWindowMin)*time.Minute &&
+		peakReturn < tradeCfg.StagnationMinPeakPct:
 		reason = "stagnation-time-stop"
 		tick.Price = barClose
 	case func() bool {
-		stopPrice, stopReason := protectiveStop(s.config, position, lowWatermark, barClose, decisionAt)
+		stopPrice, stopReason := protectiveStop(tradeCfg, position, lowWatermark, barClose, decisionAt)
 		if stopPrice <= 0 || barHigh <= 0 || barHigh < stopPrice {
 			return false
 		}
@@ -533,6 +559,9 @@ func (s *Strategy) evaluateShortExit(position domain.Position, tick domain.Tick,
 		SetupType:    position.SetupType,
 		Reason:       reason,
 		Confidence:   1,
+		MarketRegime: position.MarketRegime,
+		RegimeConfidence: position.RegimeConfidence,
+		Playbook:     position.Playbook,
 		Timestamp:    decisionAt,
 	}, true, reason
 }
@@ -644,13 +673,24 @@ func tradingDayStart(at time.Time) time.Time {
 }
 
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {
+	regime := s.currentMarketRegime(candidate.MarketRegime)
+	strongSqueeze := s.isStrongSqueeze(candidate)
 	if domain.IsShort(candidate.Direction) {
 		return s.passesShortEntryQuality(candidate)
+	}
+	if s.config.EnableMarketRegime {
+		switch regime {
+		case domain.MarketRegimeBearish:
+			return false, "bearish-regime-no-long"
+		case domain.MarketRegimeRanging:
+			if candidate.SetupType == "consolidation-breakout" || candidate.SetupType == "opening-range-breakout" {
+				return false, "ranging-regime-breakout-block"
+			}
+		}
 	}
 	if candidate.Price < s.config.MinPrice {
 		return false, "low-price"
 	}
-	strongSqueeze := s.isStrongSqueeze(candidate)
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
 	minLeaderPct := 0.12
 	maxLeaderRank := 5
@@ -766,17 +806,57 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 }
 
 func (s *Strategy) passesShortEntryQuality(candidate domain.Candidate) (bool, string) {
+	regime := s.currentMarketRegime(candidate.MarketRegime)
 	if !s.config.EnableShorts {
 		return false, "shorts-disabled"
 	}
 	if candidate.Price < s.config.MinPrice {
 		return false, "low-price"
 	}
-	if candidate.SetupType != "parabolic-failed-reclaim-short" {
+	if candidate.SetupType != "parabolic-failed-reclaim-short" && candidate.SetupType != "lower-high-breakdown-short" {
 		return false, "no-short-setup"
 	}
 	if candidate.Score < s.config.ShortMinEntryScore {
 		return false, "low-score"
+	}
+	if candidate.SetupType == "lower-high-breakdown-short" {
+		if !s.config.EnableMarketRegime || regime != domain.MarketRegimeBearish {
+			return false, "regime-blocked-short"
+		}
+		if candidate.PriceVsVWAPPct > -0.10 {
+			return false, "above-vwap"
+		}
+		if candidate.CloseOffHighPct < 55 {
+			return false, "not-closing-weak"
+		}
+		if candidate.OneMinuteReturnPct > -0.20 {
+			return false, "weak-one-minute-selloff"
+		}
+		if candidate.ThreeMinuteReturnPct > -0.45 {
+			return false, "weak-three-minute-selloff"
+		}
+		if candidate.BreakoutPct > -0.05 {
+			return false, "not-below-breakdown-trigger"
+		}
+		return true, ""
+	}
+	if s.config.EnableMarketRegime &&
+		regime == domain.MarketRegimeRanging &&
+		s.isBeforeNineAM(candidate.Timestamp) &&
+		!s.isRangingCapitulationShort(candidate) {
+		return false, "ranging-short-overnight-block"
+	}
+	if s.config.EnableMarketRegime &&
+		regime == domain.MarketRegimeRanging &&
+		!s.isRangingCapitulationShort(candidate) &&
+		s.isAfterNineThirtyAM(candidate.Timestamp) &&
+		candidate.DistanceFromHighPct < 50 &&
+		candidate.BreakoutPct > -4.5 &&
+		candidate.ThreeMinuteReturnPct > -10 {
+		return false, "ranging-short-needs-stronger-breakdown"
+	}
+	if s.config.EnableMarketRegime && regime == domain.MarketRegimeRanging && candidate.ATRPct < 3.0 {
+		return false, "ranging-short-needs-volatility"
 	}
 	if candidate.PriceVsVWAPPct > s.config.ShortVWAPBreakMinPct {
 		return false, "above-vwap"
@@ -799,6 +879,9 @@ func (s *Strategy) passesShortEntryQuality(candidate domain.Candidate) (bool, st
 	peakExtensionPct := ((candidate.HighOfDay - candidate.Open) / candidate.Open) * 100
 	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
 		return false, "insufficient-peak-extension"
+	}
+	if s.config.EnableMarketRegime && regime == domain.MarketRegimeBullish && peakExtensionPct < maxFloat(s.config.ShortPeakExtensionMinPct+8, 20) {
+		return false, "bullish-short-needs-extreme-extension"
 	}
 	if candidate.Volume > 0 {
 		dollarVolume := entryDollarVolume(candidate)
@@ -973,6 +1056,24 @@ func (s *Strategy) isLateSession(at time.Time) bool {
 	return minutes >= 15*60+30
 }
 
+func (s *Strategy) isBeforeNineAM(at time.Time) bool {
+	if at.IsZero() {
+		return false
+	}
+	local := at.In(markethours.Location())
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes < 9*60
+}
+
+func (s *Strategy) isAfterNineThirtyAM(at time.Time) bool {
+	if at.IsZero() {
+		return false
+	}
+	local := at.In(markethours.Location())
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes >= 9*60+30
+}
+
 func (s *Strategy) isParabolicEntry(candidate domain.Candidate) bool {
 	if candidate.OneMinuteReturnPct >= 12 || candidate.ThreeMinuteReturnPct >= 20 {
 		return true
@@ -1000,6 +1101,7 @@ func (s *Strategy) isParabolicEntry(candidate domain.Candidate) bool {
 func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	multiplier := 1.0
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
+	regime := s.currentMarketRegime(candidate.MarketRegime)
 	if s.isPremarket(candidate.Timestamp) {
 		multiplier *= 0.70
 	}
@@ -1030,10 +1132,79 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	if s.isContinuationProfile() {
 		multiplier *= 0.90
 	}
+	if s.config.EnableMarketRegime {
+		switch regime {
+		case domain.MarketRegimeBullish:
+			if domain.IsShort(candidate.Direction) {
+				multiplier *= 0.50
+			}
+		case domain.MarketRegimeRanging:
+			multiplier *= 0.70
+			if domain.IsShort(candidate.Direction) && candidate.Playbook != "ranging-capitulation-short" {
+				multiplier *= 0.75
+			}
+		}
+	}
 	if multiplier < 0.55 {
 		multiplier = 0.55
 	}
 	return multiplier
+}
+
+func (s *Strategy) currentMarketRegime(candidateRegime string) string {
+	if !s.config.EnableMarketRegime {
+		return domain.MarketRegimeBullish
+	}
+	if normalized := domain.NormalizeMarketRegime(candidateRegime); candidateRegime != "" {
+		return normalized
+	}
+	snapshot := s.runtime.MarketRegime()
+	if snapshot.Regime == "" {
+		return domain.MarketRegimeBullish
+	}
+	return domain.NormalizeMarketRegime(snapshot.Regime)
+}
+
+func (s *Strategy) tradeConfigForPosition(position domain.Position) config.TradingConfig {
+	cfg := s.config
+	if !cfg.EnableMarketRegime {
+		return cfg
+	}
+	switch position.Playbook {
+	case "bullish-trend-long", "bearish-trend-short", "bearish-breakdown-short", "ranging-capitulation-short":
+		cfg.StagnationWindowMin += 2
+		cfg.BreakEvenHoldMinutes += 1
+		cfg.TrailActivationR += 0.15
+		cfg.TrailATRMultiplier *= 1.20
+		cfg.TightTrailATRMultiplier *= 1.10
+	case "ranging-reclaim-long", "ranging-countertrend-short":
+		if cfg.BreakEvenHoldMinutes > 1 {
+			cfg.BreakEvenHoldMinutes--
+		}
+		cfg.BreakEvenMinR = maxFloat(0.25, cfg.BreakEvenMinR-0.20)
+		cfg.TrailActivationR = maxFloat(0.40, cfg.TrailActivationR-0.20)
+		cfg.TrailATRMultiplier *= 0.75
+		cfg.TightTrailATRMultiplier *= 0.80
+		if cfg.StagnationWindowMin > 1 {
+			cfg.StagnationWindowMin--
+		}
+	}
+	return cfg
+}
+
+func (s *Strategy) isRangingCapitulationShort(candidate domain.Candidate) bool {
+	if !s.config.EnableMarketRegime {
+		return false
+	}
+	if s.currentMarketRegime(candidate.MarketRegime) != domain.MarketRegimeRanging {
+		return false
+	}
+	if !domain.IsShort(candidate.Direction) || candidate.SetupType != "parabolic-failed-reclaim-short" {
+		return false
+	}
+	return candidate.ATRPct >= 15 &&
+		candidate.DistanceFromHighPct >= 50 &&
+		candidate.ThreeMinuteReturnPct <= -15
 }
 
 func (s *Strategy) isContinuationProfile() bool {
@@ -1120,8 +1291,11 @@ func sessionMinutesSinceOpen(at time.Time) float64 {
 	return maxFloat(0, local.Sub(open).Minutes())
 }
 
-func entryReason(direction string) string {
+func entryReason(direction string, setupType string) string {
 	if domain.IsShort(direction) {
+		if setupType == "lower-high-breakdown-short" {
+			return "lower-high-breakdown-short-entry"
+		}
 		return "parabolic-failed-reclaim-short-entry"
 	}
 	return "ml-breakout-entry"

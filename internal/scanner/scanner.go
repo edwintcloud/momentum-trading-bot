@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,6 +127,9 @@ func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
 func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
 	metrics := s.updateSymbolState(tick)
 	priceVsOpenPct := percentChange(tick.Open, tick.Price)
+	if s.isBenchmarkSymbol(tick.Symbol) {
+		return domain.Candidate{}, false, "market-benchmark"
+	}
 
 	if tick.Price <= s.config.MinPrice {
 		return domain.Candidate{}, false, "min-price"
@@ -140,8 +144,9 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		return domain.Candidate{}, false, "volume-spike"
 	}
 	direction := domain.DirectionLong
+	shortSetupEnabled := metrics.setupType == "parabolic-failed-reclaim-short" || (s.config.EnableMarketRegime && metrics.setupType == "lower-high-breakdown-short")
 	switch {
-	case metrics.setupType == "parabolic-failed-reclaim-short" && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, metrics):
+	case shortSetupEnabled && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, metrics):
 		direction = domain.DirectionShort
 	case s.qualifiesMomentumProfile(tick, priceVsOpenPct, metrics):
 		direction = domain.DirectionLong
@@ -156,6 +161,11 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if tick.Price > 0 && metrics.atr > 0 {
 		atrPct = (metrics.atr / tick.Price) * 100
 	}
+	regimeSnapshot := s.runtime.MarketRegime()
+	if regimeSnapshot.Regime == "" {
+		regimeSnapshot.Regime = domain.MarketRegimeBullish
+	}
+	playbook := domain.TrendAlignedPlaybook(direction, regimeSnapshot.Regime, metrics.setupType)
 	return domain.Candidate{
 		Symbol:                tick.Symbol,
 		Direction:             direction,
@@ -186,6 +196,9 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		SetupLow:              round2(scoreOrZero(metrics.setupLow)),
 		SetupType:             metrics.setupType,
 		Score:                 round2(scoreOrZero(score)),
+		MarketRegime:          regimeSnapshot.Regime,
+		RegimeConfidence:      regimeSnapshot.Confidence,
+		Playbook:              playbook,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
@@ -194,7 +207,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 
 func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
 	direction := domain.DirectionLong
-	if metrics.setupType == "parabolic-failed-reclaim-short" {
+	if metrics.setupType == "parabolic-failed-reclaim-short" || (s.config.EnableMarketRegime && metrics.setupType == "lower-high-breakdown-short") {
 		direction = domain.DirectionShort
 	}
 	if domain.IsShort(direction) {
@@ -263,21 +276,20 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct
 	if !s.config.EnableShorts {
 		return false
 	}
-	if metrics.setupType != "parabolic-failed-reclaim-short" {
-		return false
-	}
-	if tick.Open <= 0 || tick.HighOfDay <= 0 {
-		return false
-	}
-	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
-	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
-		return false
-	}
-	if tick.GapPercent < s.config.MinGapPercent {
+	if metrics.setupType != "parabolic-failed-reclaim-short" && (!s.config.EnableMarketRegime || metrics.setupType != "lower-high-breakdown-short") {
 		return false
 	}
 	if tick.RelativeVolume < s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra {
 		return false
+	}
+	if metrics.setupType == "lower-high-breakdown-short" {
+		return metrics.priceVsVWAPPct <= -0.05 &&
+			metrics.oneMinuteReturn <= -0.15 &&
+			metrics.threeMinuteReturn <= -0.35 &&
+			metrics.breakoutPct <= -0.05 &&
+			metrics.closeOffHighPct >= 55 &&
+			metrics.volumeRate >= maxFloat(1.0, s.config.ScannerRenewedVolumeRateMin) &&
+			priceVsOpenPct >= -2.0
 	}
 	if metrics.priceVsVWAPPct > s.config.ShortVWAPBreakMinPct {
 		return false
@@ -289,6 +301,16 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct
 		return false
 	}
 	if metrics.breakoutPct > -0.05 {
+		return false
+	}
+	if tick.Open <= 0 || tick.HighOfDay <= 0 {
+		return false
+	}
+	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
+	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
+		return false
+	}
+	if tick.GapPercent < s.config.MinGapPercent {
 		return false
 	}
 	return priceVsOpenPct >= maxFloat(2.0, s.config.MinGapPercent*0.5)
@@ -434,6 +456,7 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 	higherLow := priorPullbackLow > 0 && setupLow > priorPullbackLow
 	renewedVolume := metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin
 	peakHigh := maxBarHigh(lastNBars(completed, 12))
+	priorSwingHigh := maxBarHigh(lastNBars(priorBars, 6))
 	peakExtensionPct := percentChange(bars[0].open, peakHigh)
 	reclaimFailureHigh := maxBarHigh(lastNBars(completed, 3))
 	breakdownLow := minBarLow(lastNBars(completed, 3))
@@ -450,6 +473,23 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 		reclaimFailureHigh > current.close &&
 		reclaimFailureHigh < peakHigh:
 		metrics.setupType = "parabolic-failed-reclaim-short"
+		metrics.setupHigh = reclaimFailureHigh
+		metrics.setupLow = breakdownLow
+		metrics.breakoutPct = percentChange(breakdownLow, current.close)
+	case cfg.EnableMarketRegime &&
+		priorSwingHigh > 0 &&
+		reclaimFailureHigh > 0 &&
+		reclaimFailureHigh < priorSwingHigh &&
+		current.vwap > 0 &&
+		reclaimFailureHigh <= current.vwap*1.08 &&
+		metrics.priceVsVWAPPct <= -0.05 &&
+		metrics.oneMinuteReturn <= -0.15 &&
+		metrics.threeMinuteReturn <= -0.35 &&
+		metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin &&
+		metrics.closeOffHighPct >= 55 &&
+		breakdownLow > 0 &&
+		current.close < breakdownLow:
+		metrics.setupType = "lower-high-breakdown-short"
 		metrics.setupHigh = reclaimFailureHigh
 		metrics.setupLow = breakdownLow
 		metrics.breakoutPct = percentChange(breakdownLow, current.close)
@@ -504,6 +544,19 @@ func (s *Scanner) updateVolumeLeadership(tick domain.Tick) (float64, int) {
 func momentumLeaderMetric(tick domain.Tick) float64 {
 	relativeVolume := clampFloat(tick.RelativeVolume, 1, 25)
 	return tick.Price * float64(tick.Volume) * relativeVolume
+}
+
+func (s *Scanner) isBenchmarkSymbol(symbol string) bool {
+	if !s.config.EnableMarketRegime {
+		return false
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	for _, benchmark := range s.config.MarketRegimeBenchmarkSymbols {
+		if normalized == strings.ToUpper(strings.TrimSpace(benchmark)) {
+			return true
+		}
+	}
+	return false
 }
 
 func lookbackReturn(bars []symbolBar, lookback int) float64 {

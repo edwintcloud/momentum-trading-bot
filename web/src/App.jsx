@@ -26,6 +26,14 @@ const emptySnapshot = {
     pendingVersion: '',
     lastOptimizerRun: '',
     paperValidation: '',
+    currentRegime: '',
+    regimeConfidence: 0,
+  },
+  marketRegime: {
+    regime: '',
+    confidence: 0,
+    benchmarks: [],
+    timestamp: '',
   },
   candidates: [],
   positions: [],
@@ -177,6 +185,7 @@ export function App() {
         <StatCard label="Open Positions" value={number.format(snapshot.status.openPositions)} />
         <StatCard label="Closed Trades" value={number.format(closedTradesToday)} />
         <StatCard label="Daily Loss Limit" value={money.format(snapshot.status.dailyLossLimit)} tone="warn" />
+        <StatCard label="Market Regime" value={snapshot.status.currentRegime || 'n/a'} />
       </section>
 
       <section className="panel status-panel">
@@ -218,6 +227,10 @@ export function App() {
             <strong>{number.format(snapshot.status.tradesToday)}</strong>
           </div>
           <div>
+            <span>Regime Confidence</span>
+            <strong>{snapshot.status.regimeConfidence ? snapshot.status.regimeConfidence.toFixed(2) : 'n/a'}</strong>
+          </div>
+          <div>
             <span>Emergency Stop</span>
             <strong>{snapshot.status.emergencyStop ? 'Active' : 'Inactive'}</strong>
           </div>
@@ -240,16 +253,33 @@ export function App() {
         </div>
       </section>
 
+      <section className="panel status-panel">
+        <div className="panel-header">
+          <h2>Market Regime</h2>
+          <span>{snapshot.marketRegime.timestamp ? new Date(snapshot.marketRegime.timestamp).toLocaleTimeString() : 'n/a'}</span>
+        </div>
+        <div className="status-grid">
+          {snapshot.marketRegime.benchmarks.map((benchmark) => (
+            <div key={benchmark.symbol}>
+              <span>{benchmark.symbol}</span>
+              <strong>{`VWAP ${benchmark.priceVsVwapPct.toFixed(2)}% | EMA ${benchmark.emaFast.toFixed(2)}/${benchmark.emaSlow.toFixed(2)} | 30m ${benchmark.returnLookbackPct.toFixed(2)}%`}</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <div className="panel-grid">
         <TableSection
           title="Scanner Candidates"
-          columns={['Symbol', 'Side', 'Price', 'Gap %', 'Rel Vol', 'Premarket Vol', 'Catalyst']}
+          columns={['Symbol', 'Side', 'Regime', 'Playbook', 'Price', 'Gap %', 'Rel Vol', 'Premarket Vol', 'Catalyst']}
           rows={snapshot.candidates}
           emptyMessage="No symbols currently satisfy the scanner filters."
           renderRow={(candidate) => (
             <tr key={candidate.symbol}>
               <td>{candidate.symbol}</td>
               <td>{candidate.direction || 'long'}</td>
+              <td>{candidate.marketRegime || 'n/a'}</td>
+              <td>{candidate.playbook || 'n/a'}</td>
               <td>{money.format(candidate.price)}</td>
               <td>{candidate.gapPercent.toFixed(2)}%</td>
               <td>{candidate.relativeVolume.toFixed(2)}x</td>

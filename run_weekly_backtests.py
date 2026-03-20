@@ -23,7 +23,8 @@ def extract_backtest_metrics(output):
 
 def run_backtest(start_date, end_date):
     print(f"Running backtest from {start_date} to {end_date}...", flush=True)
-    cmd = ["go", "run", ".", "backtest", "-start", start_date, "-end", end_date]
+    report_path = f".cache/backtest/weekly/{start_date}_{end_date}.json"
+    cmd = ["go", "run", ".", "backtest", "-start", start_date, "-end", end_date, "-report-out", report_path]
     env = os.environ.copy()
     env.setdefault("GOCACHE", GO_CACHE_DIR)
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)

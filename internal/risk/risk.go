@@ -129,6 +129,9 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			EntryATR:     signal.EntryATR,
 			SetupType:    signal.SetupType,
 			Reason:       signal.Reason,
+			MarketRegime: signal.MarketRegime,
+			RegimeConfidence: signal.RegimeConfidence,
+			Playbook:     signal.Playbook,
 			Timestamp:    orderTime,
 		}, true, "approved"
 	}
@@ -206,6 +209,9 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		EntryATR:     signal.EntryATR,
 		SetupType:    signal.SetupType,
 		Reason:       signal.Reason,
+		MarketRegime: signal.MarketRegime,
+		RegimeConfidence: signal.RegimeConfidence,
+		Playbook:     signal.Playbook,
 		Timestamp:    orderTime,
 	}
 	r.approved++
