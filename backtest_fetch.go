@@ -21,7 +21,7 @@ import (
 const (
 	historicalBatchSize    = 100
 	historicalMaxRetries   = 5
-	historicalCacheVersion = "v2"
+	historicalCacheVersion = "v3"
 )
 
 var historicalCacheRoot = filepath.Join(".cache", "backtest", "historical-bars")
@@ -85,31 +85,6 @@ func (l *requestLimiter) DelayUntil(next time.Time) {
 	if next.After(l.next) {
 		l.next = next
 	}
-}
-
-func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []string, start, end time.Time, historicalRateLimit int) ([]backtest.InputBar, error) {
-	dataset, err := prepareHistoricalDataset(ctx, client, symbols, start, end, historicalRateLimit)
-	if err != nil {
-		return nil, err
-	}
-	iterator := newHistoricalDatasetIterator(dataset)
-	defer iterator.Close()
-
-	bars := make([]backtest.InputBar, 0, len(dataset.jobs)*1024)
-	for {
-		bar, ok, err := iterator.Next()
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			break
-		}
-		bars = append(bars, bar)
-	}
-	if len(bars) == 0 {
-		return []backtest.InputBar{}, nil
-	}
-	return bars, nil
 }
 
 func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {

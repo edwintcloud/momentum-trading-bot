@@ -1,6 +1,6 @@
 # Agent Notes
 
-Last reviewed: 2026-03-18.
+Last reviewed: 2026-03-20.
 
 ## Repo Summary
 
@@ -10,6 +10,7 @@ Last reviewed: 2026-03-18.
 - Backtests reuse the scanner, strategy, risk, and portfolio layers, but fills are simulated inside the backtest engine.
 - Main entrypoint: `main.go`
 - Backtest CLI entrypoint: `backtest_command.go`
+- Targeted diagnostics entrypoints: `bull_run_diagnostics_command.go`, `symbol_trace_command.go`
 - Frontend: `web/`
 
 ## How The Live App Works
@@ -52,8 +53,16 @@ Last reviewed: 2026-03-18.
 
 - The backtest path is wired through `go run . backtest ...`.
 - Backtests tune config from Alpaca account/capability data when using Alpaca as the data source.
+- The live Alpaca active universe is no longer the only backtest universe source.
+- Backtests now merge Alpaca's current active symbols with any symbols already present in the cached historical files for the requested window, so cached delisted names can still be replayed accurately.
 - There is no separate training or model-fitting phase in the current backtest path; it replays only the requested time window.
 - The current repo does not contain a separate entry-model implementation despite older documentation references that existed before this review.
+
+## Useful Commands
+
+- `go run . backtest -start YYYY-MM-DD -end YYYY-MM-DD`
+- `go run . bull-run-diagnostics -audit .cache/backtest/experiments/bull_run_audit_selected.json`
+- `go run . symbol-trace -symbol AFJK -day 2025-12-09 -from 10:06 -to 11:30`
 
 ## Fixed On 2026-03-18
 

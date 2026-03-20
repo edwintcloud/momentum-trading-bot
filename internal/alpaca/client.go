@@ -491,10 +491,14 @@ var allowedPrimaryExchanges = map[string]struct{}{
 	"NYSE":   {},
 }
 
-// ListActiveEquitySymbols returns Alpaca's tradable US equity symbol universe
+// ListEquitySymbols returns Alpaca's tradable US equity symbol universe
 // limited to NYSE and NASDAQ primary listings.
-func (c *Client) ListActiveEquitySymbols(ctx context.Context) ([]string, error) {
-	endpoint := c.cfg.TradingBaseURL + "/v2/assets?status=active&asset_class=us_equity"
+func (c *Client) ListEquitySymbols(ctx context.Context, includeInactive bool) ([]string, error) {
+	status := "active"
+	if includeInactive {
+		status = "all"
+	}
+	endpoint := c.cfg.TradingBaseURL + fmt.Sprintf("/v2/assets?status=%s&asset_class=us_equity", status)
 	var assets []asset
 	if err := c.getJSON(ctx, endpoint, &assets); err != nil {
 		return nil, err

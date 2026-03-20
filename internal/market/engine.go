@@ -77,7 +77,7 @@ func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager
 
 // Start consumes Alpaca market data until the context is canceled.
 func (e *Engine) Start(ctx context.Context, out chan<- domain.Tick) error {
-	symbols, err := e.client.ListActiveEquitySymbols(ctx)
+	symbols, err := e.client.ListEquitySymbols(ctx, false)
 	if err != nil {
 		return fmt.Errorf("load NYSE/NASDAQ universe: %w", err)
 	}

@@ -91,7 +91,7 @@ Default behavior:
 - `-start` is the only required argument
 - `-end` defaults to the current time
 - there is no separate training or model-fitting step; the backtest replays the requested window directly
-- the symbol universe defaults to Alpaca's active tradable US equities, which approximates the live wildcard scanner
+- the symbol universe includes active and inactive tradable US equities, which approximates the live wildcard scanner while allowing inactive symbols
 - historical Alpaca fetches are cached automatically under `.cache/backtest/historical-bars` so repeat and overlapping runs reuse previously downloaded bar batches
 
 Example:

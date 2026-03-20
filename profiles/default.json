@@ -33,7 +33,7 @@
     "MinPrice": 3.5,
     "MaxPrice": 20,
     "MinGapPercent": 1,
-    "MinRelativeVolume": 4.4,
+    "MinRelativeVolume": 2,
     "MinPremarketVolume": 60000,
     "ScannerMinPriceVsOpenPctFloor": 2.5,
     "ScannerMinPriceVsOpenGapMultiplier": 0.25,
