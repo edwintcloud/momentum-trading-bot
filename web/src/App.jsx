@@ -45,6 +45,26 @@ const emptySnapshot = {
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 const number = new Intl.NumberFormat('en-US');
 
+function normalizeSnapshot(next = {}) {
+  return {
+    ...emptySnapshot,
+    ...next,
+    status: {
+      ...emptySnapshot.status,
+      ...(next.status || {}),
+    },
+    marketRegime: {
+      ...emptySnapshot.marketRegime,
+      ...(next.marketRegime || {}),
+      benchmarks: Array.isArray(next.marketRegime?.benchmarks) ? next.marketRegime.benchmarks : [],
+    },
+    candidates: Array.isArray(next.candidates) ? next.candidates : [],
+    positions: Array.isArray(next.positions) ? next.positions : [],
+    closedTrades: Array.isArray(next.closedTrades) ? next.closedTrades : [],
+    logs: Array.isArray(next.logs) ? next.logs : [],
+  };
+}
+
 function compactVolume(value) {
   if (value >= 1_000_000_000) return (value / 1_000_000_000).toFixed(2) + ' B';
   if (value >= 1_000_000) return (value / 1_000_000).toFixed(2) + ' M';
@@ -114,7 +134,7 @@ export function App() {
 
       socket.onmessage = (event) => {
         const next = JSON.parse(event.data);
-        setSnapshot(next);
+        setSnapshot(normalizeSnapshot(next));
         setError('');
       };
 
@@ -133,7 +153,7 @@ export function App() {
       .then((response) => response.json())
       .then((data) => {
         if (!cancelled) {
-          setSnapshot(data);
+          setSnapshot(normalizeSnapshot(data));
         }
       })
       .catch((fetchError) => {
