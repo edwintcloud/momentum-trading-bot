@@ -683,7 +683,9 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 		case domain.MarketRegimeBearish:
 			return false, "bearish-regime-no-long"
 		case domain.MarketRegimeRanging:
-			if candidate.SetupType == "consolidation-breakout" || candidate.SetupType == "opening-range-breakout" {
+			if candidate.SetupType == "consolidation-breakout" ||
+				candidate.SetupType == "opening-range-breakout" ||
+				candidate.SetupType == "higher-low-reclaim" {
 				return false, "ranging-regime-breakout-block"
 			}
 		}
@@ -843,7 +845,7 @@ func (s *Strategy) passesShortEntryQuality(candidate domain.Candidate) (bool, st
 	if s.config.EnableMarketRegime &&
 		regime == domain.MarketRegimeRanging &&
 		s.isBeforeNineAM(candidate.Timestamp) &&
-		!s.isRangingCapitulationShort(candidate) {
+		(!s.isRangingCapitulationShort(candidate) || s.isBeforeSevenAM(candidate.Timestamp)) {
 		return false, "ranging-short-overnight-block"
 	}
 	if s.config.EnableMarketRegime &&
@@ -1063,6 +1065,15 @@ func (s *Strategy) isBeforeNineAM(at time.Time) bool {
 	local := at.In(markethours.Location())
 	minutes := local.Hour()*60 + local.Minute()
 	return minutes < 9*60
+}
+
+func (s *Strategy) isBeforeSevenAM(at time.Time) bool {
+	if at.IsZero() {
+		return false
+	}
+	local := at.In(markethours.Location())
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes < 7*60
 }
 
 func (s *Strategy) isAfterNineThirtyAM(at time.Time) bool {

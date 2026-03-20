@@ -330,7 +330,40 @@ func TestStrategyBlocksBreakoutInRangingRegime(t *testing.T) {
 	}
 }
 
-func TestStrategyAllowsReclaimInRangingRegime(t *testing.T) {
+func TestStrategyBlocksHigherLowReclaimInRangingRegime(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.EnableMarketRegime = true
+	runtimeState := runtime.NewState()
+	runtimeState.SetMarketRegime(domain.MarketRegimeSnapshot{Regime: domain.MarketRegimeRanging, Confidence: 0.7})
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "HUMA",
+		Price:                4.20,
+		Open:                 4.00,
+		HighOfDay:            4.21,
+		GapPercent:           21,
+		RelativeVolume:       6.4,
+		PriceVsOpenPct:       5.0,
+		DistanceFromHighPct:  0.24,
+		OneMinuteReturnPct:   0.12,
+		ThreeMinuteReturnPct: 0.25,
+		VolumeRate:           1.2,
+		SetupType:            "higher-low-reclaim",
+		MinutesSinceOpen:     18,
+		Score:                22,
+		Timestamp:            inSessionTime(),
+	})
+	if ok {
+		t.Fatal("expected ranging regime to block higher-low reclaim long setup")
+	}
+	if reason != "ranging-regime-breakout-block" {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+}
+
+func TestStrategyAllowsVWAPReclaimInRangingRegime(t *testing.T) {
 	cfg := testStrategyConfig()
 	cfg.EnableMarketRegime = true
 	runtimeState := runtime.NewState()
@@ -350,13 +383,13 @@ func TestStrategyAllowsReclaimInRangingRegime(t *testing.T) {
 		OneMinuteReturnPct:   0.12,
 		ThreeMinuteReturnPct: 0.25,
 		VolumeRate:           1.2,
-		SetupType:            "higher-low-reclaim",
+		SetupType:            "vwap-reclaim",
 		MinutesSinceOpen:     18,
 		Score:                22,
 		Timestamp:            inSessionTime(),
 	})
 	if !ok {
-		t.Fatalf("expected ranging regime to allow reclaim long setup, got %s", reason)
+		t.Fatalf("expected ranging regime to allow vwap reclaim long setup, got %s", reason)
 	}
 	if signal.Playbook == "" {
 		t.Fatalf("expected ranging regime signal to carry playbook metadata, got %+v", signal)
@@ -454,7 +487,54 @@ func TestStrategyBlocksRangingParabolicShortBeforeNineAM(t *testing.T) {
 	}
 }
 
-func TestStrategyAllowsRangingCapitulationShortBeforeNineAM(t *testing.T) {
+func TestStrategyBlocksRangingCapitulationShortBeforeSevenAM(t *testing.T) {
+	cfg := testStrategyConfig()
+	cfg.EnableMarketRegime = true
+	cfg.EnableShorts = true
+	runtimeState := runtime.NewState()
+	runtimeState.SetMarketRegime(domain.MarketRegimeSnapshot{Regime: domain.MarketRegimeRanging, Confidence: 0.34})
+	book := portfolio.NewManager(cfg, runtimeState)
+	strat := NewStrategy(cfg, book, runtimeState)
+
+	timestamp := time.Date(2026, 3, 13, 10, 39, 0, 0, time.UTC) // 06:39 ET
+	_, ok, reason := strat.EvaluateCandidateDetailed(domain.Candidate{
+		Symbol:               "DXST",
+		Direction:            domain.DirectionShort,
+		Price:                9.07,
+		Open:                 4.20,
+		HighOfDay:            14.12,
+		GapPercent:           107.08,
+		RelativeVolume:       88.56,
+		PriceVsOpenPct:       115.95,
+		DistanceFromHighPct:  55.68,
+		OneMinuteReturnPct:   -12.54,
+		ThreeMinuteReturnPct: -16.41,
+		VolumeRate:           1.32,
+		VolumeLeaderPct:      0.55,
+		LeaderRank:           2,
+		MinutesSinceOpen:     0,
+		ATR:                  1.68,
+		ATRPct:               18.49,
+		PriceVsVWAPPct:       -9.36,
+		BreakoutPct:          -3.20,
+		CloseOffHighPct:      88,
+		SetupHigh:            10.11,
+		SetupLow:             9.35,
+		SetupType:            "parabolic-failed-reclaim-short",
+		Score:                116.63,
+		MarketRegime:         domain.MarketRegimeRanging,
+		RegimeConfidence:     0.34,
+		Timestamp:            timestamp,
+	})
+	if ok {
+		t.Fatal("expected ranging capitulation short before 7am to be blocked")
+	}
+	if reason != "ranging-short-overnight-block" {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+}
+
+func TestStrategyAllowsRangingCapitulationShortAfterSevenAM(t *testing.T) {
 	cfg := testStrategyConfig()
 	cfg.EnableMarketRegime = true
 	cfg.EnableShorts = true
@@ -494,7 +574,7 @@ func TestStrategyAllowsRangingCapitulationShortBeforeNineAM(t *testing.T) {
 		Timestamp:            timestamp,
 	})
 	if !ok {
-		t.Fatalf("expected ranging capitulation short to be allowed before 9am, got %s", reason)
+		t.Fatalf("expected ranging capitulation short after 7am to be allowed, got %s", reason)
 	}
 	if signal.Playbook != "ranging-capitulation-short" {
 		t.Fatalf("expected capitulation playbook, got %+v", signal)
