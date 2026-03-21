@@ -1,8 +1,10 @@
 package volumeprofile
 
-import "time"
+import (
+	"time"
 
-var eastern = mustLoadLocation("America/New_York")
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
+)
 
 type volumePoint struct {
 	minuteOfDay int
@@ -26,7 +28,7 @@ var cumulativeProfile = []volumePoint{
 // ExpectedCumulativeShare returns the expected fraction of a symbol's prior
 // regular-session volume that has traded by the provided New York timestamp.
 func ExpectedCumulativeShare(at time.Time) float64 {
-	local := at.In(eastern)
+	local := at.In(markethours.Location())
 	minuteOfDay := local.Hour()*60 + local.Minute()
 	if minuteOfDay <= cumulativeProfile[0].minuteOfDay {
 		return cumulativeProfile[0].share
@@ -48,12 +50,4 @@ func ExpectedCumulativeShare(at time.Time) float64 {
 		return previous.share + ((current.share - previous.share) * progress)
 	}
 	return 1.0
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }

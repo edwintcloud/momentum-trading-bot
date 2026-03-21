@@ -659,17 +659,17 @@ func (s *Strategy) normalizeCandidate(candidate domain.Candidate) domain.Candida
 
 func decisionTime(timestamp time.Time) time.Time {
 	if timestamp.IsZero() {
-		return time.Now().UTC()
+		return time.Now()
 	}
-	return timestamp.UTC()
+	return timestamp
 }
 
 func tradingDayStart(at time.Time) time.Time {
 	if at.IsZero() {
-		at = time.Now().UTC()
+		at = time.Now()
 	}
 	local := at.In(markethours.Location())
-	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, markethours.Location()).UTC()
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, markethours.Location())
 }
 
 func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string) {

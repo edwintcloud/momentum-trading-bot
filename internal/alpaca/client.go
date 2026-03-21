@@ -22,8 +22,6 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
-var easternLocation = mustLoadLocation("America/New_York")
-
 // Client wraps Alpaca trading and market data APIs.
 type Client struct {
 	mu         sync.RWMutex
@@ -388,9 +386,9 @@ func (c *Client) GetPremarketVolumes(ctx context.Context, symbols []string, day 
 	if len(normalized) == 0 {
 		return map[string]int64{}, nil
 	}
-	marketDay := day.In(easternLocation)
-	start := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 4, 0, 0, 0, easternLocation).UTC()
-	end := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 9, 29, 59, 0, easternLocation).UTC()
+	marketDay := day.In(markethours.Location())
+	start := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 4, 0, 0, 0, markethours.Location())
+	end := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 9, 29, 59, 0, markethours.Location())
 	endpoint := fmt.Sprintf(
 		"%s/v2/stocks/bars?symbols=%s&timeframe=1Min&start=%s&end=%s&adjustment=raw&feed=%s&limit=10000",
 		c.cfg.MarketDataBaseURL,
@@ -459,8 +457,8 @@ func (c *Client) GetHistoricalBarsPage(ctx context.Context, symbols []string, st
 		c.cfg.MarketDataBaseURL,
 		url.QueryEscape(strings.Join(normalized, ",")),
 		url.QueryEscape(timeframe),
-		url.QueryEscape(start.UTC().Format(time.RFC3339)),
-		url.QueryEscape(end.UTC().Format(time.RFC3339)),
+		url.QueryEscape(start.Format(time.RFC3339)),
+		url.QueryEscape(end.Format(time.RFC3339)),
 		url.QueryEscape(c.cfg.DataFeed),
 	)
 	if pageToken != "" {
@@ -585,7 +583,7 @@ func (c *Client) GetNews(ctx context.Context, symbols []string, limit int) (map[
 // during pre-market, regular, and post-market sessions.
 func (c *Client) SubmitOrder(ctx context.Context, request domain.OrderRequest) (Order, error) {
 	if !markethours.IsTradableSessionAt(request.Timestamp) {
-		return Order{}, fmt.Errorf("order rejected outside tradable session for %s at %s", request.Symbol, request.Timestamp.UTC().Format(time.RFC3339))
+		return Order{}, fmt.Errorf("order rejected outside tradable session for %s at %s", request.Symbol, request.Timestamp.Format(time.RFC3339))
 	}
 	payload := map[string]any{
 		"symbol":         request.Symbol,
@@ -759,7 +757,7 @@ func (c *Client) streamOnce(ctx context.Context, handler func(StreamMessage) err
 					Low:       bar.Low,
 					Close:     bar.Close,
 					Volume:    bar.Volume,
-					Timestamp: bar.Timestamp.UTC(),
+					Timestamp: bar.Timestamp,
 				}); err != nil {
 					return err
 				}
@@ -775,7 +773,7 @@ func (c *Client) streamOnce(ctx context.Context, handler func(StreamMessage) err
 					StatusMessage: status.StatusMessage,
 					ReasonCode:    status.ReasonCode,
 					ReasonMessage: status.ReasonMessage,
-					Timestamp:     status.Timestamp.UTC(),
+					Timestamp:     status.Timestamp,
 				}); err != nil {
 					return err
 				}
@@ -1056,12 +1054,4 @@ func decodeResponse(response *http.Response, target any) error {
 		return apiErr
 	}
 	return json.NewDecoder(response.Body).Decode(target)
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 const (
@@ -50,8 +51,8 @@ func newRequestLimiter(requestsPerMinute int) *requestLimiter {
 		requestsPerMinute = 200
 	}
 	interval := time.Minute / time.Duration(requestsPerMinute)
-	if interval < 100*time.Millisecond {
-		interval = 100 * time.Millisecond
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
 	}
 	return &requestLimiter{interval: interval}
 }
@@ -87,16 +88,6 @@ func (l *requestLimiter) DelayUntil(next time.Time) {
 	}
 }
 
-func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
-	if cached, ok, err := loadHistoricalJobCache(job, feed); err == nil && ok {
-		cached.cacheHit = true
-		return cached, nil
-	} else if err != nil {
-		log.Printf("Historical cache read failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
-	}
-	return fetchHistoricalJobFromAPI(ctx, client, limiter, job, feed)
-}
-
 func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
 	pageToken := ""
 	result := historicalFetchResult{
@@ -111,7 +102,7 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 		for symbol, bars := range page.Bars {
 			for _, item := range bars {
 				result.bars = append(result.bars, backtest.InputBar{
-					Timestamp: item.Timestamp.UTC(),
+					Timestamp: item.Timestamp,
 					Symbol:    strings.ToUpper(symbol),
 					Open:      item.Open,
 					High:      item.High,
@@ -170,12 +161,8 @@ func buildHistoricalFetchJobs(symbols []string, start, end time.Time) []historic
 	if len(symbols) == 0 || end.Before(start) {
 		return nil
 	}
-	location, _ := time.LoadLocation("America/New_York")
-	if location == nil {
-		location = time.UTC
-	}
 
-	days := tradingDayWindows(start, end, location)
+	days := tradingDayWindows(start, end, markethours.Location())
 	jobs := make([]historicalFetchJob, 0, len(days)*(len(symbols)/historicalBatchSize+1))
 	index := 0
 	for _, day := range days {
@@ -212,8 +199,8 @@ func tradingDayWindows(start, end time.Time, location *time.Location) []tradingD
 	out := make([]tradingDayWindow, 0)
 	for !cursor.After(finalDay) {
 		if cursor.Weekday() != time.Saturday && cursor.Weekday() != time.Sunday {
-			dayStart := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 4, 0, 0, 0, location).UTC()
-			dayEnd := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 20, 0, 0, 0, location).UTC()
+			dayStart := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 4, 0, 0, 0, location)
+			dayEnd := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 20, 0, 0, 0, location)
 			if dayStart.Before(start) {
 				dayStart = start
 			}
@@ -239,7 +226,7 @@ func historicalWorkerCount(rateLimit int) int {
 	case rateLimit < 600:
 		return 4
 	default:
-		return 6
+		return 10
 	}
 }
 
@@ -308,11 +295,11 @@ func rateResetTime(headers http.Header) time.Time {
 		return time.Time{}
 	}
 	if unixSeconds, err := time.ParseDuration(value + "s"); err == nil {
-		epoch := time.Unix(0, 0).UTC()
+		epoch := time.Unix(0, 0)
 		return epoch.Add(unixSeconds)
 	}
 	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
-		return parsed.UTC()
+		return parsed
 	}
 	return time.Time{}
 }
@@ -324,11 +311,8 @@ func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 	if symbolCount <= 0 {
 		return 20 * time.Minute
 	}
-	location, _ := time.LoadLocation("America/New_York")
-	if location == nil {
-		location = time.UTC
-	}
-	dayCount := len(tradingDayWindows(start, end, location))
+	
+	dayCount := len(tradingDayWindows(start, end, markethours.Location()))
 	if dayCount == 0 {
 		dayCount = 1
 	}

@@ -15,14 +15,13 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 const (
 	DefaultArtifactDir = ".cache/optimizer"
 	reportSchemaV1     = "optimizer_report/v1"
 )
-
-var marketLocation = mustLoadLocation("America/New_York")
 
 // CandidateScore captures the ordered ranking metrics for optimizer output.
 type CandidateScore struct {
@@ -445,7 +444,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	if len(params.Bars) == 0 && params.LoadWeek == nil {
 		return OptimizationReport{}, nil, fmt.Errorf("optimizer requires historical bars")
 	}
-	runStartedAt := time.Now().UTC()
+	runStartedAt := time.Now()
 	base := config.NormalizeStrategyProfile(params.BaseConfig)
 	completedWeekEnd, searchWeeks, validationWeeks, holdoutWeeks, err := resolveRunWindows(params)
 	if err != nil {
@@ -456,7 +455,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		Run: OptimizationRun{
 			SchemaVersion:    reportSchemaV1,
 			GeneratedAt:      runStartedAt,
-			AsOf:             params.AsOf.UTC(),
+			AsOf:             params.AsOf,
 			CompletedWeekEnd: completedWeekEnd,
 			SearchWeeks:      searchWeeks,
 			ValidationWeeks:  validationWeeks,
@@ -469,7 +468,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	lastReportWriteAt := time.Time{}
 	lastReportWriteStage := ""
 	updateProgress := func(stage string, completed, total int, message string) error {
-		now := time.Now().UTC()
+		now := time.Now()
 		report.Progress = tracker.Snapshot(stage, completed, total, message, now)
 		log.Printf(
 			"Optimizer progress stage=%s completed=%d total=%d stage_elapsed=%s stage_eta=%s overall_elapsed=%s overall_eta=%s %s",
@@ -762,15 +761,15 @@ func ApplyStrategyProfileDefaults(base config.TradingConfig, profile config.Stra
 // before or at the provided timestamp.
 func PriorCompletedWeekEnd(asOf time.Time) time.Time {
 	if asOf.IsZero() {
-		asOf = time.Now().UTC()
+		asOf = time.Now()
 	}
-	local := asOf.In(marketLocation)
+	local := asOf.In(markethours.Location())
 	offset := (int(local.Weekday()) - int(time.Friday) + 7) % 7
-	target := time.Date(local.Year(), local.Month(), local.Day(), 20, 0, 0, 0, marketLocation).AddDate(0, 0, -offset)
+	target := time.Date(local.Year(), local.Month(), local.Day(), 20, 0, 0, 0, markethours.Location()).AddDate(0, 0, -offset)
 	if local.Weekday() == time.Friday && local.Before(target) {
 		target = target.AddDate(0, 0, -7)
 	}
-	return target.UTC()
+	return target
 }
 
 // BuildWeeklyWindows creates count completed trading-week windows ending at the
@@ -779,13 +778,13 @@ func BuildWeeklyWindows(completedWeekEnd time.Time, count int) []WeeklyWindow {
 	if count <= 0 {
 		return nil
 	}
-	localEnd := completedWeekEnd.In(marketLocation)
+	localEnd := completedWeekEnd.In(markethours.Location())
 	windows := make([]WeeklyWindow, 0, count)
 	for index := count - 1; index >= 0; index-- {
 		weekEnd := localEnd.AddDate(0, 0, -7*index)
 		weekStart := weekEnd.AddDate(0, 0, -4)
-		start := time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 4, 0, 0, 0, marketLocation).UTC()
-		end := time.Date(weekEnd.Year(), weekEnd.Month(), weekEnd.Day(), 19, 59, 59, 0, marketLocation).UTC()
+		start := time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 4, 0, 0, 0, markethours.Location())
+		end := time.Date(weekEnd.Year(), weekEnd.Month(), weekEnd.Day(), 19, 59, 59, 0, markethours.Location())
 		windows = append(windows, WeeklyWindow{
 			Label: weekEnd.Format("2006-01-02"),
 			Start: start,
@@ -806,7 +805,7 @@ func resolveRunWindows(params Params) (time.Time, []WeeklyWindow, []WeeklyWindow
 		if len(validationWeeks) == 0 {
 			validationWeeks = append([]WeeklyWindow(nil), searchWeeks...)
 		}
-		completedWeekEnd := params.AsOf.UTC()
+		completedWeekEnd := params.AsOf
 		if completedWeekEnd.IsZero() {
 			completedWeekEnd = latestWindowEnd(searchWeeks, validationWeeks, holdoutWeeks)
 		}
@@ -1480,7 +1479,7 @@ func formatETA(eta time.Time, remainingSeconds int64) string {
 	if eta.IsZero() || remainingSeconds <= 0 {
 		return "unknown"
 	}
-	return fmt.Sprintf("%s (%s)", eta.In(marketLocation).Format(time.RFC3339), formatDurationCompact(time.Duration(remainingSeconds)*time.Second))
+	return fmt.Sprintf("%s (%s)", eta.In(markethours.Location()).Format(time.RFC3339), formatDurationCompact(time.Duration(remainingSeconds)*time.Second))
 }
 
 func formatDurationCompact(d time.Duration) string {
@@ -1617,7 +1616,7 @@ func writeReportArtifact(artifactDir string, report *OptimizationReport) error {
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return err
 	}
-	reportName := fmt.Sprintf("%s-%s.json", report.Run.CompletedWeekEnd.In(marketLocation).Format("20060102"), report.Run.SchemaVersion[:15])
+	reportName := fmt.Sprintf("%s-%s.json", report.Run.CompletedWeekEnd.In(markethours.Location()).Format("20060102"), report.Run.SchemaVersion[:15])
 	reportPath := filepath.Join(reportDir, reportName)
 	report.ArtifactPath = reportPath
 	if err := writeJSON(reportPath, report); err != nil {
@@ -1698,7 +1697,7 @@ func normalizeCandidateConfig(cfg config.TradingConfig) config.TradingConfig {
 }
 
 func buildProfileVersion(profile config.StrategyProfile, completedWeekEnd time.Time) string {
-	return fmt.Sprintf("%s-%s", completedWeekEnd.In(marketLocation).Format("20060102"), profile)
+	return fmt.Sprintf("%s-%s", completedWeekEnd.In(markethours.Location()).Format("20060102"), profile)
 }
 
 func artifactDirOrDefault(dir string) string {
@@ -1934,12 +1933,4 @@ func round2(value float64) float64 {
 
 func round4(value float64) float64 {
 	return math.Round(value*10_000) / 10_000
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }

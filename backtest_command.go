@@ -17,6 +17,8 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwincloud/momentum-trading-bot/internal/storage"
 )
 
 var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -49,10 +51,24 @@ func runBacktest(args []string) error {
 
 	cfg := config.DefaultTradingConfig()
 	profilePath := config.ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH"))
+
+	logDir := os.Getenv("BACKTEST_LOG_DIR")
+	if logDir == "" {
+		logDir = filepath.Join(".", "logs")
+	}
+	fsRecorder, fsErr := storage.NewFilesystemRecorder(context.Background(), logDir)
+	if fsErr != nil {
+		log.Printf("Backtest filesystem recorder disabled: %v", fsErr)
+		fsRecorder = nil
+	} else {
+		log.Printf("Backtest logs writing to %s", logDir)
+	}
+
 	runCfg := backtest.RunConfig{
 		DataPath: *dataPath,
 		Start:    start,
 		End:      end,
+		Recorder: fsRecorder,
 	}
 
 	if *dataPath == "" {
@@ -85,12 +101,13 @@ func runBacktest(args []string) error {
 		if err != nil {
 			return err
 		}
-		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), start, end, historicalRateLimit)
+		prevDayStart := start.AddDate(0, 0, -1)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
-		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(start), formatLogTime(end))
+		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(prevDayStart), formatLogTime(end))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, start, end, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
@@ -125,7 +142,7 @@ func runBacktest(args []string) error {
 }
 
 func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) (time.Time, time.Time, error) {
-	now := time.Now().UTC()
+	now := time.Now().In(markethours.Location())
 	if end.IsZero() {
 		end = now
 	}
@@ -161,11 +178,11 @@ func parseCLIBacktestTime(value string) (time.Time, bool, error) {
 		return time.Time{}, false, nil
 	}
 	if dateOnlyPattern.MatchString(strings.TrimSpace(value)) {
-		parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), marketTimeLocation())
+		parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), markethours.Location())
 		if err != nil {
 			return time.Time{}, true, fmt.Errorf("unsupported date format %q", value)
 		}
-		return parsed.UTC(), true, nil
+		return parsed, true, nil
 	}
 	layouts := []string{
 		time.RFC3339,
@@ -173,30 +190,22 @@ func parseCLIBacktestTime(value string) (time.Time, bool, error) {
 		"2006-01-02 15:04",
 	}
 	for _, layout := range layouts {
-		parsed, err := time.ParseInLocation(layout, value, marketTimeLocation())
+		parsed, err := time.ParseInLocation(layout, value, markethours.Location())
 		if err == nil {
-			return parsed.UTC(), false, nil
+			return parsed, false, nil
 		}
 	}
 	return time.Time{}, false, fmt.Errorf("unsupported date format %q", value)
 }
 
-func marketTimeLocation() *time.Location {
-	location, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return time.UTC
-	}
-	return location
-}
-
 func endOfMarketDay(value time.Time) time.Time {
-	local := value.In(marketTimeLocation())
-	return time.Date(local.Year(), local.Month(), local.Day(), 23, 59, 59, 0, marketTimeLocation()).UTC()
+	local := value.In(markethours.Location())
+	return time.Date(local.Year(), local.Month(), local.Day(), 20, 0, 0, 0, markethours.Location())
 }
 
 func sameMarketDay(a, b time.Time) bool {
-	al := a.In(marketTimeLocation())
-	bl := b.In(marketTimeLocation())
+	al := a.In(markethours.Location())
+	bl := b.In(markethours.Location())
 	return al.Year() == bl.Year() && al.Month() == bl.Month() && al.Day() == bl.Day()
 }
 
@@ -204,7 +213,7 @@ func formatLogTime(value time.Time) string {
 	if value.IsZero() {
 		return "n/a"
 	}
-	return value.In(marketTimeLocation()).Format(time.RFC3339)
+	return value.In(markethours.Location()).Format(time.RFC3339)
 }
 
 func logBacktestConfig(cfg config.TradingConfig) {
@@ -267,7 +276,8 @@ func backtestSummaryLines(start, end time.Time, result backtest.Result) []string
 	lines := []string{
 		"Backtest Summary",
 		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
-		fmt.Sprintf("  PnL          net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
+		fmt.Sprintf("  PnL          roi=%.0f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
+			result.NetPnL / result.StartingCapital * 100,
 			formatMoney(result.NetPnL),
 			formatMoney(result.RealizedPnL),
 			formatMoney(result.UnrealizedPnL),
@@ -385,7 +395,7 @@ func logEntrySamples(samples []backtest.EntrySample) {
 		parts = append(parts, fmt.Sprintf(
 			"%s@%s price=%.2f score=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f",
 			sample.Symbol,
-			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
 			sample.Price,
 			sample.Score,
 			sample.DistanceFromHighPct,
@@ -436,7 +446,7 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
 			item.reason,
 			sample.Symbol,
-			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
 			sample.Price,
 			sample.Score,
 			sample.DistanceFromHighPct,
@@ -475,8 +485,8 @@ func logClosedTradeSamples(trades []domain.ClosedTrade) {
 			formatMoney(trade.ExitPrice),
 			formatMoney(trade.PnL),
 			trade.ExitReason,
-			trade.OpenedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
-			trade.ClosedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			trade.OpenedAt.In(markethours.Location()).Format("2006-01-02 15:04"),
+			trade.ClosedAt.In(markethours.Location()).Format("2006-01-02 15:04"),
 		)
 	}
 }

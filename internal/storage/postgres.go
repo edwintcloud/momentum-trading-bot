@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 // Recorder persists trading events asynchronously into PostgreSQL.
@@ -25,12 +26,8 @@ func (r *Recorder) Ping(ctx context.Context) error {
 // LoadTodayClosedTrades returns all closed trades whose close time falls on the
 // current calendar day in the America/New_York timezone.
 func (r *Recorder) LoadTodayClosedTrades(ctx context.Context) ([]domain.ClosedTrade, error) {
-	nyLoc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		nyLoc = time.UTC
-	}
-	now := time.Now().In(nyLoc)
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, nyLoc)
+	now := time.Now().In(markethours.Location())
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, markethours.Location())
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT payload FROM closed_trades

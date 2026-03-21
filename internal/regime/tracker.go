@@ -82,8 +82,8 @@ func (t *Tracker) UpdateTick(tick domain.Tick) {
 
 	state.emaFast = updateEMA(state.emaFast, tick.Price, t.config.MarketRegimeEMAFastPeriod)
 	state.emaSlow = updateEMA(state.emaSlow, tick.Price, t.config.MarketRegimeEMASlowPeriod)
-	state.bars = append(state.bars, barPoint{timestamp: tick.Timestamp.UTC(), close: tick.Price})
-	cutoff := tick.Timestamp.UTC().Add(-2 * time.Hour)
+	state.bars = append(state.bars, barPoint{timestamp: tick.Timestamp, close: tick.Price})
+	cutoff := tick.Timestamp.Add(-2 * time.Hour)
 	trimmed := state.bars[:0]
 	for _, point := range state.bars {
 		if point.timestamp.Before(cutoff) {
@@ -93,7 +93,7 @@ func (t *Tracker) UpdateTick(tick domain.Tick) {
 	}
 	state.bars = trimmed
 
-	t.runtime.SetMarketRegime(t.snapshot(tick.Timestamp.UTC()))
+	t.runtime.SetMarketRegime(t.snapshot(tick.Timestamp))
 }
 
 func (t *Tracker) snapshot(at time.Time) domain.MarketRegimeSnapshot {

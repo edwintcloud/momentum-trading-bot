@@ -121,7 +121,7 @@ func (e *Engine) fill(ctx context.Context, order domain.OrderRequest, portfolioM
 					Playbook:      order.Playbook,
 					BrokerOrderID: current.ID,
 					BrokerStatus:  current.Status,
-					FilledAt:      time.Now().UTC(),
+					FilledAt:      time.Now(),
 			})
 			appliedQty = filledQty
 			e.runtime.RecordLog("info", "execution", fmt.Sprintf("%s %s filled %d/%d via Alpaca (%s)", order.Side, order.Symbol, appliedQty, order.Quantity, current.Status))

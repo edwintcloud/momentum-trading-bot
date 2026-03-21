@@ -40,9 +40,9 @@ func historicalCachePath(job historicalFetchJob, feed string) string {
 	hasher.Write([]byte("|"))
 	hasher.Write([]byte(strings.ToLower(strings.TrimSpace(feed))))
 	hasher.Write([]byte("|"))
-	hasher.Write([]byte(job.start.UTC().Format(time.RFC3339Nano)))
+	hasher.Write([]byte(job.start.Format(time.RFC3339Nano)))
 	hasher.Write([]byte("|"))
-	hasher.Write([]byte(job.end.UTC().Format(time.RFC3339Nano)))
+	hasher.Write([]byte(job.end.Format(time.RFC3339Nano)))
 	for _, symbol := range job.symbols {
 		hasher.Write([]byte("|"))
 		hasher.Write([]byte(strings.ToUpper(strings.TrimSpace(symbol))))
@@ -160,7 +160,7 @@ func (r *historicalJobCacheReader) Next() (backtest.InputBar, bool, error) {
 
 	r.remaining--
 	return backtest.InputBar{
-		Timestamp: time.Unix(r.startUnix+int64(offsetSeconds), 0).UTC(),
+		Timestamp: time.Unix(r.startUnix+int64(offsetSeconds), 0),
 		Symbol:    r.symbols[symbolIndex],
 		Open:      decodeHistoricalPrice(openPrice),
 		High:      decodeHistoricalPrice(highPrice),
@@ -250,11 +250,11 @@ func saveHistoricalJobCache(job historicalFetchJob, feed string, result historic
 		_ = gzipWriter.Close()
 		return err
 	}
-	if err := writeVarint(buffered, job.start.UTC().Unix()); err != nil {
+	if err := writeVarint(buffered, job.start.Unix()); err != nil {
 		_ = gzipWriter.Close()
 		return err
 	}
-	if err := writeVarint(buffered, job.end.UTC().Unix()); err != nil {
+	if err := writeVarint(buffered, job.end.Unix()); err != nil {
 		_ = gzipWriter.Close()
 		return err
 	}
@@ -277,17 +277,17 @@ func saveHistoricalJobCache(job historicalFetchJob, feed string, result historic
 	for index, symbol := range job.symbols {
 		symbolIndex[strings.ToUpper(strings.TrimSpace(symbol))] = uint64(index)
 	}
-	jobStartUnix := job.start.UTC().Unix()
+	jobStartUnix := job.start.Unix()
 	for _, item := range bars {
 		index, ok := symbolIndex[strings.ToUpper(strings.TrimSpace(item.Symbol))]
 		if !ok {
 			_ = gzipWriter.Close()
 			return fmt.Errorf("historical cache symbol %q missing from job symbol table", item.Symbol)
 		}
-		offsetSeconds := item.Timestamp.UTC().Unix() - jobStartUnix
+		offsetSeconds := item.Timestamp.Unix() - jobStartUnix
 		if offsetSeconds < 0 {
 			_ = gzipWriter.Close()
-			return fmt.Errorf("historical cache bar timestamp %s is before job start %s", item.Timestamp.UTC().Format(time.RFC3339), job.start.UTC().Format(time.RFC3339))
+			return fmt.Errorf("historical cache bar timestamp %s is before job start %s", item.Timestamp.Format(time.RFC3339), job.start.Format(time.RFC3339))
 		}
 		if err := writeUvarint(buffered, uint64(offsetSeconds)); err != nil {
 			_ = gzipWriter.Close()

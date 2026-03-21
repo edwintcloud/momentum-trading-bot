@@ -12,6 +12,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/optimizer"
 )
 
@@ -56,7 +57,7 @@ func runOptimize(args []string) error {
 		if err != nil {
 			return err
 		}
-		label := fmt.Sprintf("%s..%s", start.In(marketTimeLocation()).Format("2006-01-02"), end.In(marketTimeLocation()).Format("2006-01-02"))
+		label := fmt.Sprintf("%s..%s", start.In(markethours.Location()).Format("2006-01-02"), end.In(markethours.Location()).Format("2006-01-02"))
 		window := optimizer.WeeklyWindow{
 			Label: label,
 			Start: start,

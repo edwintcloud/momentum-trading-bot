@@ -275,7 +275,7 @@ func main() {
 					Positions:    portfolioManager.GetPositions(),
 					ClosedTrades: portfolioManager.GetClosedTrades(),
 					Logs:         runtimeState.Logs(),
-					UpdatedAt:    time.Now().UTC(),
+					UpdatedAt:    time.Now(),
 				})
 			}
 		}
@@ -408,7 +408,7 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 		if qtyErr != nil || avgErr != nil || currentErr != nil || quantity <= 0 {
 			continue
 		}
-		now := time.Now().UTC()
+		now := time.Now()
 		portfolioManager.SeedPosition(domain.Position{
 			Symbol:        brokerPosition.Symbol,
 			Side:          domain.NormalizeDirection(brokerPosition.Side),
@@ -458,7 +458,7 @@ func syncBrokerDashboardState(ctx context.Context, client *alpaca.Client, portfo
 	}
 
 	tradesCtx, tradesCancel := context.WithTimeout(ctx, 15*time.Second)
-	tradesToday, err := client.CountFillsForDay(tradesCtx, time.Now().UTC())
+	tradesToday, err := client.CountFillsForDay(tradesCtx, time.Now())
 	tradesCancel()
 	if err != nil {
 		runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker trade-count sync failed: %v", err))

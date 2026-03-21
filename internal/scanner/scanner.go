@@ -9,10 +9,9 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
-
-var marketLocation = mustLoadLocation("America/New_York")
 
 type symbolBar struct {
 	timestamp        time.Time
@@ -349,7 +348,7 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
+	dayKey := tick.Timestamp.In(markethours.Location()).Format("2006-01-02")
 	state := s.state[tick.Symbol]
 	if state == nil {
 		state = &symbolState{}
@@ -382,7 +381,7 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	}
 
 	state.bars = append(state.bars, symbolBar{
-		timestamp:        tick.Timestamp.UTC(),
+		timestamp:        tick.Timestamp,
 		open:             barOpen,
 		high:             barHigh,
 		low:              barLow,
@@ -391,7 +390,7 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 		cumulativeVolume: tick.Volume,
 		vwap:             vwap,
 	})
-	cutoff := tick.Timestamp.UTC().Add(-90 * time.Minute)
+	cutoff := tick.Timestamp.Add(-90 * time.Minute)
 	trimmed := state.bars[:0]
 	for _, bar := range state.bars {
 		if bar.timestamp.Before(cutoff) {
@@ -514,7 +513,7 @@ func (s *Scanner) updateVolumeLeadership(tick domain.Tick) (float64, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
+	dayKey := tick.Timestamp.In(markethours.Location()).Format("2006-01-02")
 	if s.leaderDay != dayKey {
 		s.leaderDay = dayKey
 		s.leaderMetrics = make(map[string]float64)
@@ -682,7 +681,7 @@ func percentChange(from, to float64) float64 {
 }
 
 func minutesSinceOpen(timestamp time.Time) float64 {
-	est := timestamp.In(marketLocation)
+	est := timestamp.In(markethours.Location())
 	minutes := est.Hour()*60 + est.Minute()
 	// Premarket: return minutes since 4:00 AM ET as a negative offset
 	// so time-based filters can distinguish premarket from regular session.
@@ -740,12 +739,4 @@ func scoreOrZero(value float64) float64 {
 		return 0
 	}
 	return value
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }

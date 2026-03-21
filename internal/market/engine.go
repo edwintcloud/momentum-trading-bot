@@ -11,12 +11,11 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwincloud/momentum-trading-bot/internal/volumeprofile"
 )
-
-var nyLocation = mustLoadLocation("America/New_York")
 
 type symbolState struct {
 	previousClose float64
@@ -149,7 +148,7 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 		return domain.Tick{}
 	}
 
-	minuteKey := message.Timestamp.UTC().Unix() / 60
+	minuteKey := message.Timestamp.Unix() / 60
 	previousMinuteVolume := state.barVolumes[minuteKey]
 	deltaVolume := message.Volume - previousMinuteVolume
 	if deltaVolume < 0 {
@@ -205,7 +204,7 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 		VolumeSpike:     volumeSpike,
 		Catalyst:        state.catalyst,
 		CatalystURL:     state.catalystURL,
-		Timestamp:       message.Timestamp.UTC(),
+		Timestamp:       message.Timestamp,
 	}
 }
 
@@ -213,7 +212,7 @@ func (e *Engine) scheduleHydration(symbol string, price float64, timestamp time.
 	if price < e.config.MinPrice {
 		return
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	e.mu.Lock()
 	state := e.state[symbol]
 	if state == nil || state.hydrated || state.hydrating || (!state.nextHydration.IsZero() && now.Before(state.nextHydration)) {
@@ -372,7 +371,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 	byDay := make(map[string][]string)
 	dayTimestamp := make(map[string]time.Time)
 	for _, request := range batch {
-		dayKey := request.timestamp.In(nyLocation).Format("2006-01-02")
+		dayKey := request.timestamp.In(markethours.Location()).Format("2006-01-02")
 		byDay[dayKey] = append(byDay[dayKey], request.symbol)
 		dayTimestamp[dayKey] = request.timestamp
 	}
@@ -389,7 +388,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 		}
 	}
 
-	now := time.Now().UTC()
+	now := time.Now()
 	for _, symbol := range symbols {
 		request := requestBySymbol[symbol]
 		snapshot, ok := snapshots[symbol]
@@ -440,7 +439,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 }
 
 func (e *Engine) deferHydrationBatch(symbols []string, delay time.Duration) {
-	next := time.Now().UTC().Add(delay)
+	next := time.Now().Add(delay)
 	for _, symbol := range symbols {
 		e.finishHydration(symbol, func(state *symbolState) {
 			state.hydrating = false
@@ -555,21 +554,13 @@ func isVolumeSpike(state *symbolState, deltaVolume int64, relativeVolume float64
 }
 
 func isPremarket(timestamp time.Time) bool {
-	est := timestamp.In(nyLocation)
+	est := timestamp.In(markethours.Location())
 	minutes := est.Hour()*60 + est.Minute()
 	return minutes >= 4*60 && minutes < 9*60+30
 }
 
 func round2(value float64) float64 {
 	return math.Round(value*100) / 100
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }
 
 func maxInt(a, b int) int {

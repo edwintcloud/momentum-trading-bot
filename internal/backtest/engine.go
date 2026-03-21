@@ -9,6 +9,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/regime"
 	"github.com/edwincloud/momentum-trading-bot/internal/risk"
@@ -18,8 +19,6 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/volumeprofile"
 )
 
-var marketTZ = mustLoadLocation("America/New_York")
-
 // RunConfig controls a historical simulation.
 type RunConfig struct {
 	DataPath string
@@ -27,6 +26,7 @@ type RunConfig struct {
 	Iterator InputBarIterator
 	Start    time.Time
 	End      time.Time
+	Recorder domain.EventRecorder
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -159,6 +159,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	defer iter.Close()
 
 	runtimeState := runtime.NewState()
+	if runCfg.Recorder != nil {
+		runtimeState.SetRecorder(runCfg.Recorder)
+	}
 	diagnostics := Diagnostics{
 		ScannerRejects:     make(map[string]int),
 		EntryRejects:       make(map[string]int),
@@ -199,14 +202,14 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			break
 		}
 		currentBar := normalizeInputBar(item)
-		if !withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
-			continue
-		}
 		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
 		tick := normalizeBar(currentBar, normalizerState)
 		if regimeTracker != nil {
 			regimeTracker.UpdateTick(tick)
+		}
+		if !withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
+			continue
 		}
 
 		if pending, exists := pendingEntries[currentBar.Symbol]; exists {
@@ -246,7 +249,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			if order, approved, riskReason := riskEngine.Evaluate(exitSignal); approved {
 				diagnostics.ExitRiskApproved++
 				if analytics, exists := openAnalytics[order.Symbol]; exists {
-					analytics.openedAt = analytics.openedAt.UTC()
+					analytics.openedAt = analytics.openedAt
 					closedAnalytics = append(closedAnalytics, tradeAnalytics{
 						entryPrice:   analytics.entryPrice,
 						riskPerShare: analytics.riskPerShare,
@@ -270,7 +273,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		}
 
 		candidate, ok, scanReason := scan.EvaluateTickDetailed(tick)
+		
 		if ok {
+			runtimeState.RecordLog("info", "scanner", "candidate "+candidate.Symbol+" at "+candidate.Timestamp.Format(time.RFC3339))
 			diagnostics.EntryCandidates++
 			decision := strat.EvaluateCandidateDecision(candidate)
 			if decision.Emit {
@@ -431,7 +436,7 @@ func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.
 		MarketRegime: order.MarketRegime,
 		RegimeConfidence: order.RegimeConfidence,
 		Playbook:     order.Playbook,
-		FilledAt:     at.UTC(),
+		FilledAt:     at,
 	})
 }
 
@@ -440,7 +445,7 @@ func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionR
 		return domain.ExecutionReport{}, pending, false, false
 	}
 
-	maxAllowedShares := int64(float64(current.Volume) * 0.10)
+	maxAllowedShares := int64(float64(current.Volume) * 0.8)
 	if pending.order.Quantity > maxAllowedShares {
 		pending.barsRemaining--
 		return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0
@@ -485,7 +490,7 @@ func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionR
 			MarketRegime: pending.order.MarketRegime,
 			RegimeConfidence: pending.order.RegimeConfidence,
 			Playbook:     pending.order.Playbook,
-			FilledAt:     current.Timestamp.UTC(),
+			FilledAt:     current.Timestamp,
 		}, pending, true, true
 	}
 	pending.barsRemaining--
@@ -561,7 +566,7 @@ func isVolumeSpike(recent []int64, latest int64, relativeVolume float64) bool {
 }
 
 func isPremarket(timestamp time.Time) bool {
-	est := timestamp.In(marketTZ)
+	est := timestamp.In(markethours.Location())
 	minutes := est.Hour()*60 + est.Minute()
 	return minutes >= 4*60 && minutes < 9*60+30
 }
@@ -603,14 +608,6 @@ func withinWindow(timestamp, start, end time.Time) bool {
 		return false
 	}
 	return true
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }
 
 func incrementReason(counts map[string]int, reason string) {
@@ -656,7 +653,7 @@ func rememberEntryRejectSample(diag *Diagnostics, candidate domain.Candidate, de
 func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDecision) EntrySample {
 	return EntrySample{
 		Symbol:                 candidate.Symbol,
-		Timestamp:              candidate.Timestamp.UTC(),
+		Timestamp:              candidate.Timestamp,
 		Reason:                 decision.Reason,
 		Price:                  round2(candidate.Price),
 		GapPercent:             round2(candidate.GapPercent),
@@ -685,7 +682,7 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 		states[item.Symbol] = state
 	}
 
-	day := item.Timestamp.In(marketTZ).Format("2006-01-02")
+	day := item.Timestamp.In(markethours.Location()).Format("2006-01-02")
 	if state.day != day {
 		if state.day != "" && state.totalVolume > 0 {
 			state.prevDayVolume = state.totalVolume
@@ -741,6 +738,6 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 		VolumeSpike:     volumeSpike,
 		Catalyst:        item.Catalyst,
 		CatalystURL:     item.CatalystURL,
-		Timestamp:       item.Timestamp.UTC(),
+		Timestamp:       item.Timestamp,
 	}
 }

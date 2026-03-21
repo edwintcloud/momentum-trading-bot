@@ -144,7 +144,7 @@ func parseInputBar(columns map[string]int, row []string) (InputBar, error) {
 	}
 
 	return normalizeInputBar(InputBar{
-		Timestamp:   timestamp.UTC(),
+		Timestamp:   timestamp,
 		Symbol:      cell(columns, row, "symbol"),
 		Open:        open,
 		High:        high,
@@ -158,7 +158,6 @@ func parseInputBar(columns map[string]int, row []string) (InputBar, error) {
 }
 
 func normalizeInputBar(item InputBar) InputBar {
-	item.Timestamp = item.Timestamp.UTC()
 	item.Symbol = strings.ToUpper(strings.TrimSpace(item.Symbol))
 	return item
 }

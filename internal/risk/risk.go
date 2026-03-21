@@ -97,7 +97,7 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	signal = inferSignalIntent(signal, position, exists)
 	orderTime := signal.Timestamp
 	if orderTime.IsZero() {
-		orderTime = time.Now().UTC()
+		orderTime = time.Now()
 	}
 	if !markethours.IsTradableSessionAt(orderTime) {
 		return domain.OrderRequest{}, false, "outside-session"

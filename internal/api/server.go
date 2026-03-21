@@ -93,7 +93,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now().UTC()})
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now()})
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
@@ -270,7 +270,7 @@ func (s *Server) snapshot() domain.DashboardSnapshot {
 		Positions:    s.portfolio.GetPositions(),
 		ClosedTrades: s.portfolio.GetClosedTrades(),
 		Logs:         s.runtime.Logs(),
-		UpdatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now(),
 	}
 }
 
@@ -337,7 +337,7 @@ func (s *Server) hasValidControlPlaneSession(r *http.Request) bool {
 	}
 
 	expiresAt, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || time.Now().UTC().Unix() > expiresAt {
+	if err != nil || time.Now().Unix() > expiresAt {
 		return false
 	}
 
@@ -346,7 +346,7 @@ func (s *Server) hasValidControlPlaneSession(r *http.Request) bool {
 }
 
 func (s *Server) setControlPlaneSession(w http.ResponseWriter, r *http.Request) {
-	expiresAt := time.Now().UTC().Add(controlPlaneSessionTTL)
+	expiresAt := time.Now().Add(controlPlaneSessionTTL)
 	payload := strconv.FormatInt(expiresAt.Unix(), 10)
 	http.SetCookie(w, &http.Cookie{
 		Name:     controlPlaneSessionCookieName,

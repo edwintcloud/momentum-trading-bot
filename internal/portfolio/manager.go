@@ -9,10 +9,9 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
-
-var tradingDayLocation = mustLoadLocation("America/New_York")
 
 // Manager tracks open positions, PnL, and trade history.
 type Manager struct {
@@ -172,8 +171,8 @@ func (m *Manager) SeedClosedTrades(trades []domain.ClosedTrade) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UTC()
-	day := now.In(tradingDayLocation).Format("2006-01-02")
+	now := time.Now()
+	day := now.In(markethours.Location()).Format("2006-01-02")
 
 	// trades are ordered newest-first from the DB query
 	m.closedTrades = make([]domain.ClosedTrade, len(trades))
@@ -201,7 +200,7 @@ func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 		m.recorder.RecordExecution(report)
 	}
 
-	now := report.FilledAt.UTC()
+	now := report.FilledAt
 	m.rollTradingDayLocked(now)
 	position, exists := m.positions[report.Symbol]
 	report = inferExecutionIntent(report, position, exists)
@@ -409,14 +408,14 @@ func (m *Manager) findMergeableClosedTradeIndex(report domain.ExecutionReport, p
 
 // MarkPrice updates the latest price for an open position.
 func (m *Manager) MarkPrice(symbol string, price float64) {
-	m.MarkPriceAt(symbol, price, time.Now().UTC())
+	m.MarkPriceAt(symbol, price, time.Now())
 }
 
 // MarkPriceAt updates the latest price for an open position using the provided timestamp.
 func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.rollTradingDayLocked(at.UTC())
+	m.rollTradingDayLocked(at)
 
 	position, exists := m.positions[symbol]
 	if !exists {
@@ -426,7 +425,7 @@ func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 	position = updatePositionExtrema(position, price)
 	position.MarketValue = float64(position.Quantity) * price
 	position.UnrealizedPnL = unrealizedPnL(position, price)
-	position.UpdatedAt = at.UTC()
+	position.UpdatedAt = at
 	m.positions[symbol] = position
 }
 
@@ -478,7 +477,7 @@ func (m *Manager) syncPositionQuantityLocked(symbol string, quantity int64) {
 	position.Quantity = quantity
 	position.MarketValue = float64(position.Quantity) * position.LastPrice
 	position.UnrealizedPnL = unrealizedPnL(position, position.LastPrice)
-	position.UpdatedAt = time.Now().UTC()
+	position.UpdatedAt = time.Now()
 	m.positions[symbol] = position
 	m.runtime.RecordLog("warn", "portfolio", fmt.Sprintf("reconciled %s quantity from %d to %d based on broker position", symbol, previous, quantity))
 }
@@ -651,7 +650,7 @@ func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 			Price:        position.LastPrice,
 			Quantity:     position.Quantity,
 			Reason:       reason,
-			Timestamp:    time.Now().UTC(),
+			Timestamp:    time.Now(),
 		})
 	}
 	sort.Slice(orders, func(i, j int) bool {
@@ -791,7 +790,7 @@ func roundRMultiple(pnl, riskPerShare float64, quantity int64) float64 {
 }
 
 func (m *Manager) rollTradingDayLocked(now time.Time) {
-	day := now.In(tradingDayLocation).Format("2006-01-02")
+	day := now.In(markethours.Location()).Format("2006-01-02")
 	if m.currentTradeDay == "" {
 		m.currentTradeDay = day
 		return
@@ -807,12 +806,4 @@ func (m *Manager) rollTradingDayLocked(now time.Time) {
 	if m.brokerEquity == 0 {
 		m.dayPnL = 0
 	}
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }

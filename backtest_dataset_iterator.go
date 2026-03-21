@@ -12,6 +12,7 @@ import (
 
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 type historicalDataset struct {
@@ -249,7 +250,7 @@ func groupHistoricalJobsByDay(jobs []historicalFetchJob) [][]historicalFetchJob 
 	current := make([]historicalFetchJob, 0)
 	currentDay := ""
 	for _, job := range jobs {
-		dayKey := job.start.In(marketTimeLocation()).Format("2006-01-02")
+		dayKey := job.start.In(markethours.Location()).Format("2006-01-02")
 		if dayKey != currentDay {
 			if len(current) > 0 {
 				grouped = append(grouped, current)
