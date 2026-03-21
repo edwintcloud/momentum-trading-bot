@@ -12,6 +12,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
+	"github.com/edwincloud/momentum-trading-bot/internal/floatcache"
 	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/optimizer"
 )
@@ -85,6 +86,7 @@ func runOptimize(args []string) error {
 	}
 
 	cfg := config.NormalizeStrategyProfile(config.DefaultTradingConfig())
+	fc := floatcache.NewCache()
 	var loadWeek func(context.Context, optimizer.WeeklyWindow) ([]backtest.InputBar, error)
 	if *dataPath != "" {
 		loadWeek = func(_ context.Context, window optimizer.WeeklyWindow) ([]backtest.InputBar, error) {
@@ -131,6 +133,9 @@ func runOptimize(args []string) error {
 			return err
 		}
 		log.Printf("Optimizer historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
+		floatCtx, floatCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		fc.EnsureFresh(floatCtx, symbols)
+		floatCancel()
 		loadWeek = func(_ context.Context, window optimizer.WeeklyWindow) ([]backtest.InputBar, error) {
 			return loadHistoricalBarsForOptimizerWeek(dataset, window)
 		}
@@ -144,6 +149,7 @@ func runOptimize(args []string) error {
 	report, profile, err := optimizer.Run(context.Background(), optimizer.Params{
 		BaseConfig:      cfg,
 		LoadWeek:        loadWeek,
+		FloatLookup:     fc.Get,
 		AsOf:            asOf,
 		ArtifactDir:     *artifactDir,
 		SearchWeeks:     searchWeeks,

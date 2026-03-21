@@ -18,6 +18,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 	"github.com/edwincloud/momentum-trading-bot/internal/execution"
+	"github.com/edwincloud/momentum-trading-bot/internal/floatcache"
 	"github.com/edwincloud/momentum-trading-bot/internal/market"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/regime"
@@ -155,7 +156,8 @@ func main() {
 	operatorOrders := make(chan domain.OrderRequest, 64)
 
 	// Core components
-	marketEngine := market.NewEngine(alpacaClient, appConfig.Trading, portfolioManager, runtimeState)
+	floatCache := floatcache.NewCache()
+	marketEngine := market.NewEngine(alpacaClient, appConfig.Trading, portfolioManager, runtimeState, floatCache)
 	var regimeTracker *regime.Tracker
 	if appConfig.Trading.EnableMarketRegime {
 		regimeTracker = regime.NewTracker(appConfig.Trading, runtimeState)

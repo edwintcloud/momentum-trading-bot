@@ -21,12 +21,13 @@ import (
 
 // RunConfig controls a historical simulation.
 type RunConfig struct {
-	DataPath string
-	Bars     []InputBar
-	Iterator InputBarIterator
-	Start    time.Time
-	End      time.Time
-	Recorder domain.EventRecorder
+	DataPath    string
+	Bars        []InputBar
+	Iterator    InputBarIterator
+	Start       time.Time
+	End         time.Time
+	Recorder    domain.EventRecorder
+	FloatLookup func(string) float64
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -205,6 +206,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
 		tick := normalizeBar(currentBar, normalizerState)
+		if runCfg.FloatLookup != nil {
+			tick.Float = runCfg.FloatLookup(tick.Symbol)
+		}
 		if regimeTracker != nil {
 			regimeTracker.UpdateTick(tick)
 		}

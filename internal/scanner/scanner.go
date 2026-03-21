@@ -199,6 +199,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		EMAFast:               round2(scoreOrZero(metrics.emaFast)),
 		EMASlow:               round2(scoreOrZero(metrics.emaSlow)),
 		SetupType:             metrics.setupType,
+		Float:                 tick.Float,
 		Score:                 round2(scoreOrZero(score)),
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,

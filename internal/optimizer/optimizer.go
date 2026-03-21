@@ -154,6 +154,7 @@ type Params struct {
 	SearchWeeks     []WeeklyWindow
 	ValidationWeeks []WeeklyWindow
 	HoldoutWeeks    []WeeklyWindow
+	FloatLookup     func(string) float64
 }
 
 type weeklyBarSlice struct {
@@ -537,7 +538,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	if err := updateProgress("coarse-search", 0, len(coarseSeeds)*len(searchWeeks), "evaluating coarse strategy candidates"); err != nil {
 		return OptimizationReport{}, nil, err
 	}
-	searchShortlist, searchCandidates, err := evaluateShortlist(ctx, coarseSeeds, searchWeeks, loadWeek, 25, func(candidate *OptimizerCandidate, summary PeriodSummary) {
+	searchShortlist, searchCandidates, err := evaluateShortlist(ctx, coarseSeeds, searchWeeks, loadWeek, params.FloatLookup, 25, func(candidate *OptimizerCandidate, summary PeriodSummary) {
 		candidate.SearchSummary = summary
 	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
 		report.Candidates = candidates
@@ -555,7 +556,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	if err := updateProgress("validation-shortlist", 0, len(searchShortlist)*len(validationWeeks), "ranking coarse shortlist on validation weeks"); err != nil {
 		return OptimizationReport{}, nil, err
 	}
-	validationAnchors, validationCandidates, err := evaluateShortlist(ctx, searchShortlist, validationWeeks, loadWeek, 10, func(candidate *OptimizerCandidate, summary PeriodSummary) {
+	validationAnchors, validationCandidates, err := evaluateShortlist(ctx, searchShortlist, validationWeeks, loadWeek, params.FloatLookup, 10, func(candidate *OptimizerCandidate, summary PeriodSummary) {
 		candidate.ValidationSummary = summary
 	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
 		report.Candidates = candidates
@@ -601,7 +602,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 	if err := updateProgress("refinement", 0, len(refinedSeeds)*len(validationWeeks), "evaluating refined candidates on validation weeks"); err != nil {
 		return OptimizationReport{}, nil, err
 	}
-	refinedCandidates, err := evaluateAll(ctx, refinedSeeds, validationWeeks, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
+	refinedCandidates, err := evaluateAll(ctx, refinedSeeds, validationWeeks, loadWeek, params.FloatLookup, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
 		candidate.ValidationSummary = summary
 		candidate.ValidationWeeks = weeks
 	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
@@ -647,7 +648,7 @@ func Run(ctx context.Context, params Params) (OptimizationReport, *config.Tradin
 		})
 		finalistsByID[finalist.CandidateID] = finalist
 	}
-	holdoutCandidates, err := evaluateAll(ctx, finalistSeeds, holdoutWeeks, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
+	holdoutCandidates, err := evaluateAll(ctx, finalistSeeds, holdoutWeeks, loadWeek, params.FloatLookup, func(candidate *OptimizerCandidate, summary PeriodSummary, weeks []WeeklyPerformance) {
 		candidate.HoldoutSummary = summary
 		candidate.HoldoutWeeks = weeks
 	}, func(completed, total int, message string, candidates []OptimizerCandidate) error {
@@ -1009,11 +1010,12 @@ func evaluateShortlist(
 	seeds []candidateSeed,
 	windows []WeeklyWindow,
 	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
+	floatLookup func(string) float64,
 	limit int,
 	assign func(*OptimizerCandidate, PeriodSummary),
 	onProgress func(completed, total int, message string, candidates []OptimizerCandidate) error,
 ) ([]candidateSeed, []OptimizerCandidate, error) {
-	candidates, err := evaluateAll(ctx, seeds, windows, loadWeek, func(candidate *OptimizerCandidate, summary PeriodSummary, _ []WeeklyPerformance) {
+	candidates, err := evaluateAll(ctx, seeds, windows, loadWeek, floatLookup, func(candidate *OptimizerCandidate, summary PeriodSummary, _ []WeeklyPerformance) {
 		assign(candidate, summary)
 	}, onProgress)
 	if err != nil {
@@ -1041,6 +1043,7 @@ func evaluateAll(
 	seeds []candidateSeed,
 	windows []WeeklyWindow,
 	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
+	floatLookup func(string) float64,
 	assign func(*OptimizerCandidate, PeriodSummary, []WeeklyPerformance),
 	onProgress func(completed, total int, message string, candidates []OptimizerCandidate) error,
 ) ([]OptimizerCandidate, error) {
@@ -1072,7 +1075,7 @@ func evaluateAll(
 			}
 		}
 		for candidateIndex, seed := range seeds {
-			performance, err := evaluateSingleWeek(ctx, seed.config, window, bars)
+			performance, err := evaluateSingleWeek(ctx, seed.config, window, bars, floatLookup)
 			if err != nil {
 				return nil, err
 			}
@@ -1105,6 +1108,7 @@ func evaluateWeeks(
 	cfg config.TradingConfig,
 	windows []WeeklyWindow,
 	loadWeek func(context.Context, WeeklyWindow) ([]backtest.InputBar, error),
+	floatLookup func(string) float64,
 ) (PeriodSummary, []WeeklyPerformance, error) {
 	out := make([]WeeklyPerformance, 0, len(windows))
 	for _, window := range windows {
@@ -1117,7 +1121,7 @@ func evaluateWeeks(
 		if err != nil {
 			return PeriodSummary{}, nil, fmt.Errorf("load week %s: %w", window.Label, err)
 		}
-		performance, err := evaluateSingleWeek(ctx, cfg, window, bars)
+		performance, err := evaluateSingleWeek(ctx, cfg, window, bars, floatLookup)
 		if err != nil {
 			return PeriodSummary{}, nil, err
 		}
@@ -1126,7 +1130,7 @@ func evaluateWeeks(
 	return summarizeWeeks(out), out, nil
 }
 
-func evaluateSingleWeek(ctx context.Context, cfg config.TradingConfig, window WeeklyWindow, bars []backtest.InputBar) (WeeklyPerformance, error) {
+func evaluateSingleWeek(ctx context.Context, cfg config.TradingConfig, window WeeklyWindow, bars []backtest.InputBar, floatLookup func(string) float64) (WeeklyPerformance, error) {
 	if len(bars) == 0 {
 		return WeeklyPerformance{
 			Label:        window.Label,
@@ -1136,7 +1140,8 @@ func evaluateSingleWeek(ctx context.Context, cfg config.TradingConfig, window We
 		}, nil
 	}
 	result, err := backtest.Run(ctx, cfg, backtest.RunConfig{
-		Iterator: &staticInputBarIterator{bars: bars},
+		Iterator:    &staticInputBarIterator{bars: bars},
+		FloatLookup: floatLookup,
 	})
 	if err != nil {
 		return WeeklyPerformance{}, fmt.Errorf("evaluate week %s: %w", window.Label, err)

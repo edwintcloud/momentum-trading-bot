@@ -11,6 +11,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/floatcache"
 	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
@@ -28,6 +29,7 @@ type symbolState struct {
 	barVolumes    map[int64]int64
 	catalyst      string
 	catalystURL   string
+	stockFloat    float64
 	hydrated      bool
 	hydrating     bool
 	nextHydration time.Time
@@ -47,6 +49,7 @@ type Engine struct {
 	config            config.TradingConfig
 	portfolio         *portfolio.Manager
 	runtime           *runtime.State
+	floatCache        *floatcache.Cache
 	eligibleSymbols   map[string]struct{}
 	state             map[string]*symbolState
 	seenBars          map[string]bool
@@ -58,12 +61,13 @@ type Engine struct {
 }
 
 // NewEngine creates a live market-data engine.
-func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Engine {
+func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State, fc *floatcache.Cache) *Engine {
 	return &Engine{
 		client:            client,
 		config:            cfg,
 		portfolio:         portfolioManager,
 		runtime:           runtimeState,
+		floatCache:        fc,
 		eligibleSymbols:   make(map[string]struct{}),
 		state:             make(map[string]*symbolState),
 		seenBars:          make(map[string]bool),
@@ -202,6 +206,7 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 		GapPercent:      round2(gapPercent),
 		PreMarketVolume: state.preMarketVol,
 		VolumeSpike:     volumeSpike,
+		Float:           state.stockFloat,
 		Catalyst:        state.catalyst,
 		CatalystURL:     state.catalystURL,
 		Timestamp:       message.Timestamp,
@@ -432,6 +437,19 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 						state.catalyst = catalyst.Headline
 						state.catalystURL = catalyst.URL
 					}
+				})
+			}
+		}
+	}
+
+	// Attach float data from cache (fetches on-demand for unknown symbols)
+	if e.floatCache != nil {
+		e.floatCache.EnsureFresh(hydrateCtx, symbols)
+		for _, symbol := range symbols {
+			shares := e.floatCache.Get(symbol)
+			if shares > 0 {
+				e.finishHydration(symbol, func(state *symbolState) {
+					state.stockFloat = shares
 				})
 			}
 		}
