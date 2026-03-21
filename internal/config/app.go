@@ -45,11 +45,22 @@ func LoadBacktestAlpacaConfig(symbolOverrides []string) (AlpacaConfig, error) {
 }
 
 // Load reads configuration from the process environment and .env when present.
+// If TRADING_CONFIG_PATH points to a JSON file, its values override the defaults
+// before broker-based tuning is applied.
 func Load() (AppConfig, error) {
 	_ = godotenv.Load()
 
 	trading := DefaultTradingConfig()
 	trading.EntryModelPath = getEnvString("ENTRY_MODEL_PATH", trading.EntryModelPath)
+
+	if cfgPath := strings.TrimSpace(os.Getenv("TRADING_CONFIG_PATH")); cfgPath != "" {
+		var err error
+		trading, err = LoadTradingConfigFromFile(cfgPath, trading)
+		if err != nil {
+			return AppConfig{}, fmt.Errorf("loading trading config: %w", err)
+		}
+	}
+
 	alpacaCfg, err := loadAlpacaConfig(nil)
 	if err != nil {
 		return AppConfig{}, err
