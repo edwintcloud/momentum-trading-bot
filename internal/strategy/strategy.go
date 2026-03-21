@@ -384,6 +384,14 @@ func (s *Strategy) evaluateLongExit(position domain.Position, tick domain.Tick, 
 		barLow <= failedBreakoutPrice(tradeCfg, position):
 		reason = "failed-breakout"
 		tick.Price = failedBreakoutPrice(tradeCfg, position)
+	// Low-float stagnation: tighter window because thin liquidity dries up fast.
+	case sameDayHold &&
+		tick.Float > 0 && tick.Float < 3_000_000 &&
+		tradeCfg.StagnationWindowMin > 1 &&
+		holdingTime >= time.Duration(tradeCfg.StagnationWindowMin-1)*time.Minute &&
+		peakReturn < tradeCfg.StagnationMinPeakPct:
+		reason = "low-float-stagnation"
+		tick.Price = barClose
 	case sameDayHold &&
 		holdingTime >= time.Duration(tradeCfg.StagnationWindowMin)*time.Minute &&
 		peakReturn < tradeCfg.StagnationMinPeakPct:
@@ -488,6 +496,14 @@ func (s *Strategy) evaluateShortExit(position domain.Position, tick domain.Tick,
 		barHigh >= failedBreakoutPrice(tradeCfg, position):
 		reason = "failed-breakdown"
 		tick.Price = failedBreakoutPrice(tradeCfg, position)
+	// Low-float stagnation for shorts: thin supply can reverse violently.
+	case sameDayHold &&
+		tick.Float > 0 && tick.Float < 3_000_000 &&
+		tradeCfg.StagnationWindowMin > 1 &&
+		holdingTime >= time.Duration(tradeCfg.StagnationWindowMin-1)*time.Minute &&
+		peakReturn < tradeCfg.StagnationMinPeakPct:
+		reason = "low-float-stagnation"
+		tick.Price = barClose
 	case sameDayHold &&
 		holdingTime >= time.Duration(tradeCfg.StagnationWindowMin)*time.Minute &&
 		peakReturn < tradeCfg.StagnationMinPeakPct:
@@ -742,6 +758,15 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 			return false, "thin-session"
 		}
 	}
+	// Float-volume ratio: require meaningful turnover relative to available shares.
+	// A stock with $10M dollar volume but 50M float has trivial rotation;
+	// one with $10M and 500K float is seeing 20× turnover.
+	if candidate.Float > 0 && candidate.Volume > 0 && !s.isPremarket(candidate.Timestamp) {
+		floatRotation := float64(candidate.Volume) / candidate.Float
+		if floatRotation < 0.10 {
+			return false, "low-float-rotation"
+		}
+	}
 	if s.leaderRank(candidate) > maxLeaderRank {
 		return false, "secondary-volume"
 	}
@@ -890,6 +915,14 @@ func (s *Strategy) passesShortEntryQuality(candidate domain.Candidate) (bool, st
 		}
 		if !s.isPremarket(candidate.Timestamp) && dollarVolume < 10_000_000 {
 			return false, "thin-session"
+		}
+	}
+	// Shorts also require meaningful float rotation — confirms the stock
+	// has been actively traded relative to available supply.
+	if candidate.Float > 0 && candidate.Volume > 0 && !s.isPremarket(candidate.Timestamp) {
+		floatRotation := float64(candidate.Volume) / candidate.Float
+		if floatRotation < 0.10 {
+			return false, "low-float-rotation"
 		}
 	}
 	if s.leaderRank(candidate) > 3 {
