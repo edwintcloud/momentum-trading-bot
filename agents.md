@@ -1,6 +1,6 @@
 # Agent Notes
 
-Last reviewed: 2026-03-20.
+Last reviewed: 2026-03-21.
 
 ## Repo Summary
 
@@ -33,6 +33,8 @@ Last reviewed: 2026-03-20.
 - `internal/alpaca/client.go`: all Alpaca REST/websocket integration
 - `internal/backtest/engine.go`: historical replay and paper-fill simulation
 - `internal/storage/postgres.go`: async event recorder and schema bootstrap
+- `internal/storage/filesystem.go`: JSONL file recorder for backtest logs (candidates, trades, indicators)
+- `internal/markethours/hours.go`: canonical `America/New_York` location and tradable-session check
 - `web/src/App.jsx`: dashboard UI and control buttons
 
 ## Operational Notes
@@ -53,8 +55,12 @@ Last reviewed: 2026-03-20.
 
 - The backtest path is wired through `go run . backtest ...`.
 - Backtests tune config from Alpaca account/capability data when using Alpaca as the data source.
-- The live Alpaca active universe is no longer the only backtest universe source.
-- Backtests now merge Alpaca's current active symbols with any symbols already present in the cached historical files for the requested window, so cached delisted names can still be replayed accurately.
+- `resolveBacktestSymbols` calls `ListEquitySymbols(ctx, true)` which fetches **all** symbols (active + inactive) so that delisted tickers present in cached historical data are still replayed.
+- Backtests fetch one extra day before the start date (`prevDayStart = start - 1 day`) so the engine can compute previous-day volume and gap percentages correctly.
+- Pre-window bars are fed through the normalizer and regime tracker but skipped for scanning/trading (`withinWindow` check happens after `normalizeBar`).
+- Historical cache version is `v3`; bars are stored with original Alpaca timestamps (no `.UTC()` coercion).
+- Backtest fill model uses 80% volume participation cap per bar (changed from 10%), 5% spread penalty, and 2-bar fill timeout.
+- Backtests now write JSONL event logs to `./logs/` via `FilesystemRecorder` when `BACKTEST_LOG_DIR` is set or defaulting to `./logs`.
 - There is no separate training or model-fitting phase in the current backtest path; it replays only the requested time window.
 - The current repo does not contain a separate entry-model implementation despite older documentation references that existed before this review.
 
@@ -83,19 +89,55 @@ Last reviewed: 2026-03-20.
 
 - `StatusSnapshot.TradesToday` is broker-backed and refreshed from Alpaca fill activity instead of using the local entry/fill counters.
 
+## Fixed On 2026-03-21
+
+### Timezone consistency
+
+- Removed all per-package `mustLoadLocation` / `easternLocation` vars; everything now uses `markethours.Location()`.
+- Stopped coercing timestamps to `.UTC()` throughout the codebase — bars, fills, entry samples, and normalizer state all keep Alpaca's original timezone.
+- `parseCLIBacktestTime` no longer converts parsed dates to UTC, preserving ET-aware windows.
+- `endOfMarketDay` now returns 20:00 ET instead of 23:59 UTC.
+- `inferBacktestWindows` uses `time.Now().In(markethours.Location())` instead of `time.Now().UTC()`.
+
+### Backtest universe fix
+
+- `ListActiveEquitySymbols` renamed to `ListEquitySymbols(ctx, includeInactive bool)` — backtests pass `true` to include delisted/inactive symbols so cached historical data is replayed.
+- Backtest fetches one extra calendar day before start so prev-day volume and gap calculations have data.
+
+### Backtest fill realism
+
+- Volume participation cap raised from 10% to 80% per bar.
+- `LimitOrderSlippageDollars` changed from 0.02 to 0.05 in default profile.
+
+### Profile tuning changes
+
+- `MinRelativeVolume`: 4.4 → 2
+- `BreakEvenHoldMinutes`: 4 → 15
+- `TightTrailTriggerR`: 1.5 → 2
+
+### New: Filesystem event recorder
+
+- `internal/storage/filesystem.go` writes JSONL logs for backtest events (candidates, trades, indicators).
+- Backtest engine accepts optional `Recorder` in `RunConfig`.
+
+### Cleanup
+
+- All test files removed (tests were stale after architecture changes).
+- Removed unused `fetchBarsFromAlpaca` and `fetchHistoricalJob` wrappers from `backtest_fetch.go`.
+- Historical worker count raised to 10 for rate limits ≥ 600.
+- Rate limiter minimum interval lowered from 100ms to 10ms.
+
 ## Test Status
 
-- Ran `env GOCACHE=/Users/ecloud/dev/personal/momentum-trading-bot/.cache/go-build go test ./...`
-- Result: passing
-- Packages without tests: `internal/execution`, `internal/market`, `internal/storage`, `internal/domain`, `internal/volumeprofile`
-- Frontend build was not rerun during this review because `web/node_modules` is not present in the workspace
+- All test files were removed in the cleanup commit; there are currently no Go tests in the repo.
+- Frontend build was not rerun during this review because `web/node_modules` is not present in the workspace.
 
 ## Recommended Next Fixes
 
 1. Decide whether to keep HTTP Basic auth long-term or move to a session/token scheme with explicit logout and finer-grained roles.
 2. If Alpaca ever exposes trustworthy entry timestamps for positions in this flow, replace the `BrokerSeeded` timing fallback with the real original open time.
-3. Add integration coverage for authenticated dashboard fetches and browser behavior if the frontend evolves further.
-4. Add tests for packages that still have little or no coverage, especially `internal/api`, `internal/execution`, `internal/market`, and `internal/storage`.
+3. Re-add tests — the test suite was removed during cleanup; new tests should be written against the current architecture.
+4. Add integration coverage for authenticated dashboard fetches and browser behavior if the frontend evolves further.
 
 ## Guidance For Future Agents
 
@@ -103,3 +145,5 @@ Last reviewed: 2026-03-20.
 - When changing strategy or risk logic, compare live-path behavior and backtest-path behavior together because the repo aims to keep them aligned.
 - If you touch startup, review `seedFromBroker`, `seedClosedTradesFromDB`, and the periodic reconciliation loop together.
 - If you touch the dashboard, remember the backend serves static assets from `web/dist`, not directly from `web/src`.
+- All timestamps flow through in their original timezone (typically ET from Alpaca); do not coerce to `.UTC()` — the `markethours` package is the single source of truth for timezone handling.
+- The backtest historical cache is versioned (`v3`); if you change bar normalization or fetch logic, bump the version string in `backtest_fetch.go` to invalidate stale caches.

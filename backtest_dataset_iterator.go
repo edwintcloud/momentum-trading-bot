@@ -51,6 +51,7 @@ func prepareHistoricalDataset(ctx context.Context, client *alpaca.Client, symbol
 
 	workerCount := historicalWorkerCount(historicalRateLimit)
 	limiter := newRequestLimiter(historicalRateLimit)
+	defer limiter.Stop()
 	feed := client.DataFeed()
 	if strings.TrimSpace(feed) == "" {
 		feed = "iex"

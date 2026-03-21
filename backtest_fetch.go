@@ -41,9 +41,10 @@ type historicalFetchResult struct {
 }
 
 type requestLimiter struct {
-	mu       sync.Mutex
-	interval time.Duration
-	next     time.Time
+	tokenCh  chan struct{}
+	delayCh  chan time.Time
+	stopOnce sync.Once
+	stopCh   chan struct{}
 }
 
 func newRequestLimiter(requestsPerMinute int) *requestLimiter {
@@ -54,38 +55,54 @@ func newRequestLimiter(requestsPerMinute int) *requestLimiter {
 	if interval < 10*time.Millisecond {
 		interval = 10 * time.Millisecond
 	}
-	return &requestLimiter{interval: interval}
+	l := &requestLimiter{
+		tokenCh: make(chan struct{}),
+		delayCh: make(chan time.Time, 1),
+		stopCh:  make(chan struct{}),
+	}
+	go l.run(interval)
+	return l
+}
+
+func (l *requestLimiter) run(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-l.stopCh:
+			return
+		case delay := <-l.delayCh:
+			if wait := time.Until(delay); wait > 0 {
+				time.Sleep(wait)
+			}
+		case <-ticker.C:
+			select {
+			case <-l.stopCh:
+				return
+			case l.tokenCh <- struct{}{}:
+			}
+		}
+	}
 }
 
 func (l *requestLimiter) Wait(ctx context.Context) error {
-	l.mu.Lock()
-	now := time.Now()
-	runAt := now
-	if l.next.After(runAt) {
-		runAt = l.next
-	}
-	l.next = runAt.Add(l.interval)
-	l.mu.Unlock()
-
-	if !runAt.After(now) {
-		return nil
-	}
-	timer := time.NewTimer(runAt.Sub(now))
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-l.tokenCh:
 		return nil
 	}
 }
 
 func (l *requestLimiter) DelayUntil(next time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if next.After(l.next) {
-		l.next = next
+	select {
+	case l.delayCh <- next:
+	default:
 	}
+}
+
+func (l *requestLimiter) Stop() {
+	l.stopOnce.Do(func() { close(l.stopCh) })
 }
 
 func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {

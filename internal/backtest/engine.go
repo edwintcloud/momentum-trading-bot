@@ -445,7 +445,7 @@ func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionR
 		return domain.ExecutionReport{}, pending, false, false
 	}
 
-	maxAllowedShares := int64(float64(current.Volume) * 0.8)
+	maxAllowedShares := int64(float64(current.Volume) * 0.80)
 	if pending.order.Quantity > maxAllowedShares {
 		pending.barsRemaining--
 		return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0

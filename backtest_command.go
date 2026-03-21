@@ -43,6 +43,9 @@ func runBacktest(args []string) error {
 	if err != nil {
 		return err
 	}
+	if end.After(time.Now().Add(24 * time.Hour)) {
+		return fmt.Errorf("this a backtest not a time machine, end time cannot be in the far future: %s", end.Format(time.RFC3339))
+	}
 	start, end, err = inferBacktestWindows(start, end, endDateOnly, *dataPath == "")
 	if err != nil {
 		return err

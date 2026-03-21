@@ -44,6 +44,10 @@ type scanMetrics struct {
 	setupHigh             float64
 	setupLow              float64
 	setupType             string
+	rsiMASlope            float64
+	fiveMinRange          float64
+	emaFast               float64
+	emaSlow               float64
 }
 
 // Scanner scans market ticks for momentum candidates.
@@ -143,7 +147,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		return domain.Candidate{}, false, "volume-spike"
 	}
 	direction := domain.DirectionLong
-	shortSetupEnabled := metrics.setupType == "parabolic-failed-reclaim-short" || (s.config.EnableMarketRegime && metrics.setupType == "lower-high-breakdown-short")
+	shortSetupEnabled := metrics.setupType == "parabolic-failed-reclaim-short"
 	switch {
 	case shortSetupEnabled && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, metrics):
 		direction = domain.DirectionShort
@@ -160,11 +164,6 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if tick.Price > 0 && metrics.atr > 0 {
 		atrPct = (metrics.atr / tick.Price) * 100
 	}
-	regimeSnapshot := s.runtime.MarketRegime()
-	if regimeSnapshot.Regime == "" {
-		regimeSnapshot.Regime = domain.MarketRegimeBullish
-	}
-	playbook := domain.TrendAlignedPlaybook(direction, regimeSnapshot.Regime, metrics.setupType)
 	return domain.Candidate{
 		Symbol:                tick.Symbol,
 		Direction:             direction,
@@ -193,11 +192,12 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		CloseOffHighPct:       round2(scoreOrZero(metrics.closeOffHighPct)),
 		SetupHigh:             round2(scoreOrZero(metrics.setupHigh)),
 		SetupLow:              round2(scoreOrZero(metrics.setupLow)),
+		RSIMASlope:            round2(scoreOrZero(metrics.rsiMASlope)),
+		FiveMinRange:          round2(scoreOrZero(metrics.fiveMinRange)),
+		EMAFast:               round2(scoreOrZero(metrics.emaFast)),
+		EMASlow:               round2(scoreOrZero(metrics.emaSlow)),
 		SetupType:             metrics.setupType,
 		Score:                 round2(scoreOrZero(score)),
-		MarketRegime:          regimeSnapshot.Regime,
-		RegimeConfidence:      regimeSnapshot.Confidence,
-		Playbook:              playbook,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
@@ -206,7 +206,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 
 func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
 	direction := domain.DirectionLong
-	if metrics.setupType == "parabolic-failed-reclaim-short" || (s.config.EnableMarketRegime && metrics.setupType == "lower-high-breakdown-short") {
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
 		direction = domain.DirectionShort
 	}
 	if domain.IsShort(direction) {
@@ -275,22 +275,17 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct
 	if !s.config.EnableShorts {
 		return false
 	}
-	if metrics.setupType != "parabolic-failed-reclaim-short" && (!s.config.EnableMarketRegime || metrics.setupType != "lower-high-breakdown-short") {
+	if metrics.setupType != "parabolic-failed-reclaim-short" {
 		return false
 	}
 	if tick.RelativeVolume < s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra {
 		return false
 	}
-	if metrics.setupType == "lower-high-breakdown-short" {
-		return metrics.priceVsVWAPPct <= -0.05 &&
-			metrics.oneMinuteReturn <= -0.15 &&
-			metrics.threeMinuteReturn <= -0.35 &&
-			metrics.breakoutPct <= -0.05 &&
-			metrics.closeOffHighPct >= 55 &&
-			metrics.volumeRate >= maxFloat(1.0, s.config.ScannerRenewedVolumeRateMin) &&
-			priceVsOpenPct >= -2.0
+	vwapLimit := s.config.ShortVWAPBreakMinPct
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
+		vwapLimit = 2.0
 	}
-	if metrics.priceVsVWAPPct > s.config.ShortVWAPBreakMinPct {
+	if metrics.priceVsVWAPPct > vwapLimit {
 		return false
 	}
 	if metrics.oneMinuteReturn >= -maxFloat(0.25, s.config.MinOneMinuteReturnPct*0.50) {
@@ -408,6 +403,7 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 		return scanMetrics{}
 	}
 	current := bars[len(bars)-1]
+	emaFast, emaSlow := computeEMAPair(bars, 8, 21)
 	metrics := scanMetrics{
 		oneMinuteReturn:   lookbackReturn(bars, 1),
 		threeMinuteReturn: lookbackReturn(bars, 3),
@@ -416,6 +412,10 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 		vwap:              current.vwap,
 		priceVsVWAPPct:    percentChange(current.vwap, current.close),
 		closeOffHighPct:   closeOffHighPct(current),
+		rsiMASlope:        computeRSIMASlope(bars, 14, 5, 3),
+		fiveMinRange:      fiveMinuteRange(bars),
+		emaFast:           emaFast,
+		emaSlow:           emaSlow,
 	}
 
 	if len(bars) < 4 {
@@ -455,7 +455,6 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 	higherLow := priorPullbackLow > 0 && setupLow > priorPullbackLow
 	renewedVolume := metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin
 	peakHigh := maxBarHigh(lastNBars(completed, 12))
-	priorSwingHigh := maxBarHigh(lastNBars(priorBars, 6))
 	peakExtensionPct := percentChange(bars[0].open, peakHigh)
 	reclaimFailureHigh := maxBarHigh(lastNBars(completed, 3))
 	breakdownLow := minBarLow(lastNBars(completed, 3))
@@ -465,30 +464,12 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 	case peakExtensionPct >= cfg.ShortPeakExtensionMinPct &&
 		metrics.oneMinuteReturn <= -0.35 &&
 		metrics.threeMinuteReturn <= -0.75 &&
-		metrics.priceVsVWAPPct <= cfg.ShortVWAPBreakMinPct &&
 		weakClose &&
 		breakdownLow > 0 &&
 		current.close < breakdownLow &&
 		reclaimFailureHigh > current.close &&
 		reclaimFailureHigh < peakHigh:
 		metrics.setupType = "parabolic-failed-reclaim-short"
-		metrics.setupHigh = reclaimFailureHigh
-		metrics.setupLow = breakdownLow
-		metrics.breakoutPct = percentChange(breakdownLow, current.close)
-	case cfg.EnableMarketRegime &&
-		priorSwingHigh > 0 &&
-		reclaimFailureHigh > 0 &&
-		reclaimFailureHigh < priorSwingHigh &&
-		current.vwap > 0 &&
-		reclaimFailureHigh <= current.vwap*1.08 &&
-		metrics.priceVsVWAPPct <= -0.05 &&
-		metrics.oneMinuteReturn <= -0.15 &&
-		metrics.threeMinuteReturn <= -0.35 &&
-		metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin &&
-		metrics.closeOffHighPct >= 55 &&
-		breakdownLow > 0 &&
-		current.close < breakdownLow:
-		metrics.setupType = "lower-high-breakdown-short"
 		metrics.setupHigh = reclaimFailureHigh
 		metrics.setupLow = breakdownLow
 		metrics.breakoutPct = percentChange(breakdownLow, current.close)
@@ -739,4 +720,90 @@ func scoreOrZero(value float64) float64 {
 		return 0
 	}
 	return value
+}
+
+// computeRSIMASlope computes the slope of a moving average of RSI values.
+// Positive slope = upward momentum building; negative = declining.
+func computeRSIMASlope(bars []symbolBar, rsiPeriod, maPeriod, slopeLookback int) float64 {
+	needRSI := maPeriod + slopeLookback
+	minBars := rsiPeriod + needRSI + 1
+	if len(bars) < minBars {
+		return 0
+	}
+	rsiValues := make([]float64, needRSI)
+	for i := 0; i < needRSI; i++ {
+		endIdx := len(bars) - needRSI + i + 1
+		rsiValues[i] = computeRSI(bars[:endIdx], rsiPeriod)
+	}
+	currentMA := 0.0
+	for i := needRSI - maPeriod; i < needRSI; i++ {
+		currentMA += rsiValues[i]
+	}
+	currentMA /= float64(maPeriod)
+
+	pastMA := 0.0
+	for i := needRSI - maPeriod - slopeLookback; i < needRSI-slopeLookback; i++ {
+		pastMA += rsiValues[i]
+	}
+	pastMA /= float64(maPeriod)
+
+	return (currentMA - pastMA) / float64(slopeLookback)
+}
+
+// fiveMinuteRange returns the high-low range over the last 5 bars as a
+// percentage of price. Measures recent activity/volatility.
+func fiveMinuteRange(bars []symbolBar) float64 {
+	if len(bars) < 5 {
+		return 0
+	}
+	window := lastNBars(bars, 5)
+	high := maxBarHigh(window)
+	low := minBarLow(window)
+	if low <= 0 {
+		return 0
+	}
+	return ((high - low) / low) * 100
+}
+
+// computeRSI calculates a Wilder-smoothed RSI over the given period.
+// Returns 50 (neutral) when there is insufficient data.
+func computeRSI(bars []symbolBar, period int) float64 {
+	if len(bars) < period+1 {
+		return 50
+	}
+	window := lastNBars(bars, period+1)
+	var avgGain, avgLoss float64
+	for i := 1; i < len(window); i++ {
+		change := window[i].close - window[i-1].close
+		if change > 0 {
+			avgGain += change
+		} else {
+			avgLoss -= change
+		}
+	}
+	avgGain /= float64(period)
+	avgLoss /= float64(period)
+	if avgLoss == 0 {
+		return 100
+	}
+	rs := avgGain / avgLoss
+	return 100 - (100 / (1 + rs))
+}
+
+// computeEMAPair returns (emaFast, emaSlow) over the given bars using
+// exponential moving average of close prices.
+func computeEMAPair(bars []symbolBar, fastPeriod, slowPeriod int) (float64, float64) {
+	if len(bars) < 2 {
+		return 0, 0
+	}
+	fast := bars[0].close
+	slow := bars[0].close
+	fastMul := 2.0 / (float64(fastPeriod) + 1.0)
+	slowMul := 2.0 / (float64(slowPeriod) + 1.0)
+	for i := 1; i < len(bars); i++ {
+		price := bars[i].close
+		fast += (price - fast) * fastMul
+		slow += (price - slow) * slowMul
+	}
+	return fast, slow
 }

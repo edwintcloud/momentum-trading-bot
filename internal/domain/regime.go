@@ -51,17 +51,12 @@ func TrendAlignedPlaybook(positionSide, regime, setupType string) string {
 			return "blocked-long"
 		}
 	}
-	switch setupType {
-	case "lower-high-breakdown-short":
-		return "bearish-breakdown-short"
+	switch regime {
+	case MarketRegimeBearish:
+		return "bearish-trend-short"
+	case MarketRegimeBullish:
+		return "bullish-countertrend-short"
 	default:
-		switch regime {
-		case MarketRegimeBearish:
-			return "bearish-trend-short"
-		case MarketRegimeBullish:
-			return "bullish-countertrend-short"
-		default:
-			return "ranging-countertrend-short"
-		}
+		return "ranging-countertrend-short"
 	}
 }

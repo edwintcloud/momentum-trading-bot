@@ -69,6 +69,10 @@ type Candidate struct {
 	CloseOffHighPct       float64   `json:"closeOffHighPct"`
 	SetupHigh             float64   `json:"setupHigh"`
 	SetupLow              float64   `json:"setupLow"`
+	RSIMASlope            float64   `json:"rsiMASlope"`
+	FiveMinRange          float64   `json:"fiveMinRange"`
+	EMAFast               float64   `json:"emaFast"`
+	EMASlow               float64   `json:"emaSlow"`
 	SetupType             string    `json:"setupType"`
 	Score                 float64   `json:"score"`
 	MarketRegime          string    `json:"marketRegime"`
