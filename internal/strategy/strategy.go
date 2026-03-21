@@ -878,6 +878,10 @@ func (s *Strategy) passesShortEntryQuality(candidate domain.Candidate) (bool, st
 	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
 		return false, "insufficient-peak-extension"
 	}
+	// Reject shorts on low-float stocks — high squeeze risk.
+	if candidate.Float > 0 && candidate.Float < s.config.ShortMinFloat {
+		return false, "low-float-squeeze-risk"
+	}
 
 	if candidate.Volume > 0 {
 		dollarVolume := entryDollarVolume(candidate)
@@ -1135,6 +1139,18 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	}
 	if s.isContinuationProfile() {
 		multiplier *= 0.90
+	}
+	// Float-based sizing: reduce for illiquid low-float, slight reduction for
+	// very large floats where momentum is diluted.
+	if candidate.Float > 0 {
+		switch {
+		case candidate.Float < 1_000_000:
+			multiplier *= 0.65
+		case candidate.Float < 3_000_000:
+			multiplier *= 0.80
+		case candidate.Float > 50_000_000:
+			multiplier *= 0.90
+		}
 	}
 	// Shorts get reduced sizing
 	if domain.IsShort(candidate.Direction) {

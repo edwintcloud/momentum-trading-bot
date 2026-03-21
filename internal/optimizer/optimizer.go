@@ -402,6 +402,14 @@ var floatKnobs = []floatKnobSpec{
 		get: func(cfg config.TradingConfig) float64 { return cfg.ShortStopATRMultiplier },
 		set: func(cfg *config.TradingConfig, v float64) { cfg.ShortStopATRMultiplier = round2(v) },
 	},
+	{
+		name: "FloatRotationScoreWeight",
+		grid: func(base config.TradingConfig) []float64 {
+			return uniqueFloatGrid(base.FloatRotationScoreWeight, 0.0, 6.0, 0.50, 1.00)
+		},
+		get: func(cfg config.TradingConfig) float64 { return cfg.FloatRotationScoreWeight },
+		set: func(cfg *config.TradingConfig, v float64) { cfg.FloatRotationScoreWeight = round2(v) },
+	},
 }
 
 var intKnobs = []intKnobSpec{

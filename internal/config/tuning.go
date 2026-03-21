@@ -75,6 +75,9 @@ func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitP
 	cfg.ShortPeakExtensionMinPct = 12
 	cfg.ShortVWAPBreakMinPct = -0.75
 	cfg.ShortStopATRMultiplier = 1.25
+	cfg.MinFloat = 500_000
+	cfg.ShortMinFloat = 5_000_000
+	cfg.FloatRotationScoreWeight = 3.0
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 
 	if historicalRateLimitPerMin > 0 {

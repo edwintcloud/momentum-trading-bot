@@ -70,6 +70,10 @@ type TradingConfig struct {
 	ShortPeakExtensionMinPct  float64
 	ShortVWAPBreakMinPct      float64
 	ShortStopATRMultiplier    float64
+	// Float-aware filters and scoring
+	MinFloat                  float64
+	ShortMinFloat             float64
+	FloatRotationScoreWeight  float64
 }
 
 // DefaultTradingConfig returns the tuned baseline used when no broker-aware
