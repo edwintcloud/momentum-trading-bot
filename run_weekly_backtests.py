@@ -6,7 +6,7 @@ import re
 import sys
 
 SUMMARY_PATTERN = re.compile(
-    r"PnL\s+net=([+-]?\d+(?:\.\d+)?)\s+realized=([+-]?\d+(?:\.\d+)?)\s+"
+    r"PnL\s+(?:roi=[^\s]+\s+)?net=([+-]?\d+(?:\.\d+)?)\s+realized=([+-]?\d+(?:\.\d+)?)\s+"
     r"unrealized=([+-]?\d+(?:\.\d+)?)\s+ending_equity=([+-]?\d+(?:\.\d+)?)"
 )
 GO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "go-build")
