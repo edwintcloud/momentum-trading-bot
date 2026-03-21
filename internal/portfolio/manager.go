@@ -88,8 +88,14 @@ func inferExecutionIntent(report domain.ExecutionReport, existing domain.Positio
 }
 
 func normalizedEntryStop(report domain.ExecutionReport) float64 {
-	if report.Price <= 0 || report.RiskPerShare <= 0 {
+	// Prefer the strategy-computed stop price. Re-deriving from fill price +
+	// risk-per-share breaks when the fill deviates significantly from the
+	// candidate price (e.g. gap fills on pending orders).
+	if report.StopPrice > 0 {
 		return round2(report.StopPrice)
+	}
+	if report.Price <= 0 || report.RiskPerShare <= 0 {
+		return 0
 	}
 	if domain.IsShort(report.PositionSide) {
 		return round2(report.Price + report.RiskPerShare)

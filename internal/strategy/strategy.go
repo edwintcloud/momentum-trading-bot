@@ -37,6 +37,7 @@ type symbolTradeState struct {
 	entrySignals int
 	lossExits    int
 	lastLossAt   time.Time
+	entrySides   map[string]bool // sides already entered ("long", "short")
 }
 
 // NewStrategy creates a strategy instance.
@@ -191,6 +192,9 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	if symbolState.lossExits > 0 {
 		return CandidateDecision{Reason: "symbol-loss-lockout", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
+	if symbolState.entrySides[candidate.Direction] {
+		return CandidateDecision{Reason: "symbol-side-already-traded", AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
+	}
 	if ok, reason := s.passesEntryQuality(candidate); !ok {
 		return CandidateDecision{Reason: reason, AllowedDistanceHighPct: allowedDistance, StrongSqueeze: strongSqueeze}
 	}
@@ -239,6 +243,10 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 	}
 	s.lastEntryAt[candidate.Symbol] = decisionAt
 	symbolState.entrySignals++
+	if symbolState.entrySides == nil {
+		symbolState.entrySides = make(map[string]bool)
+	}
+	symbolState.entrySides[candidate.Direction] = true
 	s.symbolStates[candidate.Symbol] = symbolState
 
 	signal := domain.TradeSignal{
@@ -294,6 +302,7 @@ func (s *Strategy) evaluateCandidateDecision(candidate domain.Candidate) Candida
 				"score":                 candidate.Score,
 				"rsiMASlope":            candidate.RSIMASlope,
 				"fiveMinRange":          candidate.FiveMinRange,
+				"priceVsEMA9Pct":        candidate.PriceVsEMA9Pct,
 				"emaFast":               candidate.EMAFast,
 				"emaSlow":               candidate.EMASlow,
 				"directionShort":        boolIndicator(domain.IsShort(candidate.Direction)),
@@ -663,18 +672,29 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if domain.IsShort(candidate.Direction) {
 		return s.passesShortEntryQuality(candidate)
 	}
-	// Indicator confluence for longs: rising RSI momentum + EMA uptrend + active range
-	if candidate.RSIMASlope <= 0 {
-		return false, "rsi-slope-not-bullish"
+	// === Cameron-style momentum long rules ===
+	// Must be above VWAP — hard requirement, no exceptions
+	if candidate.PriceVsVWAPPct < 0 {
+		return false, "below-vwap"
 	}
-	if candidate.EMAFast > 0 && candidate.EMASlow > 0 && candidate.EMAFast <= candidate.EMASlow {
-		return false, "ema-downtrend"
+	// Must be above 9 EMA (momentum is intact)
+	if candidate.PriceVsEMA9Pct < -0.5 {
+		return false, "below-ema9"
 	}
+	// Not chasing — price should be near 9 EMA, not extended far above it
+	if candidate.PriceVsEMA9Pct > 4.0 && !strongSqueeze {
+		return false, "extended-above-ema9"
+	}
+	if candidate.PriceVsEMA9Pct > 6.0 {
+		return false, "extended-above-ema9"
+	}
+	// Must have real activity in the last 5 bars
 	if candidate.FiveMinRange < 0.5 {
 		return false, "range-too-narrow"
 	}
-	if candidate.Score < s.config.MinEntryScore+3 {
-		return false, "long-low-conviction"
+	// Cameron: stock must be meaningfully up on the day — don't buy weak gappers
+	if candidate.PriceVsOpenPct < 3.0 {
+		return false, "weak-intraday-move"
 	}
 	if candidate.Price < s.config.MinPrice {
 		return false, "low-price"
@@ -696,16 +716,12 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
 	}
+	// Longs need higher conviction than the minimum baseline
+	if candidate.Score < s.config.MinEntryScore+1 && !strongSqueeze {
+		return false, "long-needs-conviction"
+	}
 	if !s.isPremarket(candidate.Timestamp) && sessionMinutesSinceOpen(candidate.Timestamp) > 90 && !strongSqueeze {
-		// Allow mid-session entries for stocks with a confirmed setup and
-		// fresh volume activity — these are new momentum moves, not chop.
-		freshSetup := candidate.SetupType != "" &&
-			candidate.Score >= s.config.MinEntryScore+3 &&
-			candidate.VolumeRate >= s.config.MinVolumeRate &&
-			candidate.PriceVsVWAPPct >= 0
-		if !freshSetup {
-			return false, "post-open-chop"
-		}
+		return false, "post-open-chop"
 	}
 	if s.isOpeningSession(candidate.Timestamp) &&
 		candidate.RelativeVolume >= 40 &&
@@ -746,23 +762,20 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if !s.hasTimingConfirmation(candidate, strongSqueeze) {
 		return false, "no-renewed-volume"
 	}
-	if candidate.PriceVsVWAPPct < -0.35 {
-		return false, "below-vwap"
-	}
 	// Hard caps that apply even for squeeze entries — extreme extension is never safe.
-	if candidate.PriceVsVWAPPct > 16.0 {
+	if candidate.PriceVsVWAPPct > 10.0 {
 		return false, "vwap-extension"
 	}
-	if candidate.DistanceFromHighPct > 12.0 {
+	if candidate.DistanceFromHighPct > 8.0 {
 		return false, "distance-from-high"
 	}
 	if candidate.BreakoutPct > 3.0 {
 		return false, "chasing-extended-breakout"
 	}
-	if candidate.PriceVsVWAPPct > 12.0 && !strongSqueeze {
+	if candidate.PriceVsVWAPPct > 8.0 && !strongSqueeze {
 		return false, "vwap-extension"
 	}
-	if candidate.DistanceFromHighPct > 8.0 && !strongSqueeze {
+	if candidate.DistanceFromHighPct > 6.0 && !strongSqueeze {
 		return false, "distance-from-high"
 	}
 	if candidate.PriceVsOpenPct > maxFloat(s.config.MaxPriceVsOpenPct, candidate.ATRPct*6.5) &&
@@ -789,7 +802,7 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 		candidate.Score < s.config.MinEntryScore+2 {
 		return false, "weak-volume-rate"
 	}
-	if candidate.CloseOffHighPct > 38 {
+	if candidate.CloseOffHighPct > 30 {
 		return false, "weak-close"
 	}
 	if candidate.SetupType == "opening-range-breakout" && candidate.BreakoutPct < 0.10 && !strongSqueeze {
@@ -1126,6 +1139,10 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	// Shorts get reduced sizing
 	if domain.IsShort(candidate.Direction) {
 		multiplier *= 0.55
+	}
+	// Longs get moderately reduced sizing until the strategy proves out
+	if domain.IsLong(candidate.Direction) {
+		multiplier *= 0.80
 	}
 	if multiplier < 0.55 {
 		multiplier = 0.55

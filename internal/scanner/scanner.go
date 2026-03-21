@@ -46,6 +46,7 @@ type scanMetrics struct {
 	setupType             string
 	rsiMASlope            float64
 	fiveMinRange          float64
+	ema9                  float64
 	emaFast               float64
 	emaSlow               float64
 }
@@ -194,6 +195,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		SetupLow:              round2(scoreOrZero(metrics.setupLow)),
 		RSIMASlope:            round2(scoreOrZero(metrics.rsiMASlope)),
 		FiveMinRange:          round2(scoreOrZero(metrics.fiveMinRange)),
+		PriceVsEMA9Pct:        round2(scoreOrZero(priceVsEMA9Pct(tick.Price, metrics.ema9))),
 		EMAFast:               round2(scoreOrZero(metrics.emaFast)),
 		EMASlow:               round2(scoreOrZero(metrics.emaSlow)),
 		SetupType:             metrics.setupType,
@@ -414,6 +416,7 @@ func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 		closeOffHighPct:   closeOffHighPct(current),
 		rsiMASlope:        computeRSIMASlope(bars, 14, 5, 3),
 		fiveMinRange:      fiveMinuteRange(bars),
+		ema9:              computeEMA(bars, 9),
 		emaFast:           emaFast,
 		emaSlow:           emaSlow,
 	}
@@ -720,6 +723,26 @@ func scoreOrZero(value float64) float64 {
 		return 0
 	}
 	return value
+}
+
+// computeEMA returns the EMA of close prices over the given period.
+func computeEMA(bars []symbolBar, period int) float64 {
+	if len(bars) < 2 {
+		return 0
+	}
+	ema := bars[0].close
+	mul := 2.0 / (float64(period) + 1.0)
+	for i := 1; i < len(bars); i++ {
+		ema += (bars[i].close - ema) * mul
+	}
+	return ema
+}
+
+func priceVsEMA9Pct(price, ema9 float64) float64 {
+	if ema9 <= 0 {
+		return 0
+	}
+	return ((price - ema9) / ema9) * 100
 }
 
 // computeRSIMASlope computes the slope of a moving average of RSI values.

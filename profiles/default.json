@@ -27,7 +27,7 @@
     "MinVolumeRate": 1.95,
     "MaxPriceVsOpenPct": 30,
     "BreakoutFailureWindowMin": 10,
-    "StagnationWindowMin": 3,
+    "StagnationWindowMin": 2,
     "StagnationMinPeakPct": 0.15,
     "ScannerWorkers": 4,
     "MinPrice": 3.5,

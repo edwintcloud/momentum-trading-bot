@@ -67,8 +67,6 @@ Last reviewed: 2026-03-21.
 ## Useful Commands
 
 - `go run . backtest -start YYYY-MM-DD -end YYYY-MM-DD`
-- `go run . bull-run-diagnostics -audit .cache/backtest/experiments/bull_run_audit_selected.json`
-- `go run . symbol-trace -symbol AFJK -day 2025-12-09 -from 10:06 -to 11:30`
 
 ## Fixed On 2026-03-18
 

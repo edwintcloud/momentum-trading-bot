@@ -71,6 +71,7 @@ type Candidate struct {
 	SetupLow              float64   `json:"setupLow"`
 	RSIMASlope            float64   `json:"rsiMASlope"`
 	FiveMinRange          float64   `json:"fiveMinRange"`
+	PriceVsEMA9Pct        float64   `json:"priceVsEma9Pct"`
 	EMAFast               float64   `json:"emaFast"`
 	EMASlow               float64   `json:"emaSlow"`
 	SetupType             string    `json:"setupType"`
