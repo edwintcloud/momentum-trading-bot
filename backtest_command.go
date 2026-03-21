@@ -122,7 +122,7 @@ func runBacktest(args []string) error {
 		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 
 		floatCtx, floatCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		fc.EnsureFresh(floatCtx, symbols)
+		fc.EnsureFresh(floatCtx, symbols, 7*24*time.Hour)
 		floatCancel()
 	}
 	profileLabel := ""

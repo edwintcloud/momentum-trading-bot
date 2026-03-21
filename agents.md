@@ -95,6 +95,7 @@ Last reviewed: 2026-03-21.
 - The app reconciles local positions back to Alpaca every 60 seconds.
 - The dashboard depends on built assets under `web/dist`; if they are missing, `/` returns `503 dashboard assets not built`.
 - Docker builds the frontend first, then embeds `web/dist` into the final app image.
+- docker-compose mounts `./logs:/app/logs` and `./.cache:/app/.cache` so the live container shares the float cache populated by local backtests.
 - Live app startup now requires `CONTROL_PLANE_AUTH_TOKEN`.
 - By default the HTTP server binds to `127.0.0.1:8080`, not all interfaces.
 - The dashboard, `/api/*`, and `/ws` require HTTP Basic auth with username `operator` and password `CONTROL_PLANE_AUTH_TOKEN`.
@@ -221,6 +222,6 @@ Last reviewed: 2026-03-21.
 - The optimizer produces versioned profile artifacts; `profile_runtime.go` bridges optimizer output to the dashboard via `OptimizerStatus`.
 - Market regime tracking is optional (`EnableMarketRegime` defaults to `false`); the regime tracker watches SPY/QQQ/IWM benchmarks and these are excluded from scanner candidates.
 - The `internal/volumeprofile/profile.go` hardcodes a realistic intraday volume curve; update it if trading session hours change.
-- Stock float data is cached in `.cache/float/shares.json` and fetched from Yahoo Finance (`v7/finance/quote`) via crumb-based cookie authentication. The cache refreshes stale entries (>24h) during hydration, capped at 500 symbols per refresh to avoid blocking startup. Float data is wired through all three paths (live, backtest, optimizer) via `FloatLookup`.
+- Stock float data is cached in `.cache/float/shares.json` and fetched from Yahoo Finance (`v7/finance/quote`) via crumb-based cookie authentication. `EnsureFresh(ctx, symbols, maxAge)` accepts a staleness threshold: live hydration uses the default 24h, backtest and optimizer use 7 days to avoid redundant re-fetches during batch runs. Float data is wired through all three paths (live, backtest, optimizer) via `FloatLookup`.
 - Float is actively used in the strategy pipeline: (1) scanner gate rejects candidates below `MinFloat` (default 500K shares), (2) float rotation (volume/float) is a weighted scoring component (`FloatRotationScoreWeight`, default 3.0) in both long and short momentum scores, (3) position sizing applies float-based multipliers (0.65× for <1M, 0.80× for <3M, 0.90× for >50M float), (4) shorts are blocked on stocks below `ShortMinFloat` (default 5M) to avoid squeeze risk, (5) low-float positions (<3M) trigger stagnation exits 1 minute earlier than the standard window, (6) entry quality requires minimum 10% float rotation (volume/float) for both longs and shorts during regular session. All three knobs (`MinFloat`, `ShortMinFloat`, `FloatRotationScoreWeight`) are wired through profile overlay and the optimizer grid.
 - Python scripts under `scripts/` and `run_weekly_backtests.py` are tooling for offline analysis — they invoke `go run . backtest` and parse stdout.

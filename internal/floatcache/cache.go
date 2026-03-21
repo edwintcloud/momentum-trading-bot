@@ -68,18 +68,23 @@ func (c *Cache) Get(symbol string) float64 {
 	return entry.FloatShares
 }
 
-// EnsureFresh fetches float data for any symbols that are missing or stale (>24h).
+// EnsureFresh fetches float data for any symbols that are missing or stale.
+// maxAge controls the staleness threshold — entries older than maxAge are re-fetched.
+// Pass 0 to use the default staleDuration (24h).
 // To avoid blocking startup for large universes, at most maxFreshBatch symbols
 // are fetched per call. Remaining symbols return 0 from Get until the next refresh.
 const maxFreshBatch = 20000
 
-func (c *Cache) EnsureFresh(ctx context.Context, symbols []string) {
+func (c *Cache) EnsureFresh(ctx context.Context, symbols []string, maxAge time.Duration) {
+	if maxAge <= 0 {
+		maxAge = staleDuration
+	}
 	now := time.Now()
 	var needed []string
 	c.mu.Lock()
 	for _, s := range symbols {
 		entry, ok := c.entries[s]
-		if !ok || now.Sub(entry.FetchedAt) > staleDuration {
+		if !ok || now.Sub(entry.FetchedAt) > maxAge {
 			needed = append(needed, s)
 		}
 	}
@@ -310,8 +315,22 @@ func (c *Cache) load() {
 
 func (c *Cache) save() {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Merge with on-disk state so concurrent processes don't clobber each other.
+	// Our in-memory entries win when they are newer than the on-disk version.
+	disk := make(map[string]Entry)
+	if data, err := os.ReadFile(c.path); err == nil {
+		_ = json.Unmarshal(data, &disk)
+	}
+	for sym, diskEntry := range disk {
+		memEntry, ok := c.entries[sym]
+		if !ok || diskEntry.FetchedAt.After(memEntry.FetchedAt) {
+			c.entries[sym] = diskEntry
+		}
+	}
+
 	data, err := json.Marshal(c.entries)
-	c.mu.Unlock()
 	if err != nil {
 		return
 	}
@@ -321,6 +340,7 @@ func (c *Cache) save() {
 	}
 	tmp := c.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		os.Remove(tmp)
 		return
 	}
 	os.Rename(tmp, c.path)

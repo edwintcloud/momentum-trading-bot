@@ -134,7 +134,7 @@ func runOptimize(args []string) error {
 		}
 		log.Printf("Optimizer historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 		floatCtx, floatCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		fc.EnsureFresh(floatCtx, symbols)
+		fc.EnsureFresh(floatCtx, symbols, 7*24*time.Hour)
 		floatCancel()
 		loadWeek = func(_ context.Context, window optimizer.WeeklyWindow) ([]backtest.InputBar, error) {
 			return loadHistoricalBarsForOptimizerWeek(dataset, window)

@@ -444,7 +444,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 
 	// Attach float data from cache (fetches on-demand for unknown symbols)
 	if e.floatCache != nil {
-		e.floatCache.EnsureFresh(hydrateCtx, symbols)
+		e.floatCache.EnsureFresh(hydrateCtx, symbols, 0)
 		for _, symbol := range symbols {
 			shares := e.floatCache.Get(symbol)
 			if shares > 0 {
