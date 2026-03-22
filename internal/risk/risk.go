@@ -20,12 +20,13 @@ type ShortabilityChecker interface {
 
 // Engine enforces position sizing and loss controls before execution.
 type Engine struct {
-	config    config.TradingConfig
-	portfolio *portfolio.Manager
-	runtime   *runtime.State
-	shortable ShortabilityChecker
-	dayKey    string
-	approved  int
+	config             config.TradingConfig
+	portfolio          *portfolio.Manager
+	runtime            *runtime.State
+	shortable          ShortabilityChecker
+	dayKey             string
+	approved           int
+	CorrelationTracker *CorrelationTracker
 }
 
 // NewEngine creates a new risk engine.
@@ -35,11 +36,12 @@ func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, ru
 		checker = shortable[0]
 	}
 	return &Engine{
-		config:    cfg,
-		portfolio: portfolioManager,
-		runtime:   runtimeState,
-		shortable: checker,
-		dayKey:    markethours.TradingDay(time.Now()),
+		config:             cfg,
+		portfolio:          portfolioManager,
+		runtime:            runtimeState,
+		shortable:          checker,
+		dayKey:             markethours.TradingDay(time.Now()),
+		CorrelationTracker: NewCorrelationTracker(cfg.CorrelationWindowSize),
 	}
 }
 
@@ -138,12 +140,62 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		}
 	}
 
-	// Daily loss limit
+	// Daily loss limit (kept for backward compat; graduated response is in DailyLossSizingFactor)
 	snapshot := e.portfolio.StatusSnapshot()
 	dailyLossLimit := currentEquity * e.config.DailyLossLimitPct
 	if math.Abs(snapshot.DayPnL) >= dailyLossLimit && snapshot.DayPnL < 0 {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: daily loss limit reached (%.2f)", signal.Symbol, snapshot.DayPnL))
 		return domain.OrderRequest{}, false, "daily-loss-limit"
+	}
+
+	// Phase 2 Change 1: Portfolio heat gate
+	if e.config.PortfolioHeatEnabled {
+		currentHeat := e.portfolio.PortfolioHeat()
+		proposedRisk := signal.RiskPerShare * float64(signal.Quantity)
+		proposedHeatPct := (currentHeat + proposedRisk) / currentEquity
+
+		if proposedHeatPct > e.config.MaxPortfolioHeatPct {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: portfolio heat would exceed maximum: %.1f%% > %.1f%%",
+				signal.Symbol, proposedHeatPct*100, e.config.MaxPortfolioHeatPct*100))
+			return domain.OrderRequest{}, false, "portfolio-heat-limit"
+		}
+
+		currentHeatPct := currentHeat / currentEquity
+		if currentHeatPct > e.config.PortfolioHeatAlertPct {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("portfolio heat elevated: %.1f%%", currentHeatPct*100))
+		}
+	}
+
+	// Phase 2 Change 3: Sector concentration gate
+	if e.config.SectorConcentrationEnabled && signal.Sector != "" {
+		exposures := e.sectorExposures(positions)
+		existing := exposures[signal.Sector]
+
+		if existing.positionCount >= e.config.MaxPositionsPerSector {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: sector concentration: %s already has %d positions (max %d)",
+				signal.Symbol, signal.Sector, existing.positionCount, e.config.MaxPositionsPerSector))
+			return domain.OrderRequest{}, false, "sector-concentration"
+		}
+
+		proposedSectorPct := (existing.notionalValue + proposedValue) / currentEquity
+		if proposedSectorPct > e.config.MaxSectorExposurePct {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: sector exposure for %s would reach %.1f%% (max %.1f%%)",
+				signal.Symbol, signal.Sector, proposedSectorPct*100, e.config.MaxSectorExposurePct*100))
+			return domain.OrderRequest{}, false, "sector-exposure-limit"
+		}
+	}
+
+	// Phase 2 Change 4: Correlation-aware position approval
+	if e.config.CorrelationCheckEnabled && e.CorrelationTracker != nil {
+		existingSymbols := e.portfolio.OpenSymbols()
+		if len(existingSymbols) > 0 {
+			avgCorr := e.CorrelationTracker.AvgPortfolioCorrelation(existingSymbols, signal.Symbol)
+			if avgCorr > e.config.MaxAvgCorrelation {
+				e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: correlation too high: avg %.2f with portfolio (max %.2f)",
+					signal.Symbol, avgCorr, e.config.MaxAvgCorrelation))
+				return domain.OrderRequest{}, false, "correlation-limit"
+			}
+		}
 	}
 
 	// Position size cap
@@ -159,6 +211,71 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	e.approved++
 	_ = longExposure // used in exposure calc
 	return e.toOrderRequest(signal), true, ""
+}
+
+// DailyLossSizingFactor returns a multiplicative sizing factor based on graduated daily loss tiers.
+// Change 2: 0-1% loss: 1.0, 1% loss: 0.5, 1.5% loss: 0.25, 2%+ loss: 0.0
+func (e *Engine) DailyLossSizingFactor() float64 {
+	equity := e.portfolio.CurrentEquity()
+	if equity <= 0 {
+		return 1.0
+	}
+	dayPnL := e.portfolio.DayPnL()
+	if dayPnL >= 0 {
+		return 1.0
+	}
+
+	lossPct := math.Abs(dayPnL) / equity
+
+	switch {
+	case lossPct >= e.config.DailyLossHaltPct:
+		return 0.0
+	case lossPct >= e.config.DailyLossSeverePct:
+		return 0.25
+	case lossPct >= e.config.DailyLossModeratePct:
+		return 0.50
+	default:
+		return 1.0
+	}
+}
+
+// DrawdownSizingFactor returns a multiplicative sizing factor based on drawdown from HWM.
+// Change 7: linear scale from 1.0 (no DD) to 0.0 (at MaxAcceptableDrawdown).
+func (e *Engine) DrawdownSizingFactor() float64 {
+	if !e.config.DrawdownRiskEnabled {
+		return 1.0
+	}
+	dd := e.portfolio.CurrentDrawdown()
+	if dd <= 0 {
+		return 1.0
+	}
+	if e.config.MaxAcceptableDrawdown <= 0 {
+		return 1.0
+	}
+	factor := math.Max(0, 1.0-dd/e.config.MaxAcceptableDrawdown)
+	return factor
+}
+
+// sectorExposure tracks per-sector position count and notional value.
+type sectorExposure struct {
+	positionCount int
+	notionalValue float64
+}
+
+// sectorExposures computes per-sector exposure from the given positions.
+func (e *Engine) sectorExposures(positions []domain.Position) map[string]sectorExposure {
+	exposures := make(map[string]sectorExposure)
+	for _, pos := range positions {
+		sector := pos.Sector
+		if sector == "" {
+			sector = "unknown"
+		}
+		exp := exposures[sector]
+		exp.positionCount++
+		exp.notionalValue += math.Abs(pos.MarketValue)
+		exposures[sector] = exp
+	}
+	return exposures
 }
 
 func (e *Engine) inferIntent(signal domain.TradeSignal, pos domain.Position, exists bool) domain.TradeSignal {
@@ -204,6 +321,7 @@ func (e *Engine) toOrderRequest(signal domain.TradeSignal) domain.OrderRequest {
 		MarketRegime:     signal.MarketRegime,
 		RegimeConfidence: signal.RegimeConfidence,
 		Playbook:         signal.Playbook,
+		Sector:           signal.Sector,
 		Timestamp:        signal.Timestamp,
 	}
 }
