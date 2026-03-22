@@ -135,6 +135,31 @@ type TradingConfig struct {
 	SlippageLiquidBps   float64
 	SlippageMidBps      float64
 	SlippageIlliquidBps float64
+
+	// Phase 4: Monte Carlo simulation (Change 1)
+	MonteCarloEnabled bool
+	MonteCarloSims    int
+
+	// Phase 4: Transaction cost model (Change 2)
+	TransactionCostsEnabled bool
+	CommissionPerShare      float64
+	DefaultSpreadBps        float64
+
+	// Phase 4: Bootstrap significance testing (Change 3)
+	BootstrapEnabled   bool
+	BootstrapResamples int
+
+	// Phase 4: Optimizer improvements (Change 4)
+	OptimizerSamples   int
+	OptimizerUseLHS    bool
+	OptimizerTimeSplit bool
+
+	// Phase 4: Walk-forward analysis (Change 7)
+	WalkForwardEnabled bool
+	WFISWindowDays     int
+	WFOOSWindowDays    int
+	WFPurgeGapDays     int
+	WFStepDays         int
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

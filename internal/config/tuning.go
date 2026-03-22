@@ -333,6 +333,61 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.SlippageIlliquidBps = 20.0
 	}
 
+	// Phase 4: Monte Carlo defaults
+	if !cfg.MonteCarloEnabled && cfg.MonteCarloSims == 0 {
+		cfg.MonteCarloEnabled = true
+	}
+	if cfg.MonteCarloSims == 0 {
+		cfg.MonteCarloSims = 10000
+	}
+
+	// Phase 4: Transaction cost defaults
+	if !cfg.TransactionCostsEnabled && cfg.CommissionPerShare == 0 {
+		cfg.TransactionCostsEnabled = true
+	}
+	if cfg.CommissionPerShare == 0 {
+		cfg.CommissionPerShare = 0.005
+	}
+	if cfg.DefaultSpreadBps == 0 {
+		cfg.DefaultSpreadBps = 10.0
+	}
+
+	// Phase 4: Bootstrap defaults
+	if !cfg.BootstrapEnabled && cfg.BootstrapResamples == 0 {
+		cfg.BootstrapEnabled = true
+	}
+	if cfg.BootstrapResamples == 0 {
+		cfg.BootstrapResamples = 10000
+	}
+
+	// Phase 4: Optimizer defaults
+	if cfg.OptimizerSamples == 0 {
+		cfg.OptimizerSamples = 500
+	}
+	if !cfg.OptimizerUseLHS && cfg.OptimizerSamples > 0 {
+		cfg.OptimizerUseLHS = true
+	}
+	if !cfg.OptimizerTimeSplit && cfg.OptimizerSamples > 0 {
+		cfg.OptimizerTimeSplit = true
+	}
+
+	// Phase 4: Walk-forward defaults
+	if !cfg.WalkForwardEnabled && cfg.WFISWindowDays == 0 {
+		cfg.WalkForwardEnabled = true
+	}
+	if cfg.WFISWindowDays == 0 {
+		cfg.WFISWindowDays = 60
+	}
+	if cfg.WFOOSWindowDays == 0 {
+		cfg.WFOOSWindowDays = 20
+	}
+	if cfg.WFPurgeGapDays == 0 {
+		cfg.WFPurgeGapDays = 5
+	}
+	if cfg.WFStepDays == 0 {
+		cfg.WFStepDays = 20
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

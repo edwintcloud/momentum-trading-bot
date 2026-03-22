@@ -17,6 +17,13 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 )
 
+// ParameterRange defines the min/max bounds for a single optimizer parameter.
+type ParameterRange struct {
+	Name string
+	Min  float64
+	Max  float64
+}
+
 // Optimizer runs walk-forward parameter optimization.
 type Optimizer struct {
 	bars   []backtest.InputBar
@@ -26,13 +33,15 @@ type Optimizer struct {
 
 // Report records the optimizer's recommendations.
 type Report struct {
-	AsOf            time.Time         `json:"asOf"`
-	GeneratedAt     time.Time         `json:"generatedAt"`
-	SearchWeeks     int               `json:"searchWeeks"`
-	ValidationWeeks int               `json:"validationWeeks"`
-	HoldoutWeeks    int               `json:"holdoutWeeks"`
-	Candidates      []CandidateResult `json:"candidates"`
-	Recommendation  *CandidateResult  `json:"recommendation"`
+	AsOf            time.Time           `json:"asOf"`
+	GeneratedAt     time.Time           `json:"generatedAt"`
+	SearchWeeks     int                 `json:"searchWeeks"`
+	ValidationWeeks int                 `json:"validationWeeks"`
+	HoldoutWeeks    int                 `json:"holdoutWeeks"`
+	Candidates      []CandidateResult   `json:"candidates"`
+	Recommendation  *CandidateResult    `json:"recommendation"`
+	DSR             float64             `json:"dsr,omitempty"`
+	Sensitivity     *SensitivityResult  `json:"sensitivity,omitempty"`
 }
 
 // CandidateResult is one optimizer trial.
@@ -74,6 +83,11 @@ func formatDuration(d time.Duration) string {
 
 // Run executes the optimization.
 func (o *Optimizer) Run() (Report, error) {
+	return o.RunWithConfig(config.DefaultTradingConfig())
+}
+
+// RunWithConfig executes the optimization with a given base configuration.
+func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) {
 	if len(o.bars) == 0 {
 		return Report{}, fmt.Errorf("no bars provided")
 	}
@@ -93,26 +107,39 @@ func (o *Optimizer) Run() (Report, error) {
 		config.StrategyProfileContinuation,
 	}
 
-	// Count total combinations upfront
-	variationsPerProfile := 10
+	// Use configured sample count (default: 500, was 30)
+	numSamples := baseCfg.OptimizerSamples
+	if numSamples <= 0 {
+		numSamples = 500
+	}
+	variationsPerProfile := numSamples / len(profiles)
+	if variationsPerProfile < 1 {
+		variationsPerProfile = 1
+	}
 	totalCombinations := len(profiles) * variationsPerProfile
 
 	// Split data: 60% search, 20% validation, 20% holdout
-	searchBars, validBars, holdoutBars := o.splitBars(0.6, 0.2)
-	log.Printf("Data split: search=%d bars, validation=%d bars, holdout=%d bars",
-		len(searchBars), len(validBars), len(holdoutBars))
+	var searchBars, validBars, holdoutBars []backtest.InputBar
+	if baseCfg.OptimizerTimeSplit {
+		searchBars, validBars, holdoutBars = o.splitBarsByTime(0.6, 0.2)
+	} else {
+		searchBars, validBars, holdoutBars = o.splitBars(0.6, 0.2)
+	}
+	log.Printf("Data split: search=%d bars, validation=%d bars, holdout=%d bars (time_split=%v)",
+		len(searchBars), len(validBars), len(holdoutBars), baseCfg.OptimizerTimeSplit)
 
 	// === Search Phase ===
 	log.Printf("=== Optimization Search Phase ===")
-	log.Printf("Profiles: %d (%d variations each)", len(profiles), variationsPerProfile)
+	log.Printf("Profiles: %d (%d variations each, LHS=%v)", len(profiles), variationsPerProfile, baseCfg.OptimizerUseLHS)
 	log.Printf("Parameter grid: %d combinations", totalCombinations)
 
 	type searchCandidate struct {
-		profile string
-		cfg     config.TradingConfig
-		score   float64
-		search  backtest.Result
-		valid   backtest.Result
+		profile     string
+		cfg         config.TradingConfig
+		score       float64
+		search      backtest.Result
+		valid       backtest.Result
+		paramValues []float64
 	}
 
 	var searchResults []searchCandidate
@@ -120,9 +147,23 @@ func (o *Optimizer) Run() (Report, error) {
 	searchStart := time.Now()
 	combo := 0
 
+	paramRanges := defaultParameterRanges()
+	paramNames := make([]string, len(paramRanges))
+	for i, pr := range paramRanges {
+		paramNames[i] = pr.Name
+	}
+
 	for _, profile := range profiles {
-		variations := o.generateVariations(profile, variationsPerProfile)
-		for _, cfg := range variations {
+		var variations []config.TradingConfig
+		var paramSets [][]float64
+		if baseCfg.OptimizerUseLHS {
+			variations, paramSets = o.generateLHSVariations(profile, variationsPerProfile, paramRanges)
+		} else {
+			variations = o.generateVariations(profile, variationsPerProfile)
+			paramSets = make([][]float64, len(variations))
+		}
+
+		for vi, cfg := range variations {
 			combo++
 
 			searchResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
@@ -158,7 +199,7 @@ func (o *Optimizer) Run() (Report, error) {
 			newBest := ""
 			if score > bestScore {
 				bestScore = score
-				newBest = " (new best \u2605)"
+				newBest = " (new best ★)"
 			}
 
 			log.Printf("[%d/%d] (%.1f%%) profile=%-16s score=%.4f%s | elapsed: %s | eta: ~%s",
@@ -168,11 +209,12 @@ func (o *Optimizer) Run() (Report, error) {
 				formatDuration(elapsed), formatDuration(remaining))
 
 			searchResults = append(searchResults, searchCandidate{
-				profile: string(profile),
-				cfg:     cfg,
-				score:   score,
-				search:  searchResult,
-				valid:   validResult,
+				profile:     string(profile),
+				cfg:         cfg,
+				score:       score,
+				search:      searchResult,
+				valid:       validResult,
+				paramValues: paramSets[vi],
 			})
 		}
 	}
@@ -180,6 +222,20 @@ func (o *Optimizer) Run() (Report, error) {
 	searchElapsed := time.Since(searchStart)
 	log.Printf("Search phase complete: %d candidates scored in %s (best=%.4f)",
 		len(searchResults), formatDuration(searchElapsed), bestScore)
+
+	// === Sensitivity Analysis (Change 8) ===
+	var sensitivityResult *SensitivityResult
+	if len(searchResults) >= 20 {
+		evals := make([]Evaluation, len(searchResults))
+		for i, sc := range searchResults {
+			evals[i] = Evaluation{ParamValues: sc.paramValues, Score: sc.score}
+		}
+		sr := ComputeSensitivity(evals, paramNames)
+		sensitivityResult = &sr
+		for _, ps := range sr.Parameters {
+			log.Printf("Sensitivity: param=%-20s first_order=%.3f total=%.3f", ps.Name, ps.FirstOrderIdx, ps.TotalIdx)
+		}
+	}
 
 	// Sort search results by score descending
 	sort.Slice(searchResults, func(i, j int) bool {
@@ -242,6 +298,27 @@ func (o *Optimizer) Run() (Report, error) {
 		return candidates[i].Score > candidates[j].Score
 	})
 
+	// === Deflated Sharpe Ratio (Change 6) ===
+	dsr := 0.0
+	if len(candidates) > 0 && candidates[0].ValidationResult.Trades > 0 {
+		valResult := candidates[0].ValidationResult
+		returns := tradeReturnsFromResult(valResult)
+		if len(returns) > 5 {
+			mean, std := simpleMeanStd(returns)
+			observedSR := 0.0
+			if std > 0 {
+				observedSR = (mean / std) * math.Sqrt(252)
+			}
+			skew, kurt := backtest.SkewnessKurtosis(returns)
+			dsr = backtest.DeflatedSharpeRatio(observedSR, len(returns), skew, kurt, totalCombinations)
+			if dsr < 0.95 {
+				log.Printf("WARNING: strategy does not pass Deflated Sharpe Ratio test (DSR=%.4f, trials=%d)", dsr, totalCombinations)
+			} else {
+				log.Printf("Deflated Sharpe Ratio: %.4f (trials=%d)", dsr, totalCombinations)
+			}
+		}
+	}
+
 	report := Report{
 		AsOf:            o.asOf,
 		GeneratedAt:     time.Now().In(markethours.Location()),
@@ -249,6 +326,8 @@ func (o *Optimizer) Run() (Report, error) {
 		ValidationWeeks: 4,
 		HoldoutWeeks:    4,
 		Candidates:      candidates,
+		DSR:             dsr,
+		Sensitivity:     sensitivityResult,
 	}
 
 	if len(candidates) > 0 {
@@ -281,6 +360,75 @@ func (o *Optimizer) Run() (Report, error) {
 	return report, nil
 }
 
+// defaultParameterRanges defines the bounds for each tunable parameter.
+func defaultParameterRanges() []ParameterRange {
+	return []ParameterRange{
+		{Name: "MinEntryScore", Min: 1.5, Max: 5.0},
+		{Name: "ShortMinEntryScore", Min: 2.0, Max: 4.0},
+		{Name: "RiskPerTradePct", Min: 0.003, Max: 0.010},
+		{Name: "TrailActivationR", Min: 0.3, Max: 2.0},
+		{Name: "TrailATRMultiplier", Min: 1.0, Max: 3.0},
+		{Name: "ProfitTargetR", Min: 2.0, Max: 6.0},
+		{Name: "MinGapPercent", Min: 2.0, Max: 7.0},
+		{Name: "MinRelativeVolume", Min: 1.5, Max: 4.5},
+	}
+}
+
+// LatinHypercubeSample generates LHS samples across parameter ranges.
+func LatinHypercubeSample(params []ParameterRange, numSamples int, rng *rand.Rand) [][]float64 {
+	nParams := len(params)
+	samples := make([][]float64, numSamples)
+	for i := range samples {
+		samples[i] = make([]float64, nParams)
+	}
+
+	for j := 0; j < nParams; j++ {
+		perm := rng.Perm(numSamples)
+		for i := 0; i < numSamples; i++ {
+			lower := float64(perm[i]) / float64(numSamples)
+			upper := float64(perm[i]+1) / float64(numSamples)
+			u := lower + rng.Float64()*(upper-lower)
+			samples[i][j] = params[j].Min + u*(params[j].Max-params[j].Min)
+		}
+	}
+	return samples
+}
+
+func (o *Optimizer) generateLHSVariations(profile config.StrategyProfile, count int, paramRanges []ParameterRange) ([]config.TradingConfig, [][]float64) {
+	base := config.DefaultTradingConfig()
+	base.StrategyProfileName = string(profile)
+
+	rng := rand.New(rand.NewSource(42 + int64(len(profile))))
+	samples := LatinHypercubeSample(paramRanges, count, rng)
+
+	variations := make([]config.TradingConfig, count)
+	for i, s := range samples {
+		cfg := base
+		cfg.MinEntryScore = s[0]
+		cfg.ShortMinEntryScore = s[1]
+		cfg.RiskPerTradePct = s[2]
+		cfg.TrailActivationR = s[3]
+		cfg.TrailATRMultiplier = s[4]
+		cfg.ProfitTargetR = s[5]
+		cfg.MinGapPercent = s[6]
+		cfg.MinRelativeVolume = s[7]
+
+		switch profile {
+		case config.StrategyProfileHighConviction:
+			cfg.MinEntryScore = math.Max(cfg.MinEntryScore, 3.0)
+			cfg.MaxOpenPositions = 3
+			cfg.RiskPerTradePct = math.Max(cfg.RiskPerTradePct, 0.008)
+		case config.StrategyProfileContinuation:
+			cfg.MinEntryScore = math.Min(cfg.MinEntryScore, 3.0)
+			cfg.TrailActivationR = math.Min(cfg.TrailActivationR, 1.0)
+		}
+
+		cfg.StrategyProfileVersion = fmt.Sprintf("opt-%s-%d", o.asOf.Format("20060102"), i)
+		variations[i] = cfg
+	}
+	return variations, samples
+}
+
 func (o *Optimizer) generateVariations(profile config.StrategyProfile, count int) []config.TradingConfig {
 	base := config.DefaultTradingConfig()
 	base.StrategyProfileName = string(profile)
@@ -290,7 +438,6 @@ func (o *Optimizer) generateVariations(profile config.StrategyProfile, count int
 		cfg := base
 		r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(i)))
 
-		// Randomize within bounds
 		cfg.MinEntryScore = 1.5 + r.Float64()*2.0
 		cfg.ShortMinEntryScore = 2.0 + r.Float64()*2.0
 		cfg.RiskPerTradePct = 0.003 + r.Float64()*0.007
@@ -316,6 +463,7 @@ func (o *Optimizer) generateVariations(profile config.StrategyProfile, count int
 	return variations
 }
 
+// splitBars splits by bar index (legacy).
 func (o *Optimizer) splitBars(searchPct, validPct float64) ([]backtest.InputBar, []backtest.InputBar, []backtest.InputBar) {
 	n := len(o.bars)
 	searchEnd := int(float64(n) * searchPct)
@@ -326,19 +474,114 @@ func (o *Optimizer) splitBars(searchPct, validPct float64) ([]backtest.InputBar,
 	return o.bars[:searchEnd], o.bars[searchEnd:validEnd], o.bars[validEnd:]
 }
 
+// splitBarsByTime splits by timestamp duration (Change 4).
+func (o *Optimizer) splitBarsByTime(searchPct, validPct float64) ([]backtest.InputBar, []backtest.InputBar, []backtest.InputBar) {
+	if len(o.bars) == 0 {
+		return nil, nil, nil
+	}
+
+	minTime := o.bars[0].Timestamp
+	maxTime := o.bars[len(o.bars)-1].Timestamp
+	totalDuration := maxTime.Sub(minTime)
+
+	searchEnd := minTime.Add(time.Duration(float64(totalDuration) * searchPct))
+	validEnd := minTime.Add(time.Duration(float64(totalDuration) * (searchPct + validPct)))
+
+	var search, valid, holdout []backtest.InputBar
+	for _, bar := range o.bars {
+		switch {
+		case bar.Timestamp.Before(searchEnd):
+			search = append(search, bar)
+		case bar.Timestamp.Before(validEnd):
+			valid = append(valid, bar)
+		default:
+			holdout = append(holdout, bar)
+		}
+	}
+	return search, valid, holdout
+}
+
+// scoreResult computes a normalized [0,1] score (Change 5).
 func (o *Optimizer) scoreResult(search, validation backtest.Result) float64 {
 	if search.Trades < 5 || validation.Trades < 3 {
 		return -1
 	}
 
-	// Weighted combination
-	searchScore := search.ProfitFactor*0.3 + search.WinRate*0.2 - search.MaxDrawdownPct/math.Max(search.NetPnL, 1)*0.2
-	validScore := validation.ProfitFactor*0.3 + validation.WinRate*0.2 - validation.MaxDrawdownPct/math.Max(validation.NetPnL, 1)*0.2
+	normWinRate := func(wr float64) float64 {
+		return math.Min(wr/100.0, 1.0)
+	}
 
-	// Penalize overfitting (large gap between search and validation)
-	overfit := math.Abs(searchScore-validScore) / math.Max(math.Abs(searchScore), 1)
+	normProfitFactor := func(pf float64) float64 {
+		if pf <= 0 {
+			return 0
+		}
+		return math.Min(pf/3.0, 1.0)
+	}
 
-	return (searchScore*0.4 + validScore*0.6) * (1 - overfit*0.5)
+	normDrawdownRisk := func(maxDD, netPnL float64) float64 {
+		if netPnL <= 0 {
+			return 0
+		}
+		ratio := maxDD / netPnL
+		return math.Max(0, 1.0-ratio/3.0)
+	}
+
+	normNetReturn := func(netPnL, capital float64) float64 {
+		if capital <= 0 {
+			return 0
+		}
+		ret := netPnL / capital
+		// Map return [-0.1, 0.5] to [0, 1]
+		return math.Max(0, math.Min((ret+0.1)/0.6, 1.0))
+	}
+
+	startingCapital := search.StartingCapital
+	if startingCapital <= 0 {
+		startingCapital = 25000
+	}
+
+	searchScore := normProfitFactor(search.ProfitFactor)*0.30 +
+		normWinRate(search.WinRate)*0.20 +
+		normDrawdownRisk(search.MaxDrawdownPct, search.NetPnL)*0.20 +
+		normNetReturn(search.NetPnL, startingCapital)*0.30
+
+	validScore := normProfitFactor(validation.ProfitFactor)*0.30 +
+		normWinRate(validation.WinRate)*0.20 +
+		normDrawdownRisk(validation.MaxDrawdownPct, validation.NetPnL)*0.20 +
+		normNetReturn(validation.NetPnL, startingCapital)*0.30
+
+	overfitPenalty := 0.0
+	if math.Abs(searchScore) > 0.01 {
+		overfitPenalty = math.Abs(searchScore-validScore) / math.Max(math.Abs(searchScore), 0.01)
+	}
+
+	return (searchScore*0.4 + validScore*0.6) * (1 - overfitPenalty*0.5)
+}
+
+func tradeReturnsFromResult(result backtest.Result) []float64 {
+	if result.StartingCapital <= 0 || len(result.ClosedTrades) == 0 {
+		return nil
+	}
+	returns := make([]float64, len(result.ClosedTrades))
+	for i, t := range result.ClosedTrades {
+		returns[i] = t.PnL / result.StartingCapital
+	}
+	return returns
+}
+
+func simpleMeanStd(data []float64) (float64, float64) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+	n := float64(len(data))
+	var sum, sumSq float64
+	for _, v := range data {
+		sum += v
+		sumSq += v * v
+	}
+	mean := sum / n
+	vari := sumSq/n - mean*mean
+	return mean, math.Sqrt(math.Max(0, vari))
 }
 
 func (o *Optimizer) writeArtifacts(report Report) error {
