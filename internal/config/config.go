@@ -160,6 +160,37 @@ type TradingConfig struct {
 	WFOOSWindowDays    int
 	WFPurgeGapDays     int
 	WFStepDays         int
+
+	// Phase 5: HMM regime detection (Change 1)
+	HMMRegimeEnabled bool
+	HMMConfidenceMin float64
+	HMMParamsFile    string
+
+	// Phase 5: Bayesian optimization (Change 2)
+	BayesianOptEnabled  bool
+	BayesianExploration int
+
+	// Phase 5: Factor model decomposition (Change 3)
+	FactorAnalysisEnabled bool
+
+	// Phase 5: Almgren-Chriss impact model (Change 4)
+	ImpactModelEnabled      bool
+	MaxAcceptableImpactPct  float64
+
+	// Phase 5: ML scoring (Change 5)
+	MLScoringEnabled bool
+	MLModelPath      string
+	MLScoreWeight    float64
+
+	// Phase 5: Meta-labeling (Change 6)
+	MetaLabelEnabled   bool
+	MetaLabelModelPath string
+	MetaLabelMinProb   float64
+
+	// Phase 5: CPCV backtest validation (Change 7)
+	CPCVEnabled  bool
+	CPCVGroups   int
+	CPCVPurgeGap int
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.
