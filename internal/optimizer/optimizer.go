@@ -42,8 +42,9 @@ type Report struct {
 	HoldoutWeeks    int                 `json:"holdoutWeeks"`
 	Candidates      []CandidateResult   `json:"candidates"`
 	Recommendation  *CandidateResult    `json:"recommendation"`
-	DSR             float64             `json:"dsr,omitempty"`
-	Sensitivity     *SensitivityResult  `json:"sensitivity,omitempty"`
+	DSR             float64              `json:"dsr,omitempty"`
+	MHT             *backtest.MHTResult  `json:"mht,omitempty"`
+	Sensitivity     *SensitivityResult   `json:"sensitivity,omitempty"`
 }
 
 // CandidateResult is one optimizer trial.
@@ -456,6 +457,31 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 		}
 	}
 
+	// === Multiple Hypothesis Testing Corrections (Section 5.3) ===
+	var mhtResult *backtest.MHTResult
+	mhtMethod := backtest.MHTMethod(baseCfg.MHTCorrectionMethod)
+	if mhtMethod != backtest.MHTNone && mhtMethod != "" && len(candidates) > 1 {
+		pValues := make([]float64, len(candidates))
+		for i, c := range candidates {
+			returns := tradeReturnsFromResult(c.ValidationResult)
+			if len(returns) > 5 {
+				mean, std := simpleMeanStd(returns)
+				sr := 0.0
+				if std > 0 {
+					sr = (mean / std) * math.Sqrt(252)
+				}
+				skew, kurt := backtest.SkewnessKurtosis(returns)
+				pValues[i] = backtest.SharpeRatioPValue(sr, len(returns), skew, kurt)
+			} else {
+				pValues[i] = 1.0
+			}
+		}
+		result := backtest.ApplyMHTCorrection(pValues, baseCfg.MHTAlpha, mhtMethod)
+		mhtResult = &result
+		log.Printf("MHT correction (%s): %d/%d candidates significant at α=%.3f (trials=%d)",
+			mhtMethod, result.SignificantCount, len(candidates), baseCfg.MHTAlpha, totalCombinations)
+	}
+
 	report := Report{
 		AsOf:            o.asOf,
 		GeneratedAt:     time.Now().In(markethours.Location()),
@@ -464,6 +490,7 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 		HoldoutWeeks:    4,
 		Candidates:      candidates,
 		DSR:             dsr,
+		MHT:             mhtResult,
 		Sensitivity:     sensitivityResult,
 	}
 
