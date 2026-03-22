@@ -12,16 +12,18 @@ import (
 
 // Manager tracks positions, exposure, and PnL.
 type Manager struct {
-	config       config.TradingConfig
-	mu           sync.RWMutex
-	positions    map[string]domain.Position
-	closedTrades []domain.ClosedTrade
-	dayKey       string
-	dayPnL       float64
-	brokerEquity float64
-	tradesToday  int
-	entriesToday int
-	recorder     domain.EventRecorder
+	config        config.TradingConfig
+	mu            sync.RWMutex
+	positions     map[string]domain.Position
+	closedTrades  []domain.ClosedTrade
+	dayKey        string
+	dayPnL        float64
+	brokerEquity  float64
+	tradesToday   int
+	entriesToday  int
+	recorder      domain.EventRecorder
+	highWaterMark float64
+	maxDrawdown   float64
 }
 
 // NewManager creates a portfolio manager.
@@ -32,11 +34,12 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 		recorder = recorders[0]
 	}
 	return &Manager{
-		config:       cfg,
-		positions:    make(map[string]domain.Position),
-		closedTrades: make([]domain.ClosedTrade, 0),
-		dayKey:       markethours.TradingDay(time.Now()),
-		recorder:     recorder,
+		config:        cfg,
+		positions:     make(map[string]domain.Position),
+		closedTrades:  make([]domain.ClosedTrade, 0),
+		dayKey:        markethours.TradingDay(time.Now()),
+		recorder:      recorder,
+		highWaterMark: cfg.StartingCapital,
 	}
 }
 
@@ -94,6 +97,7 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 		MarketRegime:     report.MarketRegime,
 		RegimeConfidence: report.RegimeConfidence,
 		Playbook:         report.Playbook,
+		Sector:           report.Sector,
 		LastPrice:        report.Price,
 		HighestPrice:     report.Price,
 		LowestPrice:      report.Price,
@@ -156,6 +160,7 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
 		Playbook:         pos.Playbook,
+		Sector:           pos.Sector,
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)
@@ -463,4 +468,123 @@ func (m *Manager) DayPnL() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.dayPnL
+}
+
+// PortfolioHeat returns the total dollar risk across all open positions.
+func (m *Manager) PortfolioHeat() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var totalRisk float64
+	for _, pos := range m.positions {
+		totalRisk += pos.RiskPerShare * float64(pos.Quantity)
+	}
+	return totalRisk
+}
+
+// PortfolioHeatPct returns total open risk as a fraction of current equity.
+func (m *Manager) PortfolioHeatPct() float64 {
+	equity := m.CurrentEquity()
+	if equity <= 0 {
+		return 0
+	}
+	return m.PortfolioHeat() / equity
+}
+
+// UpdateEquityTracking updates the high-water mark and max drawdown.
+func (m *Manager) UpdateEquityTracking() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	equity := m.currentEquityLocked()
+	if equity > m.highWaterMark {
+		m.highWaterMark = equity
+	}
+	if m.highWaterMark > 0 {
+		dd := (m.highWaterMark - equity) / m.highWaterMark
+		if dd > m.maxDrawdown {
+			m.maxDrawdown = dd
+		}
+	}
+}
+
+// CurrentDrawdown returns the current drawdown from the high-water mark as a fraction.
+func (m *Manager) CurrentDrawdown() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	equity := m.currentEquityLocked()
+	if m.highWaterMark <= 0 {
+		return 0
+	}
+	dd := (m.highWaterMark - equity) / m.highWaterMark
+	if dd < 0 {
+		return 0
+	}
+	return dd
+}
+
+// currentEquityLocked computes equity without acquiring the lock (caller must hold lock).
+func (m *Manager) currentEquityLocked() float64 {
+	equity := m.config.StartingCapital + m.dayPnL
+	for _, pos := range m.positions {
+		equity += pos.UnrealizedPnL
+	}
+	return equity
+}
+
+// OpenSymbols returns a list of symbols with open positions.
+func (m *Manager) OpenSymbols() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	symbols := make([]string, 0, len(m.positions))
+	for sym := range m.positions {
+		symbols = append(symbols, sym)
+	}
+	return symbols
+}
+
+// RollingTradeStats returns win rate and avg win/loss ratio over the last windowSize trades.
+func (m *Manager) RollingTradeStats(windowSize int) (winRate float64, avgWinLossRatio float64, tradeCount int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	trades := m.closedTrades
+	if len(trades) > windowSize {
+		trades = trades[len(trades)-windowSize:]
+	}
+
+	if len(trades) < 10 {
+		return 0, 0, len(trades)
+	}
+
+	var wins, losses int
+	var totalWin, totalLoss float64
+	for _, t := range trades {
+		if t.PnL > 0 {
+			wins++
+			totalWin += t.PnL
+		} else if t.PnL < 0 {
+			losses++
+			totalLoss += math.Abs(t.PnL)
+		}
+	}
+
+	if wins+losses == 0 {
+		return 0, 0, 0
+	}
+
+	winRate = float64(wins) / float64(wins+losses)
+
+	avgWin := 0.0
+	avgLoss := 0.0
+	if wins > 0 {
+		avgWin = totalWin / float64(wins)
+	}
+	if losses > 0 {
+		avgLoss = totalLoss / float64(losses)
+	}
+
+	if avgLoss > 0 {
+		avgWinLossRatio = avgWin / avgLoss
+	}
+
+	return winRate, avgWinLossRatio, wins + losses
 }

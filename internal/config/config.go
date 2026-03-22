@@ -69,6 +69,42 @@ type TradingConfig struct {
 
 	// Stagnation fix (Change 8) — R-multiple, not pct/100
 	StagnationMinPeakR float64
+
+	// Phase 2: Portfolio heat tracking (Change 1)
+	PortfolioHeatEnabled  bool
+	MaxPortfolioHeatPct   float64
+	PortfolioHeatAlertPct float64
+
+	// Phase 2: Graduated daily loss response (Change 2)
+	DailyLossModeratePct float64
+	DailyLossSeverePct   float64
+	DailyLossHaltPct     float64
+
+	// Phase 2: Sector concentration limits (Change 3)
+	SectorConcentrationEnabled bool
+	MaxPositionsPerSector      int
+	MaxSectorExposurePct       float64
+
+	// Phase 2: Correlation-aware position approval (Change 4)
+	CorrelationCheckEnabled bool
+	CorrelationWindowSize   int
+	MaxAvgCorrelation       float64
+
+	// Phase 2: Kelly Criterion sizing (Change 5)
+	KellySizingEnabled bool
+	KellyWindowSize    int
+	KellyMinTrades     int
+	KellyFraction      float64
+	MaxKellyRiskPct    float64
+
+	// Phase 2: Volatility-based position sizing (Change 6)
+	VolTargetSizingEnabled bool
+	TargetVolPerPosition   float64
+	DefaultVolatility      float64
+
+	// Phase 2: Drawdown-based risk reduction (Change 7)
+	DrawdownRiskEnabled   bool
+	MaxAcceptableDrawdown float64
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

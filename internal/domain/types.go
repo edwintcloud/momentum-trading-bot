@@ -79,6 +79,7 @@ type Candidate struct {
 	MarketRegime          string    `json:"marketRegime"`
 	RegimeConfidence      float64   `json:"regimeConfidence"`
 	Playbook              string    `json:"playbook"`
+	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
 	Timestamp             time.Time `json:"timestamp"`
@@ -101,6 +102,7 @@ type TradeSignal struct {
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
+	Sector           string    `json:"sector"`
 	Timestamp        time.Time `json:"timestamp"`
 }
 
@@ -121,6 +123,7 @@ type OrderRequest struct {
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
+	Sector           string    `json:"sector"`
 	Timestamp        time.Time `json:"timestamp"`
 }
 
@@ -140,6 +143,7 @@ type ExecutionReport struct {
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
+	Sector           string    `json:"sector"`
 	BrokerOrderID    string    `json:"brokerOrderId"`
 	BrokerStatus     string    `json:"brokerStatus"`
 	FilledAt         time.Time `json:"filledAt"`
@@ -159,6 +163,7 @@ type Position struct {
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
+	Sector           string    `json:"sector"`
 	LastPrice        float64   `json:"lastPrice"`
 	HighestPrice     float64   `json:"highestPrice"`
 	LowestPrice      float64   `json:"lowestPrice"`
@@ -185,6 +190,7 @@ type ClosedTrade struct {
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
+	Sector           string    `json:"sector"`
 }
 
 // LogEntry is a structured operational event.

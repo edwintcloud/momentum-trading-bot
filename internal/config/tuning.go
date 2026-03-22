@@ -187,6 +187,86 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.StagnationMinPeakR = 0.3
 	}
 
+	// Phase 2: Portfolio heat defaults
+	if !cfg.PortfolioHeatEnabled && cfg.MaxPortfolioHeatPct == 0 {
+		cfg.PortfolioHeatEnabled = true
+	}
+	if cfg.MaxPortfolioHeatPct == 0 {
+		cfg.MaxPortfolioHeatPct = 0.05
+	}
+	if cfg.PortfolioHeatAlertPct == 0 {
+		cfg.PortfolioHeatAlertPct = 0.03
+	}
+
+	// Phase 2: Graduated daily loss defaults
+	if cfg.DailyLossModeratePct == 0 {
+		cfg.DailyLossModeratePct = 0.01
+	}
+	if cfg.DailyLossSeverePct == 0 {
+		cfg.DailyLossSeverePct = 0.015
+	}
+	if cfg.DailyLossHaltPct == 0 {
+		cfg.DailyLossHaltPct = 0.02
+	}
+
+	// Phase 2: Sector concentration defaults
+	if !cfg.SectorConcentrationEnabled && cfg.MaxPositionsPerSector == 0 {
+		cfg.SectorConcentrationEnabled = true
+	}
+	if cfg.MaxPositionsPerSector == 0 {
+		cfg.MaxPositionsPerSector = 2
+	}
+	if cfg.MaxSectorExposurePct == 0 {
+		cfg.MaxSectorExposurePct = 0.25
+	}
+
+	// Phase 2: Correlation defaults
+	if !cfg.CorrelationCheckEnabled && cfg.MaxAvgCorrelation == 0 {
+		cfg.CorrelationCheckEnabled = true
+	}
+	if cfg.CorrelationWindowSize == 0 {
+		cfg.CorrelationWindowSize = 20
+	}
+	if cfg.MaxAvgCorrelation == 0 {
+		cfg.MaxAvgCorrelation = 0.70
+	}
+
+	// Phase 2: Kelly sizing defaults
+	if !cfg.KellySizingEnabled && cfg.KellyFraction == 0 {
+		cfg.KellySizingEnabled = true
+	}
+	if cfg.KellyWindowSize == 0 {
+		cfg.KellyWindowSize = 200
+	}
+	if cfg.KellyMinTrades == 0 {
+		cfg.KellyMinTrades = 30
+	}
+	if cfg.KellyFraction == 0 {
+		cfg.KellyFraction = 0.25
+	}
+	if cfg.MaxKellyRiskPct == 0 {
+		cfg.MaxKellyRiskPct = 0.02
+	}
+
+	// Phase 2: Volatility sizing defaults
+	if !cfg.VolTargetSizingEnabled && cfg.TargetVolPerPosition == 0 {
+		cfg.VolTargetSizingEnabled = true
+	}
+	if cfg.TargetVolPerPosition == 0 {
+		cfg.TargetVolPerPosition = 0.02
+	}
+	if cfg.DefaultVolatility == 0 {
+		cfg.DefaultVolatility = 0.30
+	}
+
+	// Phase 2: Drawdown risk defaults
+	if !cfg.DrawdownRiskEnabled && cfg.MaxAcceptableDrawdown == 0 {
+		cfg.DrawdownRiskEnabled = true
+	}
+	if cfg.MaxAcceptableDrawdown == 0 {
+		cfg.MaxAcceptableDrawdown = 0.15
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

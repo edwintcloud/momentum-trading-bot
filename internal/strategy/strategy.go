@@ -10,7 +10,9 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
+	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
+	"github.com/edwintcloud/momentum-trading-bot/internal/sector"
 )
 
 // Strategy implements breakout entries and managed exits.
@@ -18,6 +20,8 @@ type Strategy struct {
 	config              config.TradingConfig
 	portfolio           *portfolio.Manager
 	runtime             *runtime.State
+	riskEngine          *risk.Engine
+	volEstimator        *risk.VolatilityEstimator
 	lastEntryAt         map[string]time.Time
 	lastExitAt          map[string]time.Time
 	symbolStates        map[string]symbolTradeState
@@ -33,8 +37,9 @@ type symbolTradeState struct {
 }
 
 // NewStrategy creates a strategy instance.
-func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Strategy {
-	return &Strategy{
+// Optional variadic args: riskEngine *risk.Engine, volEstimator *risk.VolatilityEstimator
+func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State, opts ...interface{}) *Strategy {
+	s := &Strategy{
 		config:              cfg,
 		portfolio:           portfolioManager,
 		runtime:             runtimeState,
@@ -43,6 +48,15 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		symbolStates:        make(map[string]symbolTradeState),
 		reallocationTargets: make(map[string]bool),
 	}
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case *risk.Engine:
+			s.riskEngine = v
+		case *risk.VolatilityEstimator:
+			s.volEstimator = v
+		}
+	}
+	return s
 }
 
 // UpdateConfig replaces the strategy's trading config.
@@ -213,9 +227,26 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if currentEquity <= 0 {
 		currentEquity = s.config.StartingCapital
 	}
-	riskBudget := currentEquity * s.config.RiskPerTradePct
 
-	// Scale position size by confidence (Change 7)
+	// Phase 2 Change 5: Kelly Criterion sizing
+	riskPct := s.config.RiskPerTradePct
+	if s.config.KellySizingEnabled {
+		winRate, wlRatio, tradeCount := s.portfolio.RollingTradeStats(s.config.KellyWindowSize)
+		if tradeCount >= s.config.KellyMinTrades {
+			kellyF := KellyFraction(winRate, wlRatio)
+			fractionalKelly := kellyF * s.config.KellyFraction
+			if fractionalKelly > s.config.MaxKellyRiskPct {
+				fractionalKelly = s.config.MaxKellyRiskPct
+			}
+			if fractionalKelly > 0 {
+				riskPct = fractionalKelly
+			}
+		}
+	}
+
+	riskBudget := currentEquity * riskPct
+
+	// Scale position size by confidence (Phase 1 Change 7)
 	if s.config.ConfidenceSizingEnabled {
 		confidence := c.Score / 8.0
 		if confidence > 1.0 {
@@ -226,9 +257,46 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		riskBudget *= sizeMultiplier
 	}
 
+	// Phase 2 Change 2: Graduated daily loss sizing factor
+	if s.riskEngine != nil {
+		dailyLossFactor := s.riskEngine.DailyLossSizingFactor()
+		if dailyLossFactor <= 0 {
+			return domain.TradeSignal{}, false
+		}
+		if dailyLossFactor < 1.0 {
+			s.runtime.RecordLog("info", "strategy", fmt.Sprintf("daily loss response: sizing reduced to %.0f%%", dailyLossFactor*100))
+		}
+		riskBudget *= dailyLossFactor
+	}
+
+	// Phase 2 Change 7: Drawdown-based risk reduction
+	if s.riskEngine != nil {
+		drawdownFactor := s.riskEngine.DrawdownSizingFactor()
+		if drawdownFactor <= 0 {
+			return domain.TradeSignal{}, false
+		}
+		riskBudget *= drawdownFactor
+	}
+
+	// Update HWM tracking
+	s.portfolio.UpdateEquityTracking()
+
 	quantity := int64(math.Floor(riskBudget / riskPerShare))
 	if quantity <= 0 {
 		return domain.TradeSignal{}, false
+	}
+
+	// Phase 2 Change 6: Volatility-based position sizing cap
+	if s.config.VolTargetSizingEnabled && s.volEstimator != nil {
+		stockVol := s.volEstimator.GetVolatility(c.Symbol)
+		if stockVol > 0 {
+			targetDollarVol := currentEquity * s.config.TargetVolPerPosition
+			positionDollar := targetDollarVol / stockVol
+			volBasedQty := int64(positionDollar / c.Price)
+			if volBasedQty > 0 && volBasedQty < quantity {
+				quantity = volBasedQty
+			}
+		}
 	}
 
 	var stopPrice float64
@@ -236,6 +304,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		stopPrice = c.Price - riskPerShare
 	} else {
 		stopPrice = c.Price + riskPerShare
+	}
+
+	// Resolve sector for the candidate
+	candidateSector := c.Sector
+	if candidateSector == "" {
+		candidateSector = sector.SectorForSymbol(c.Symbol)
 	}
 
 	signal := domain.TradeSignal{
@@ -254,6 +328,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
 		Playbook:         c.Playbook,
+		Sector:           candidateSector,
 		Timestamp:        now,
 	}
 
@@ -467,4 +542,20 @@ func (s *Strategy) getSymbolState(symbol, dayKey string) symbolTradeState {
 		}
 	}
 	return state
+}
+
+// KellyFraction computes the optimal Kelly bet fraction.
+// f* = (b*p - q) / b where p=win rate, q=loss rate, b=avg win/avg loss
+func KellyFraction(winRate, avgWinLossRatio float64) float64 {
+	if avgWinLossRatio <= 0 || winRate <= 0 || winRate >= 1 {
+		return 0
+	}
+	b := avgWinLossRatio
+	p := winRate
+	q := 1 - p
+	kelly := (b*p - q) / b
+	if kelly < 0 {
+		return 0
+	}
+	return kelly
 }
