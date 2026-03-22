@@ -108,7 +108,9 @@ export function Controls({ status, post, setError }) {
             ['Regime Confidence', status.regimeConfidence ? status.regimeConfidence.toFixed(2) : 'n/a'],
             ['Active Profile', status.activeProfile || 'Built-in baseline'],
             ['Profile Version', status.activeVersion || 'n/a'],
-            ['Last Optimizer', status.lastOptimizerRun ? new Date(status.lastOptimizerRun).toLocaleString() : 'Not run'],
+            ['Last Optimizer', status.lastOptimizerRun && !status.lastOptimizerRun.startsWith('0001')
+              ? new Date(status.lastOptimizerRun).toLocaleString()
+              : 'Not run'],
             ['Paper Validation', status.paperValidation || 'n/a'],
           ].map(([label, value]) => (
             <div key={label} className="px-4 py-3 flex flex-col">

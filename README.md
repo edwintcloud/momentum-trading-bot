@@ -203,6 +203,12 @@ The auto-optimizer runs as a sidecar process that automatically tunes trading pa
 # Default: weekly schedule, update profiles/default.json
 go run . auto-optimize -profile profiles/default.json
 
+# Run immediately, then continue on schedule
+go run . auto-optimize -profile profiles/default.json -now
+
+# Run a single optimization and exit (no scheduling loop)
+go run . auto-optimize -profile profiles/default.json -once
+
 # Daily schedule with custom guardrails
 go run . auto-optimize -profile profiles/default.json -schedule daily -min-sharpe 0.7 -min-winrate 0.35
 
@@ -215,12 +221,27 @@ go run . auto-optimize \
   -min-winrate 0.30 \
   -max-drawdown 0.20 \
   -require-improvement \
-  -max-symbols 500
+  -max-symbols 500 \
+  -now \
+  -once
 ```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-profile` | Path to the active profile to update | `profiles/default.json` |
+| `-schedule` | Schedule: `weekly` or `daily` | `weekly` |
+| `-out` | Optimizer output directory | `.cache/optimizer` |
+| `-min-sharpe` | Minimum Sharpe ratio (profit factor) | `0.5` |
+| `-min-winrate` | Minimum win rate | `0.30` |
+| `-max-drawdown` | Maximum drawdown percentage | `0.20` |
+| `-require-improvement` | Require improvement over current profile | `true` |
+| `-max-symbols` | Maximum symbols for optimization (0=unlimited) | `500` |
+| `-now` | Run optimization immediately, then continue on schedule | `false` |
+| `-once` | Run a single optimization and exit (no scheduling loop) | `false` |
 
 ### Docker
 
-The auto-optimizer runs automatically as a sidecar in Docker Compose. Both the bot and optimizer share the `profiles/` volume, so promoted profiles are picked up via hot-reload.
+The auto-optimizer runs automatically as a sidecar in Docker Compose with the `-now` flag, so it runs an immediate optimization on startup and then continues on the weekly schedule. Both the bot and optimizer share the `profiles/` volume, so promoted profiles are picked up via hot-reload.
 
 ```bash
 docker compose up -d  # starts postgres + bot + auto-optimizer
@@ -297,7 +318,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-This starts PostgreSQL + the bot + the auto-optimizer. The `.cache` directory is mounted as a volume so cached data persists across container restarts. The auto-optimizer runs as a sidecar and shares the `profiles/` volume with the bot for seamless hot-reload. Dashboard at `http://localhost:8080`.
+This starts PostgreSQL + the bot + the auto-optimizer. The `.cache` directory is mounted as a volume so cached data persists across container restarts. The auto-optimizer runs as a sidecar with `-now` for an immediate first optimization, then continues on the weekly schedule. It shares the `profiles/` volume with the bot for seamless hot-reload. Dashboard at `http://localhost:8080`.
 
 ## Configuration
 

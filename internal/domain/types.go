@@ -230,7 +230,7 @@ type StatusSnapshot struct {
 	ActiveVersion    string    `json:"activeVersion"`
 	PendingProfile   string    `json:"pendingProfile"`
 	PendingVersion   string    `json:"pendingVersion"`
-	LastOptimizerRun time.Time `json:"lastOptimizerRun"`
+	LastOptimizerRun time.Time `json:"lastOptimizerRun,omitempty"`
 	PaperValidation  string    `json:"paperValidation"`
 	CurrentRegime    string    `json:"currentRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
