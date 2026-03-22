@@ -34,7 +34,7 @@ export function App() {
       case 'logs':
         return <Logs logs={logs} />;
       case 'controls':
-        return <Controls status={status} post={post} />;
+        return <Controls status={status} post={post} setError={setError} />;
       default:
         return null;
     }

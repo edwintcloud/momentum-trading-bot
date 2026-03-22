@@ -4,9 +4,8 @@ import { StatusBadge } from '../components/StatusBadge';
 import { money, number } from '../lib/format';
 import { Pause, Play, X, AlertOctagon } from 'lucide-react';
 
-export function Controls({ snapshot, post, setError }) {
+export function Controls({ status, post, setError }) {
   const [confirm, setConfirm] = useState(null);
-  const { status } = snapshot;
 
   const action = async (path) => {
     try {
