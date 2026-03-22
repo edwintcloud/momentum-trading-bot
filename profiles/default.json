@@ -213,7 +213,22 @@
     "CPCVPurgeGap": 60,
 
     "MaxEntriesPerMinute": 3,
-    "MinATRBars": 5
+    "MinATRBars": 5,
+
+    "VaREnabled": false,
+    "VaRConfidenceLevel": 0.95,
+    "VaRDailyLimitPct": 0.02,
+    "VaRMethod": "parametric",
+    "CVaRPositionSizing": false,
+
+    "GARCHEnabled": false,
+    "GARCHAlpha": 0.10,
+    "GARCHBeta": 0.85,
+    "GARCHLongRunVar": 0.0004,
+
+    "DynamicRiskBudgetEnabled": false,
+    "TargetVolAnnualized": 0.10,
+    "DailyRiskBudgetPct": 0.01
   },
   "promotion": {
     "deploymentMode": "paper",

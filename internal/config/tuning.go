@@ -449,6 +449,36 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.CPCVPurgeGap = 60
 	}
 
+	// Risk enhancements: VaR/CVaR defaults (disabled by default)
+	if cfg.VaRConfidenceLevel == 0 {
+		cfg.VaRConfidenceLevel = 0.95
+	}
+	if cfg.VaRDailyLimitPct == 0 {
+		cfg.VaRDailyLimitPct = 0.02
+	}
+	if cfg.VaRMethod == "" {
+		cfg.VaRMethod = "parametric"
+	}
+
+	// Risk enhancements: GARCH defaults (disabled by default)
+	if cfg.GARCHAlpha == 0 {
+		cfg.GARCHAlpha = 0.10
+	}
+	if cfg.GARCHBeta == 0 {
+		cfg.GARCHBeta = 0.85
+	}
+	if cfg.GARCHLongRunVar == 0 {
+		cfg.GARCHLongRunVar = 0.0004 // ~2% daily vol squared
+	}
+
+	// Risk enhancements: Dynamic risk budget defaults (disabled by default)
+	if cfg.TargetVolAnnualized == 0 {
+		cfg.TargetVolAnnualized = 0.10
+	}
+	if cfg.DailyRiskBudgetPct == 0 {
+		cfg.DailyRiskBudgetPct = 0.01
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

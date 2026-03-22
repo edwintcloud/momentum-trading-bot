@@ -195,6 +195,24 @@ type TradingConfig struct {
 	CPCVEnabled  bool
 	CPCVGroups   int
 	CPCVPurgeGap int
+
+	// Risk enhancements: VaR/CVaR (Section 2.2)
+	VaREnabled          bool
+	VaRConfidenceLevel  float64 // e.g. 0.95
+	VaRDailyLimitPct    float64 // max daily VaR as pct of account
+	VaRMethod           string  // "parametric" or "historical"
+	CVaRPositionSizing  bool    // use CVaR for position sizing
+
+	// Risk enhancements: GARCH(1,1) volatility forecasting (Section 2.5)
+	GARCHEnabled    bool
+	GARCHAlpha      float64 // ARCH coefficient
+	GARCHBeta       float64 // GARCH coefficient
+	GARCHLongRunVar float64 // long-run variance
+
+	// Risk enhancements: Dynamic risk budgeting (Section 2.6)
+	DynamicRiskBudgetEnabled bool
+	TargetVolAnnualized      float64 // target portfolio vol (annualized)
+	DailyRiskBudgetPct       float64 // daily risk budget as pct of account
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.
