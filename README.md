@@ -1,41 +1,45 @@
 # Momentum Trading Bot
 
-A modular momentum-trading system built in Go with a React operator dashboard. Supports long and short positions with regime-aware strategy selection, full quant finance stack (Kelly sizing, volatility-target sizing, correlation gates, market impact modeling, factor analysis, Monte Carlo simulation, bootstrap significance testing, walk-forward analysis, CPCV, Bayesian optimization), backtesting, optimization, and live paper/real trading via the Alpaca Markets API.
+A modular momentum-trading system built in Go with a React operator dashboard. The full quant stack includes intraday alpha signals (OFI, VPIN, OBV, ORB, dollar bars), VaR/CVaR risk management, GARCH volatility forecasting, mean-variance optimization, risk parity portfolio construction, VWAP/TWAP execution algorithms, an ML inference pipeline with meta-labeling and ensemble scoring, a weekly auto-optimizer with guardrails and hot-reload, backtesting with walk-forward/CPCV validation, and live paper/real trading via the Alpaca Markets API.
 
 > **Alpaca paid subscription required** — the bot uses the SIP data feed for real-time and historical market data.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  React Dashboard (Vite + Tailwind + Recharts)                        │
-│  Overview · Positions · Scanner · Trades · Logs · Controls           │
-└───────────────────────────┬──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  React Dashboard (Vite + Tailwind + Recharts)                                │
+│  Overview · Positions · Scanner · Trades · Logs · Controls                   │
+└───────────────────────────┬──────────────────────────────────────────────────┘
                             │ REST + WebSocket
-┌───────────────────────────▼──────────────────────────────────────────┐
-│  Go Backend                                                          │
-│                                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐         │
-│  │ Scanner  │→ │ Strategy │→ │   Risk   │→ │  Execution  │         │
-│  └──────────┘  └──────────┘  └──────────┘  └─────────────┘         │
-│                                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐         │
-│  │ Regime   │  │Portfolio │  │ Backtest │  │  Optimizer  │         │
-│  │(HMM +   │  │ Manager  │  │ Engine   │  │ (LHS +     │         │
-│  │threshold)│  │          │  │          │  │  Bayesian) │         │
-│  └──────────┘  └──────────┘  └──────────┘  └─────────────┘         │
-│                                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐         │
-│  │Analytics │  │   ML     │  │Volatility│  │ Correlation │         │
-│  │(Factor   │  │(Scoring +│  │Estimator │  │  Tracker   │         │
-│  │Decomp.)  │  │MetaLabel)│  │          │  │            │         │
-│  └──────────┘  └──────────┘  └──────────┘  └─────────────┘         │
-│                                                                      │
-│  ┌──────────┐  ┌──────────┐                                         │
-│  │ Impact   │  │Walk-Fwd /│                                         │
-│  │ Model    │  │  CPCV    │                                         │
-│  └──────────┘  └──────────┘                                         │
-└──────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────▼──────────────────────────────────────────────────┐
+│  Go Backend                                                                  │
+│                                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │ Scanner  │→ │ Strategy │→ │   Risk   │→ │Portfolio │→ │Execution │     │
+│  └──────────┘  └──────────┘  └──────────┘  │Construct.│  │  Router  │     │
+│                                             └──────────┘  └──────────┘     │
+│                                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │ Signals  │  │   ML     │  │ Regime   │  │ Backtest │  │Optimizer │     │
+│  │(OFI,VPIN│  │(Scoring +│  │(HMM +   │  │ Engine   │  │(LHS +   │     │
+│  │OBV, ORB) │  │Ensemble +│  │threshold)│  │          │  │Bayesian) │     │
+│  │          │  │MetaLabel)│  │          │  │          │  │          │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
+│                                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │VaR/CVaR │  │  GARCH   │  │Risk Budg.│  │Analytics │  │Walk-Fwd /│     │
+│  │Limits   │  │Volatility│  │(Dynamic) │  │(Factor   │  │CPCV /MHT│     │
+│  │          │  │Forecast  │  │          │  │Decomp.)  │  │          │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
+│                                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                                  │
+│  │  Auto-   │  │ Config   │  │ Impact   │                                  │
+│  │Optimizer │  │ Watcher  │  │ Model    │                                  │
+│  │(Sched. + │  │(Hot-     │  │(Almgren- │                                  │
+│  │Guardrail)│  │ Reload)  │  │ Chriss)  │                                  │
+│  └──────────┘  └──────────┘  └──────────┘                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
                             │
                  ┌──────────▼───────────┐
                  │  Alpaca Markets API  │
@@ -45,14 +49,22 @@ A modular momentum-trading system built in Go with a React operator dashboard. S
 
 ## Features
 
+### Intraday Alpha Signals
+- **Order Flow Imbalance (OFI)** — real-time buy/sell aggression measurement with anti-spoofing persistence filter
+- **VPIN** — Volume-Synchronized Probability of Informed Trading for flow toxicity detection
+- **OBV Divergence** — On-Balance Volume divergence detection (bullish/bearish)
+- **Dollar Bars / Volume Bars** — volume-clock sampling for ML feature engineering
+- **Opening Range Breakout (ORB)** — with gap filter and volume confirmation
+- **Signal Aggregator** — combines multiple signal sources with configurable weights
+
 ### Trading Engine
 - **Momentum Scanner** — gap filter, price filter, relative volume, premarket volume, volume rate, VWAP distance
 - **Dual-Direction Strategy** — long breakouts/pullbacks, short breakdowns
 - **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
 - **Market Regime Detection** — threshold-based (default) and HMM regime detector
-- **Confidence-Based Entry Scoring** — with regime gating
+- **Confidence-Based Entry Scoring** — with regime gating and ML score integration
 
-### Risk Management (Phase 2)
+### Risk Management
 - Portfolio heat tracking with alert thresholds
 - Graduated daily loss response (moderate / severe / halt tiers)
 - Sector concentration limits (max positions + exposure per sector)
@@ -61,16 +73,44 @@ A modular momentum-trading system built in Go with a React operator dashboard. S
 - Volatility-target position sizing
 - Drawdown-based risk reduction (linear scale to max acceptable drawdown)
 - Per-minute entry throttle (`MaxEntriesPerMinute`)
+- **Value-at-Risk (VaR)** — parametric and historical simulation
+- **Conditional VaR (CVaR / Expected Shortfall)**
+- **Intraday VaR limit monitoring**
+- **GARCH(1,1) volatility forecasting**
+- **Dynamic risk budgeting** with volatility-targeted sizing
 
-### Trade Management (Phase 3)
+### Portfolio Construction
+- **Mean-Variance Optimization (Markowitz)** with Ledoit-Wolf shrinkage
+- **Risk Parity** with EWMA volatility tracking
+- **Factor-Neutral construction** (beta hedging vs SPY)
+- **HHI diversification metric** with concentration alerts
+- **Long-Short balancing** (dollar-neutral, beta-neutral, sector-neutral)
+
+### Execution Optimization
+- **VWAP execution** — volume-profile-weighted order slicing
+- **TWAP execution** — equal time-slice distribution
+- **Adaptive limit pricing** — auto-widening with max slippage control
+- **Execution router** — auto-selects VWAP/TWAP/direct based on order size
+- Almgren-Chriss market impact model
+- Percentage-based slippage model (liquid / mid / illiquid tiers)
+
+### Machine Learning Pipeline
+- **Feature engineering** — 20+ causal, stationary features
+- **Fractional differentiation** for stationarity preservation
+- **Pure-Go inference engine** (linear models + gradient-boosted stumps)
+- **Meta-labeling** with triple barrier method (wired into strategy)
+- **ML scoring** with confidence threshold (wired into strategy)
+- **Ensemble methods** (equal weight, IR-weighted, regime-conditional)
+- **Concept drift detection** (PSI + rolling Sharpe decay)
+
+### Trade Management
 - RSI overbought/oversold filter
 - Time-of-day adaptive parameters
 - Partial exit framework (two trigger levels with configurable percentages)
 - Adaptive trailing stops with volatility factor
 - Mean-reversion overlay (Bollinger bands + ADX filter)
-- Percentage-based slippage model (liquid / mid / illiquid tiers)
 
-### Backtesting & Validation (Phase 4)
+### Backtesting & Validation
 - Backtest engine with streaming bar iterator (memory efficient)
 - Monte Carlo simulation (configurable number of sims)
 - Bootstrap significance testing
@@ -78,6 +118,9 @@ A modular momentum-trading system built in Go with a React operator dashboard. S
 - Deflated Sharpe Ratio
 - Walk-forward analysis (in-sample / out-of-sample with purge gap)
 - CPCV — Combinatorial Purged Cross-Validation
+- **Bonferroni correction** for multiple hypothesis testing
+- **Benjamini-Hochberg FDR** procedure
+- Integrated MHT corrections with optimizer output
 
 ### Optimization
 - Latin Hypercube Sampling (LHS) grid search
@@ -86,12 +129,12 @@ A modular momentum-trading system built in Go with a React operator dashboard. S
 - Three strategy profiles: `baseline_breakout`, `high_conviction_breakout`, `continuation_breakout`
 - Optimizer artifact output with promotion workflow (paper → live)
 
-### Quant Finance (Phase 5)
-- HMM regime detection with Forward algorithm and Baum-Welch training
-- Factor analysis (Fama-French-style return decomposition)
-- Almgren-Chriss market impact model
-- ML scoring stubs (disabled by default — require trained models)
-- Meta-labeling stubs (disabled by default)
+### Auto-Optimizer
+- Weekly automatic optimization (Saturday 6 AM ET)
+- Guardrail validation (Sharpe, win rate, drawdown, trade count, DSR, improvement)
+- Automatic profile promotion with atomic file writes and backups
+- Hot-reload — live bot picks up new profile without restart
+- Telegram notifications for optimizer events
 
 ### Dashboard
 - **Overview** — Account summary, PnL chart, regime status, recent activity
@@ -108,6 +151,9 @@ A modular momentum-trading system built in Go with a React operator dashboard. S
 - `GET  /api/candidates` — Scanner candidates
 - `GET  /api/trades` — Trade history
 - `GET  /api/logs` — System logs
+- `GET  /api/config` — Get trading config
+- `POST /api/config` — Update trading config (hot-reload)
+- `GET  /api/performance` — Performance metrics
 - `POST /api/pause` — Pause trading
 - `POST /api/resume` — Resume trading
 - `POST /api/close-all` — Close all positions
@@ -115,6 +161,86 @@ A modular momentum-trading system built in Go with a React operator dashboard. S
 - `GET  /ws` — Real-time dashboard updates
 - `GET  /healthz` — Liveness probe (public)
 - `GET  /readyz` — Readiness probe (public)
+
+## Quant Research
+
+The system's quantitative methodologies are documented in the comprehensive research document:
+[`docs/quant_research_findings.md`](docs/quant_research_findings.md)
+
+This ~1600-line document covers:
+- **Section 1** — Intraday Alpha Factors & Signals (OFI, VPIN, momentum, mean-reversion, volume signals, ORB, sentiment)
+- **Section 2** — Risk Management (Kelly, VaR/CVaR, drawdown, correlation, HMM/GARCH, dynamic risk budgeting)
+- **Section 3** — Portfolio Construction (Markowitz MVO, risk parity, factor-neutral, HHI, L/S balancing)
+- **Section 4** — Execution Optimization (VWAP, TWAP, Almgren-Chriss, adaptive limit pricing)
+- **Section 5** — Statistical Validation (walk-forward, CPCV, MHT corrections, DSR, regime-conditional backtesting)
+- **Section 6** — Machine Learning (feature engineering, XGBoost/LightGBM, online learning, meta-labeling, ensembles)
+- **Section 7** — Implementation Priorities & Integration Notes
+
+Each section includes formulas, implementation guidance, key parameters, and academic references.
+
+## Auto-Optimizer
+
+The auto-optimizer runs as a sidecar process that automatically tunes trading parameters on a weekly schedule.
+
+### How It Works
+
+1. **Saturday 6 AM ET** — fetches the last 3 months of market data from Alpaca
+2. Runs the full optimizer (LHS grid search + Bayesian optimization)
+3. Validates the candidate against guardrails:
+   - Sharpe ratio ≥ 0.5
+   - Win rate ≥ 30%
+   - Max drawdown ≤ 20%
+   - At least 20 trades
+   - DSR > 0.50
+   - Must improve on current profile by ≥ 10% (configurable)
+4. If all checks pass: backs up the current profile and writes the new one
+5. The live bot detects the file change within 10 seconds and hot-reloads the config
+6. Sends Telegram notification with metrics summary
+
+### CLI Usage
+
+```bash
+# Default: weekly schedule, update profiles/default.json
+go run . auto-optimize -profile profiles/default.json
+
+# Daily schedule with custom guardrails
+go run . auto-optimize -profile profiles/default.json -schedule daily -min-sharpe 0.7 -min-winrate 0.35
+
+# All flags
+go run . auto-optimize \
+  -profile profiles/default.json \
+  -schedule weekly \
+  -out .cache/optimizer \
+  -min-sharpe 0.5 \
+  -min-winrate 0.30 \
+  -max-drawdown 0.20 \
+  -require-improvement \
+  -max-symbols 500
+```
+
+### Docker
+
+The auto-optimizer runs automatically as a sidecar in Docker Compose. Both the bot and optimizer share the `profiles/` volume, so promoted profiles are picked up via hot-reload.
+
+```bash
+docker compose up -d  # starts postgres + bot + auto-optimizer
+```
+
+## Telegram Notifications
+
+The auto-optimizer can send notifications to a Telegram chat when it starts, completes, promotes a profile, or rejects a candidate.
+
+### Setup
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get the bot token
+2. Send a message to your bot, then get your chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates`
+3. Add to `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+   TELEGRAM_CHAT_ID=987654321
+   ```
+
+Notifications are optional — if the env vars are not set, the optimizer runs silently (logs only).
 
 ## Quick Start
 
@@ -153,6 +279,9 @@ go run . optimize -as-of 2025-06-01
 # Optimization with explicit start and max symbols
 go run . optimize -as-of 2025-06-01 -start 2025-01-01 -max-symbols 200
 
+# Auto-optimizer (runs on schedule)
+go run . auto-optimize -profile profiles/default.json
+
 # Clear bar cache
 go run . backtest -start 2025-01-01 -clear-cache
 ```
@@ -168,7 +297,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-This starts PostgreSQL + the bot. The `.cache` directory is mounted as a volume so cached data persists across container restarts. Dashboard at `http://localhost:8080`.
+This starts PostgreSQL + the bot + the auto-optimizer. The `.cache` directory is mounted as a volume so cached data persists across container restarts. The auto-optimizer runs as a sidecar and shares the `profiles/` volume with the bot for seamless hot-reload. Dashboard at `http://localhost:8080`.
 
 ## Configuration
 
@@ -183,7 +312,13 @@ This starts PostgreSQL + the bot. The `.cache` directory is mounted as a volume 
 | `ALPACA_SYMBOLS` | Comma-separated symbol list | (all — wildcard) |
 | `DATABASE_URL` | PostgreSQL connection string | (filesystem fallback) |
 | `CONTROL_PLANE_AUTH_TOKEN` | API auth token | (required) |
-| `TRADING_PROFILE_PATH` | Path to JSON trading profile | bundled `profiles/default.json` |
+| `LISTEN_ADDR` | HTTP server listen address | `:8080` |
+| `TRADING_PROFILE_PATH` | Path to JSON trading profile | `profiles/default.json` |
+| `POSTGRES_DB` | PostgreSQL database name (Docker) | `momentum` |
+| `POSTGRES_USER` | PostgreSQL user (Docker) | `momentum` |
+| `POSTGRES_PASSWORD` | PostgreSQL password (Docker) | `momentum` |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | (optional) |
+| `TELEGRAM_CHAT_ID` | Telegram chat ID for notifications | (optional) |
 
 > Alpaca paid subscription is required for the SIP data feed. The live-trading arming flag is intentional — the bot refuses to start in live mode unless `ALPACA_LIVE_TRADING_ENABLED=true`.
 
@@ -213,7 +348,7 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Three strate
 
 **Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`
 
-**Quant Features** — enable/disable flags for each Phase 2-5 feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
+**Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
 
 **Optimization** — `OptimizerSamples`, `OptimizerUseLHS`, `BayesianOptEnabled`, `WalkForwardEnabled`, `CPCVEnabled`
 
@@ -222,7 +357,7 @@ See `profiles/default.json` for the complete field reference.
 ## Project Structure
 
 ```
-├── main.go                          # Entry point + optimize command
+├── main.go                          # Entry point + CLI commands
 ├── backtest_command.go              # Backtest CLI command
 ├── backtest_dataset_iterator.go     # Streaming bar iterator
 ├── backtest_fetch.go                # Alpaca historical data fetcher
@@ -236,6 +371,11 @@ See `profiles/default.json` for the complete field reference.
 │   ├── analytics/
 │   │   └── factors.go               # Fama-French factor decomposition
 │   ├── api/server.go                # REST + WebSocket API
+│   ├── autooptimize/                # Auto-optimizer sidecar
+│   │   ├── scheduler.go             # Weekly/daily scheduler (cron-style)
+│   │   ├── guardrails.go            # Candidate validation gates
+│   │   ├── promoter.go              # Atomic profile promotion + backup
+│   │   └── notifier.go              # Telegram notification integration
 │   ├── backtest/                    # Backtesting & validation
 │   │   ├── engine.go                # Core backtest engine
 │   │   ├── iterator.go              # Bar iterator interface
@@ -243,6 +383,7 @@ See `profiles/default.json` for the complete field reference.
 │   │   ├── cpcv.go                  # Combinatorial Purged Cross-Validation
 │   │   ├── costs.go                 # Transaction cost model
 │   │   ├── dsr.go                   # Deflated Sharpe Ratio
+│   │   ├── mht.go                   # Multiple Hypothesis Testing corrections
 │   │   ├── montecarlo.go            # Monte Carlo simulation
 │   │   └── walkforward.go           # Walk-forward analysis
 │   ├── config/                      # Configuration
@@ -250,35 +391,62 @@ See `profiles/default.json` for the complete field reference.
 │   │   ├── backtest.go              # Backtest run config
 │   │   ├── config.go                # TradingConfig (~125 fields)
 │   │   ├── profile.go               # Profile loading/saving
-│   │   └── tuning.go                # Auto-tuning defaults
+│   │   ├── tuning.go                # Auto-tuning defaults
+│   │   └── watcher.go               # File watcher for hot-reload
 │   ├── domain/                      # Core types
 │   │   ├── types.go                 # Domain models
 │   │   ├── trading.go               # Intent/side/direction helpers
 │   │   └── regime.go                # Regime types
 │   ├── execution/                   # Order execution
 │   │   ├── execution.go             # Alpaca order execution
-│   │   └── impact.go                # Almgren-Chriss impact model
+│   │   ├── impact.go                # Almgren-Chriss impact model
+│   │   ├── vwap.go                  # VWAP execution algorithm
+│   │   ├── twap.go                  # TWAP execution algorithm
+│   │   ├── adaptivelimit.go         # Adaptive limit pricing
+│   │   └── router.go                # Execution router (auto-select algo)
 │   ├── market/normalizer.go         # Tick normalization
 │   ├── markethours/hours.go         # ET market hours + holidays
-│   ├── ml/                          # Machine learning stubs
-│   │   ├── scorer.go                # ML scoring (disabled by default)
-│   │   └── metalabel.go             # Meta-labeling (disabled by default)
+│   ├── ml/                          # Machine learning pipeline
+│   │   ├── features.go              # Feature engineering (20+ features)
+│   │   ├── fracdiff.go              # Fractional differentiation
+│   │   ├── training.go              # Pure-Go inference engine
+│   │   ├── scorer.go                # ML scoring with confidence threshold
+│   │   ├── metalabel.go             # Meta-labeling (triple barrier)
+│   │   ├── ensemble.go              # Ensemble methods (equal/IR/regime)
+│   │   └── drift.go                 # Concept drift detection (PSI + Sharpe)
 │   ├── optimizer/                   # Parameter optimization
 │   │   ├── optimizer.go             # LHS grid search + orchestration
 │   │   ├── bayesian.go              # Bayesian optimization (GP + EI)
 │   │   ├── sensitivity.go           # Sensitivity analysis
 │   │   └── artifacts.go             # Optimizer output artifacts
-│   ├── portfolio/manager.go         # Position tracking & PnL
+│   ├── portfolio/                   # Portfolio management & construction
+│   │   ├── manager.go               # Position tracking & PnL
+│   │   ├── constructor.go           # Portfolio construction orchestrator
+│   │   ├── meanvariance.go          # Mean-Variance Optimization (Markowitz)
+│   │   ├── riskparity.go            # Risk Parity with EWMA
+│   │   ├── factorneutral.go         # Factor-Neutral construction
+│   │   ├── hhi.go                   # HHI diversification metric
+│   │   └── longshort.go             # Long-Short balancing
 │   ├── regime/                      # Market regime detection
 │   │   ├── tracker.go               # Threshold-based regime tracker
 │   │   └── hmm.go                   # HMM regime detector
 │   ├── risk/                        # Risk management
 │   │   ├── risk.go                  # Risk engine (all gates)
 │   │   ├── correlation.go           # Correlation tracker
-│   │   └── volatility.go            # Volatility estimator
+│   │   ├── volatility.go            # Volatility estimator
+│   │   ├── var.go                   # VaR / CVaR (parametric + historical)
+│   │   ├── garch.go                 # GARCH(1,1) volatility forecasting
+│   │   └── riskbudget.go            # Dynamic risk budgeting
 │   ├── runtime/state.go             # Runtime state management
 │   ├── scanner/scanner.go           # Momentum scanner
 │   ├── sector/lookup.go             # Sector classification
+│   ├── signals/                     # Intraday alpha signals
+│   │   ├── signals.go               # Signal aggregator
+│   │   ├── ofi.go                   # Order Flow Imbalance
+│   │   ├── vpin.go                  # VPIN (flow toxicity)
+│   │   ├── obv.go                   # OBV divergence detection
+│   │   ├── dollarbars.go            # Dollar bars / volume bars
+│   │   └── orb.go                   # Opening Range Breakout
 │   ├── storage/                     # Persistence
 │   │   ├── postgres.go              # PostgreSQL
 │   │   └── filesystem.go            # Filesystem fallback
@@ -289,10 +457,12 @@ See `profiles/default.json` for the complete field reference.
 │   │   ├── logger.go                # Event logger
 │   │   └── composite.go             # Composite logger
 │   └── volumeprofile/profile.go     # Volume analysis
+├── docs/
+│   └── quant_research_findings.md   # Quantitative research document
 ├── web/                             # React dashboard (Vite + Tailwind)
 ├── profiles/default.json            # Default trading profile (~125 config fields)
 ├── Dockerfile                       # Multi-stage build (Node → Go → Alpine)
-├── docker-compose.yml               # PostgreSQL + bot + cache volume
+├── docker-compose.yml               # PostgreSQL + bot + auto-optimizer
 └── .env.example                     # Environment template
 ```
 
