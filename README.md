@@ -211,9 +211,9 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Three strate
 
 **Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`
 
-**Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `StopLossPct`, `TrailATRMultiplier`, `TightTrailTriggerR`
+**Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`
 
-**Quant Features** — enable/disable flags for each Phase 2-5 feature: `EnableMarketRegime`, `EnableKellySizing`, `EnableVolTargetSizing`, `EnableCorrelationGate`, `EnableFactorAnalysis`, `EnableImpactModel`
+**Quant Features** — enable/disable flags for each Phase 2-5 feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
 
 **Optimization** — `OptimizerSamples`, `OptimizerUseLHS`, `BayesianOptEnabled`, `WalkForwardEnabled`, `CPCVEnabled`
 
