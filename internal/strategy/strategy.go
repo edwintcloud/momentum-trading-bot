@@ -12,8 +12,55 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
+	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
 	"github.com/edwintcloud/momentum-trading-bot/internal/sector"
 )
+
+// TimeWindow classifies the current market session period.
+type TimeWindow int
+
+const (
+	TimeWindowOpen    TimeWindow = iota // first 30 minutes
+	TimeWindowMorning                   // 30 min to 2 hours after open
+	TimeWindowMidDay                    // 2 hours to 1 hour before close
+	TimeWindowClose                     // final hour
+)
+
+// TimeWindowConfig holds per-window adjustments.
+type TimeWindowConfig struct {
+	ScoreThresholdMultiplier float64
+	RiskMultiplier           float64
+	ProfitTargetMultiplier   float64
+}
+
+var defaultTimeWindowConfigs = map[TimeWindow]TimeWindowConfig{
+	TimeWindowOpen:    {ScoreThresholdMultiplier: 1.0, RiskMultiplier: 1.3, ProfitTargetMultiplier: 1.0},
+	TimeWindowMorning: {ScoreThresholdMultiplier: 1.0, RiskMultiplier: 1.0, ProfitTargetMultiplier: 1.0},
+	TimeWindowMidDay:  {ScoreThresholdMultiplier: 1.15, RiskMultiplier: 0.85, ProfitTargetMultiplier: 0.8},
+	TimeWindowClose:   {ScoreThresholdMultiplier: 1.3, RiskMultiplier: 0.7, ProfitTargetMultiplier: 0.6},
+}
+
+// currentTimeWindow classifies the market session period using ET.
+func currentTimeWindow(ts time.Time) TimeWindow {
+	loc := markethours.Location()
+	et := ts.In(loc)
+	open := markethours.MarketOpen(ts)
+	openET := open.In(loc)
+	minutesSinceOpen := et.Sub(openET).Minutes()
+	closeET := markethours.MarketClose(ts).In(loc)
+	minutesToClose := closeET.Sub(et).Minutes()
+
+	switch {
+	case minutesSinceOpen < 30:
+		return TimeWindowOpen
+	case minutesToClose <= 60:
+		return TimeWindowClose
+	case minutesSinceOpen < 120:
+		return TimeWindowMorning
+	default:
+		return TimeWindowMidDay
+	}
+}
 
 // Strategy implements breakout entries and managed exits.
 type Strategy struct {
@@ -26,6 +73,7 @@ type Strategy struct {
 	lastExitAt          map[string]time.Time
 	symbolStates        map[string]symbolTradeState
 	reallocationTargets map[string]bool
+	recentPrices        map[string][]float64 // for Bollinger Band exit on mean-reversion
 }
 
 type symbolTradeState struct {
@@ -47,6 +95,7 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		lastExitAt:          make(map[string]time.Time),
 		symbolStates:        make(map[string]symbolTradeState),
 		reallocationTargets: make(map[string]bool),
+		recentPrices:        make(map[string][]float64),
 	}
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -189,6 +238,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if c.Direction == domain.DirectionShort {
 		minScore = s.config.ShortMinEntryScore
 	}
+
+	// Phase 3 Change 3: Time-of-day adaptive score threshold
+	tw := currentTimeWindow(now)
+	if s.config.TimeOfDayEnabled {
+		twCfg := defaultTimeWindowConfigs[tw]
+		minScore *= twCfg.ScoreThresholdMultiplier
+	}
+
 	if c.Score < minScore {
 		return domain.TradeSignal{}, false
 	}
@@ -221,6 +278,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	riskPerShare := s.computeRiskPerShare(c)
 	if riskPerShare <= 0 {
 		return domain.TradeSignal{}, false
+	}
+
+	// Phase 3 Change 3: Time-of-day risk multiplier (wider stops at open, tighter at close)
+	if s.config.TimeOfDayEnabled {
+		twCfg := defaultTimeWindowConfigs[tw]
+		riskPerShare *= twCfg.RiskMultiplier
 	}
 
 	currentEquity := s.portfolio.CurrentEquity()
@@ -357,6 +420,17 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 
 	s.portfolio.UpdatePrice(tick.Symbol, tick.Price)
 
+	// Track recent prices for mean-reversion BB exit
+	if s.config.MeanReversionEnabled {
+		prices := s.recentPrices[tick.Symbol]
+		prices = append(prices, tick.Price)
+		maxLen := s.config.BollingerPeriod + 10
+		if len(prices) > maxLen {
+			prices = prices[len(prices)-maxLen:]
+		}
+		s.recentPrices[tick.Symbol] = prices
+	}
+
 	// Check exit conditions in priority order
 	reason, shouldExit := s.checkExitConditions(pos, tick)
 	if !shouldExit {
@@ -365,30 +439,55 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		return domain.TradeSignal{}, false
 	}
 
+	// Phase 3 Change 4: Partial exit — reduce quantity instead of full close
+	exitQty := pos.Quantity
+	exitIntent := domain.IntentClose
+	if reason == "partial-1" || reason == "partial-2" {
+		var pct float64
+		if reason == "partial-1" {
+			pct = s.config.PartialTrigger1Pct
+		} else {
+			pct = s.config.PartialTrigger2Pct
+		}
+		partialQty := int64(math.Floor(float64(pos.OriginalQuantity) * pct))
+		if partialQty > pos.Quantity {
+			partialQty = pos.Quantity
+		}
+		if partialQty > 0 {
+			exitQty = partialQty
+			if partialQty < pos.Quantity {
+				exitIntent = "partial"
+			}
+			// If partialQty == pos.Quantity, it's a full close with partial reason
+		}
+	}
+
 	signal := domain.TradeSignal{
 		Symbol:       tick.Symbol,
 		Side:         domain.CloseBrokerSide(pos.Side),
-		Intent:       domain.IntentClose,
+		Intent:       exitIntent,
 		PositionSide: pos.Side,
 		Price:        tick.Price,
-		Quantity:     pos.Quantity,
+		Quantity:     exitQty,
 		Reason:       reason,
 		Timestamp:    now,
 	}
 
 	s.lastExitAt[tick.Symbol] = now
 
-	// Track losses
-	pnl := (tick.Price - pos.AvgPrice) * float64(pos.Quantity)
-	if domain.IsShort(pos.Side) {
-		pnl = -pnl
-	}
-	if pnl < 0 {
-		dayKey := markethours.TradingDay(now)
-		state := s.getSymbolState(tick.Symbol, dayKey)
-		state.lossExits++
-		state.lastLossAt = now
-		s.symbolStates[tick.Symbol] = state
+	// Track losses (only for full close)
+	if exitIntent == domain.IntentClose {
+		pnl := (tick.Price - pos.AvgPrice) * float64(exitQty)
+		if domain.IsShort(pos.Side) {
+			pnl = -pnl
+		}
+		if pnl < 0 {
+			dayKey := markethours.TradingDay(now)
+			state := s.getSymbolState(tick.Symbol, dayKey)
+			state.lossExits++
+			state.lastLossAt = now
+			s.symbolStates[tick.Symbol] = state
+		}
 	}
 
 	return signal, true
@@ -421,8 +520,39 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		return "stop-loss", true
 	}
 
+	// Phase 3 Change 4: Partial exit framework
+	if s.config.PartialExitsEnabled && pos.OriginalQuantity > 0 && pos.Quantity > 0 {
+		partialReason, partialExit := s.checkPartialExit(pos, r)
+		if partialExit {
+			return partialReason, true
+		}
+	}
+
+	// Phase 3 Change 6: Mean-reversion exit at BB middle
+	if s.config.MeanReversionEnabled && isMeanReversionSetup(pos.SetupType) {
+		prices := s.recentPrices[pos.Symbol]
+		if len(prices) >= s.config.BollingerPeriod {
+			_, bbMiddle, _ := scanner.ComputeBollingerBandsFromPrices(prices, s.config.BollingerPeriod, s.config.BollingerK)
+			if bbMiddle > 0 {
+				if domain.IsLong(pos.Side) && tick.Price >= bbMiddle {
+					return "mean-reversion-target", true
+				}
+				if domain.IsShort(pos.Side) && tick.Price <= bbMiddle {
+					return "mean-reversion-target", true
+				}
+			}
+		}
+	}
+
 	// Profit target (playbook-specific)
-	if r >= exitCfg.ProfitTargetR {
+	profitTargetR := exitCfg.ProfitTargetR
+	// Phase 3 Change 3: Time-of-day profit target adjustment
+	if s.config.TimeOfDayEnabled {
+		tw := currentTimeWindow(tick.Timestamp)
+		twCfg := defaultTimeWindowConfigs[tw]
+		profitTargetR *= twCfg.ProfitTargetMultiplier
+	}
+	if r >= profitTargetR {
 		return "profit-target", true
 	}
 
@@ -450,9 +580,58 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	return "", false
 }
 
+// checkPartialExit determines if a partial exit should be taken.
+func (s *Strategy) checkPartialExit(pos domain.Position, r float64) (string, bool) {
+	// Partial 1: at trigger1R, exit trigger1Pct of original
+	if pos.PartialsExecuted == 0 && r >= s.config.PartialTrigger1R {
+		exitQty := int64(math.Floor(float64(pos.OriginalQuantity) * s.config.PartialTrigger1Pct))
+		if exitQty > 0 && exitQty < pos.Quantity {
+			return "partial-1", true
+		}
+	}
+	// Partial 2: at trigger2R, exit trigger2Pct of original
+	if pos.PartialsExecuted == 1 && r >= s.config.PartialTrigger2R {
+		exitQty := int64(math.Floor(float64(pos.OriginalQuantity) * s.config.PartialTrigger2Pct))
+		if exitQty > 0 && exitQty <= pos.Quantity {
+			return "partial-2", true
+		}
+	}
+	return "", false
+}
+
+func isMeanReversionSetup(setupType string) bool {
+	return setupType == "mean_reversion_long" || setupType == "mean_reversion_short"
+}
+
+// volRegimeTrailFactor returns a multiplier for trail distances based on volatility regime.
+func (s *Strategy) volRegimeTrailFactor(pos domain.Position) float64 {
+	if !s.config.AdaptiveTrailEnabled {
+		return 1.0
+	}
+	switch pos.MarketRegime {
+	case domain.RegimeBullish:
+		if domain.IsLong(pos.Side) {
+			return 1.2 // let winners run in favorable regime
+		}
+		return 0.8 // tighter stops for shorts in bullish
+	case domain.RegimeBearish:
+		if domain.IsShort(pos.Side) {
+			return 1.2
+		}
+		return 0.8
+	case domain.RegimeMixed:
+		return 0.9 // slightly tighter in mixed
+	default:
+		return 1.0
+	}
+}
+
 func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	r := s.currentR(pos, tick.Price)
 	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
+
+	// Phase 3 Change 5: Adaptive trailing stop multiplier
+	volFactor := s.volRegimeTrailFactor(pos)
 
 	var newStop float64
 	if domain.IsLong(pos.Side) {
@@ -461,17 +640,17 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 			newStop = pos.AvgPrice + pos.EntryATR*0.1
 		}
 
-		// Trailing stop activation (playbook-specific)
+		// Trailing stop activation (playbook-specific, volatility-adjusted)
 		if r >= exitCfg.TrailActivationR {
-			trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier
+			trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier*volFactor
 			if trailStop > pos.StopPrice {
 				newStop = trailStop
 			}
 		}
 
-		// Tight trail (playbook-specific)
+		// Tight trail (playbook-specific, volatility-adjusted)
 		if r >= exitCfg.TightTrailTriggerR {
-			tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier
+			tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier*volFactor
 			if tightStop > pos.StopPrice {
 				newStop = tightStop
 			}
@@ -482,16 +661,26 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 			newStop = pos.AvgPrice - pos.EntryATR*0.1
 		}
 		if r >= exitCfg.TrailActivationR {
-			trailStop := tick.Price + pos.EntryATR*exitCfg.TrailATRMultiplier
+			trailStop := tick.Price + pos.EntryATR*exitCfg.TrailATRMultiplier*volFactor
 			if trailStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = trailStop
 			}
 		}
 		if r >= exitCfg.TightTrailTriggerR {
-			tightStop := tick.Price + pos.EntryATR*exitCfg.TightTrailATRMultiplier
+			tightStop := tick.Price + pos.EntryATR*exitCfg.TightTrailATRMultiplier*volFactor
 			if tightStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = tightStop
 			}
+		}
+	}
+
+	// Phase 3 Change 4: Move stop to break-even after partial exit
+	if s.config.MoveStopAfterPartial && pos.PartialsExecuted > 0 {
+		if domain.IsLong(pos.Side) && newStop < pos.AvgPrice {
+			newStop = pos.AvgPrice + pos.EntryATR*0.1
+		}
+		if domain.IsShort(pos.Side) && (newStop > pos.AvgPrice || newStop == 0) {
+			newStop = pos.AvgPrice - pos.EntryATR*0.1
 		}
 	}
 

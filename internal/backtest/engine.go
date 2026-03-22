@@ -532,11 +532,17 @@ func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionR
 	}
 
 	if fillPrice > 0 {
-		spread := current.High - current.Low
-		if spread < 0 {
-			spread = 0
+		// Phase 3 Change 7: Percentage-based slippage by liquidity tier
+		penalty := scanner.ComputeSlippage(fillPrice, pending.order.AvgDailyVolume,
+			5.0, 10.0, 20.0)
+		if penalty < 0.01 {
+			// Fallback: use spread-based estimate
+			spread := current.High - current.Low
+			if spread < 0 {
+				spread = 0
+			}
+			penalty = spread * 0.05
 		}
-		penalty := spread * 0.05
 		if pending.order.Side == domain.SideSell {
 			fillPrice = math.Max(pending.order.Price, fillPrice-penalty)
 		} else {

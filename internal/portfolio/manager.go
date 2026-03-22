@@ -106,12 +106,16 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 		UpdatedAt:        report.FilledAt,
 	}
 
+	// Phase 3 Change 4: Track original quantity for partial exits
+	pos.OriginalQuantity = report.Quantity
+
 	if existing, ok := m.positions[report.Symbol]; ok {
 		totalQty := existing.Quantity + report.Quantity
 		if totalQty > 0 {
 			pos.AvgPrice = (existing.AvgPrice*float64(existing.Quantity) + report.Price*float64(report.Quantity)) / float64(totalQty)
 		}
 		pos.Quantity = totalQty
+		pos.OriginalQuantity = totalQty
 		pos.HighestPrice = math.Max(existing.HighestPrice, report.Price)
 		pos.LowestPrice = math.Min(existing.LowestPrice, report.Price)
 		pos.OpenedAt = existing.OpenedAt
@@ -392,10 +396,81 @@ func (m *Manager) UpdateStopPrice(symbol string, newStop float64) {
 	m.positions[symbol] = pos
 }
 
+// ReducePosition partially closes a position, reducing quantity and recording a partial trade.
+func (m *Manager) ReducePosition(report domain.ExecutionReport) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetDayIfNeeded()
+
+	pos, ok := m.positions[report.Symbol]
+	if !ok {
+		return
+	}
+
+	exitQty := report.Quantity
+	if exitQty >= pos.Quantity {
+		// Full close — delegate to ClosePosition
+		m.mu.Unlock()
+		m.ClosePosition(report)
+		m.mu.Lock()
+		return
+	}
+
+	var pnl float64
+	if domain.IsLong(pos.Side) {
+		pnl = (report.Price - pos.AvgPrice) * float64(exitQty)
+	} else {
+		pnl = (pos.AvgPrice - report.Price) * float64(exitQty)
+	}
+
+	rMultiple := 0.0
+	if pos.RiskPerShare > 0 {
+		rMultiple = pnl / (pos.RiskPerShare * float64(exitQty))
+	}
+
+	trade := domain.ClosedTrade{
+		Symbol:           pos.Symbol,
+		Side:             pos.Side,
+		Quantity:         exitQty,
+		EntryPrice:       pos.AvgPrice,
+		ExitPrice:        report.Price,
+		PnL:              pnl,
+		RMultiple:        rMultiple,
+		SetupType:        pos.SetupType,
+		OpenedAt:         pos.OpenedAt,
+		ClosedAt:         report.FilledAt,
+		ExitReason:       report.Reason,
+		MarketRegime:     pos.MarketRegime,
+		RegimeConfidence: pos.RegimeConfidence,
+		Playbook:         pos.Playbook,
+		Sector:           pos.Sector,
+	}
+
+	m.closedTrades = append(m.closedTrades, trade)
+	m.dayPnL += pnl
+
+	pos.Quantity -= exitQty
+	pos.PartialsExecuted++
+	pos.MarketValue = pos.LastPrice * float64(pos.Quantity)
+	if domain.IsLong(pos.Side) {
+		pos.UnrealizedPnL = (pos.LastPrice - pos.AvgPrice) * float64(pos.Quantity)
+	} else {
+		pos.UnrealizedPnL = (pos.AvgPrice - pos.LastPrice) * float64(pos.Quantity)
+	}
+	pos.UpdatedAt = report.FilledAt
+	m.positions[report.Symbol] = pos
+
+	if m.recorder != nil {
+		m.recorder.RecordClosedTrade(trade)
+	}
+}
+
 // ApplyExecution processes an execution report, opening or closing positions as appropriate.
 func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	if domain.IsOpeningIntent(report.Intent) {
 		m.OpenPosition(report)
+	} else if report.Intent == "partial" {
+		m.ReducePosition(report)
 	} else {
 		m.ClosePosition(report)
 	}

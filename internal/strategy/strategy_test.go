@@ -222,6 +222,154 @@ func TestPlaybookExitsProduceDifferentLevels(t *testing.T) {
 	}
 }
 
+func TestTimeOfDayWindowClassification(t *testing.T) {
+	loc := markethours.Location()
+	// 9:35 ET — within 30 min of open -> TimeWindowOpen
+	t1 := time.Date(2026, 3, 23, 9, 35, 0, 0, loc)
+	if w := currentTimeWindow(t1); w != TimeWindowOpen {
+		t.Errorf("9:35 ET should be Open window, got %d", w)
+	}
+
+	// 10:30 ET — 60 min after open -> TimeWindowMorning
+	t2 := time.Date(2026, 3, 23, 10, 30, 0, 0, loc)
+	if w := currentTimeWindow(t2); w != TimeWindowMorning {
+		t.Errorf("10:30 ET should be Morning window, got %d", w)
+	}
+
+	// 13:00 ET — midday -> TimeWindowMidDay
+	t3 := time.Date(2026, 3, 23, 13, 0, 0, 0, loc)
+	if w := currentTimeWindow(t3); w != TimeWindowMidDay {
+		t.Errorf("13:00 ET should be MidDay window, got %d", w)
+	}
+
+	// 15:30 ET — 30 min before close -> TimeWindowClose
+	t4 := time.Date(2026, 3, 23, 15, 30, 0, 0, loc)
+	if w := currentTimeWindow(t4); w != TimeWindowClose {
+		t.Errorf("15:30 ET should be Close window, got %d", w)
+	}
+}
+
+func TestTimeOfDayIncreasesScoreThreshold(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.TimeOfDayEnabled = true
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 2.0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+
+	// MidDay candidate with score 2.1 — should be blocked (threshold * 1.15 = 2.3)
+	midDayTime := time.Date(2026, 3, 23, 13, 0, 0, 0, loc)
+	candidate := domain.Candidate{
+		Symbol:          "TEST",
+		Direction:       domain.DirectionLong,
+		Price:           50.0,
+		ATR:             1.0,
+		Score:           2.1,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       midDayTime,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if ok {
+		t.Error("expected midday candidate with score 2.1 to be blocked (threshold 2.3)")
+	}
+
+	// Same candidate at market open — should pass (threshold * 1.0 = 2.0)
+	openTime := time.Date(2026, 3, 23, 9, 35, 0, 0, loc)
+	candidate.Symbol = "TEST2"
+	candidate.Timestamp = openTime
+	_, ok = s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected open-window candidate with score 2.1 to pass (threshold 2.0)")
+	}
+}
+
+func TestPartialExitTriggersAtR(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.PartialExitsEnabled = true
+	cfg.PartialTrigger1R = 1.0
+	cfg.PartialTrigger1Pct = 0.50
+	cfg.PartialTrigger2R = 2.0
+	cfg.PartialTrigger2Pct = 0.50
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Create a position that reached 1R
+	pos := domain.Position{
+		Symbol:           "TEST",
+		Side:             domain.DirectionLong,
+		Quantity:         100,
+		OriginalQuantity: 100,
+		PartialsExecuted: 0,
+		AvgPrice:         50.0,
+		StopPrice:        48.5,
+		RiskPerShare:     1.5,
+		EntryATR:         1.0,
+		Playbook:         "breakout",
+		HighestPrice:     51.5,
+		LowestPrice:      49.5,
+		OpenedAt:         ts.Add(-5 * time.Minute),
+	}
+
+	// Price at 1R: 50 + 1.5 = 51.5
+	tick := domain.Tick{
+		Symbol:    "TEST",
+		Price:     51.5,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if !shouldExit || reason != "partial-1" {
+		t.Errorf("expected partial-1 exit at 1R, got reason=%q shouldExit=%v", reason, shouldExit)
+	}
+
+	// After partial 1 executed, check partial 2
+	pos.PartialsExecuted = 1
+	pos.Quantity = 50
+	tick.Price = 53.0 // 2R = 50 + 2*1.5 = 53.0
+
+	reason2, shouldExit2 := s.checkExitConditions(pos, tick)
+	if !shouldExit2 || reason2 != "partial-2" {
+		t.Errorf("expected partial-2 exit at 2R, got reason=%q shouldExit=%v", reason2, shouldExit2)
+	}
+}
+
+func TestAdaptiveTrailFactorBullishLong(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.AdaptiveTrailEnabled = true
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	pos := domain.Position{
+		Side:         domain.DirectionLong,
+		MarketRegime: domain.RegimeBullish,
+	}
+	factor := s.volRegimeTrailFactor(pos)
+	if factor != 1.2 {
+		t.Errorf("bullish long trail factor = %.2f, want 1.2", factor)
+	}
+
+	pos.Side = domain.DirectionShort
+	factor = s.volRegimeTrailFactor(pos)
+	if factor != 0.8 {
+		t.Errorf("bullish short trail factor = %.2f, want 0.8", factor)
+	}
+}
+
 func TestStagnationUsesPeakR(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	runtimeState := runtime.NewState()

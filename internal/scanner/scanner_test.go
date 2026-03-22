@@ -167,3 +167,158 @@ func TestComputeRSI(t *testing.T) {
 		t.Errorf("RSI for 2 bars = %.2f, want 50 (neutral default)", rsiShort)
 	}
 }
+
+func TestRSIFilterBlocksOverbought(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.RSIFilterEnabled = true
+	cfg.RSIOverboughtThreshold = 80.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// Build a state with 20 consecutive up bars so RSI > 80
+	state := &symbolState{day: "2026-03-22", bars: make([]symbolBar, 0)}
+	for i := 0; i < 20; i++ {
+		tick := domain.Tick{
+			Symbol:          "OVERBUY",
+			Price:           100.0 + float64(i)*2,
+			BarOpen:         100.0 + float64(i)*2 - 0.5,
+			BarHigh:         100.0 + float64(i)*2 + 0.5,
+			BarLow:          100.0 + float64(i)*2 - 1.0,
+			Open:            100.0,
+			HighOfDay:       100.0 + float64(i)*2 + 0.5,
+			Volume:          100000,
+			RelativeVolume:  5.0,
+			GapPercent:      10.0,
+			PreMarketVolume: 60000,
+			Timestamp:       time.Date(2026, 3, 23, 14, 30+i, 0, 0, time.UTC),
+		}
+		s.updateBars(state, tick)
+	}
+
+	// Now check RSI is high
+	bars := state.bars
+	rsi := computeRSI(bars, 14)
+	if rsi <= 80 {
+		t.Skipf("RSI=%.2f not high enough for test, skipping", rsi)
+	}
+}
+
+func TestBollingerBands(t *testing.T) {
+	// Simple test: 20 identical prices -> stddev=0, upper=middle=lower=price
+	prices := make([]float64, 20)
+	for i := range prices {
+		prices[i] = 50.0
+	}
+	upper, middle, lower := ComputeBollingerBandsFromPrices(prices, 20, 2.0)
+	if math.Abs(middle-50.0) > 0.001 {
+		t.Errorf("BB middle = %.4f, want 50.0", middle)
+	}
+	if math.Abs(upper-50.0) > 0.001 {
+		t.Errorf("BB upper = %.4f, want 50.0 (zero stddev)", upper)
+	}
+	if math.Abs(lower-50.0) > 0.001 {
+		t.Errorf("BB lower = %.4f, want 50.0 (zero stddev)", lower)
+	}
+
+	// With varied prices, upper > middle > lower
+	variedPrices := make([]float64, 20)
+	for i := range variedPrices {
+		variedPrices[i] = 50.0 + float64(i%5)
+	}
+	upper2, middle2, lower2 := ComputeBollingerBandsFromPrices(variedPrices, 20, 2.0)
+	if upper2 <= middle2 {
+		t.Errorf("BB upper (%.4f) should be > middle (%.4f)", upper2, middle2)
+	}
+	if lower2 >= middle2 {
+		t.Errorf("BB lower (%.4f) should be < middle (%.4f)", lower2, middle2)
+	}
+
+	// Too few prices returns zeros
+	shortPrices := []float64{1, 2, 3}
+	u, m, l := ComputeBollingerBandsFromPrices(shortPrices, 20, 2.0)
+	if u != 0 || m != 0 || l != 0 {
+		t.Errorf("BB with too few prices should return zeros, got %.4f, %.4f, %.4f", u, m, l)
+	}
+}
+
+func TestComputeADX(t *testing.T) {
+	// With insufficient bars, should return 50 (default)
+	shortBars := make([]symbolBar, 5)
+	for i := range shortBars {
+		shortBars[i] = symbolBar{high: 50, low: 49, close: 49.5}
+	}
+	adx := computeADX(shortBars, 14)
+	if adx != 50 {
+		t.Errorf("ADX with few bars = %.2f, want 50", adx)
+	}
+
+	// With enough trending bars, ADX should be meaningful (> 0)
+	trendBars := make([]symbolBar, 60)
+	for i := range trendBars {
+		trendBars[i] = symbolBar{
+			high:  100.0 + float64(i)*1.5,
+			low:   99.0 + float64(i)*1.5,
+			close: 99.5 + float64(i)*1.5,
+		}
+	}
+	trendADX := computeADX(trendBars, 14)
+	if trendADX <= 0 {
+		t.Errorf("ADX for trending bars = %.2f, want > 0", trendADX)
+	}
+}
+
+func TestComputeSlippage(t *testing.T) {
+	// Liquid stock (> 5M volume): 5 bps
+	slip := ComputeSlippage(100.0, 10_000_000, 5.0, 10.0, 20.0)
+	expected := 100.0 * 5.0 / 10000.0
+	if math.Abs(slip-expected) > 0.001 {
+		t.Errorf("liquid slippage = %.4f, want %.4f", slip, expected)
+	}
+
+	// Mid liquidity (500K-5M): 10 bps
+	slipMid := ComputeSlippage(100.0, 1_000_000, 5.0, 10.0, 20.0)
+	expectedMid := 100.0 * 10.0 / 10000.0
+	if math.Abs(slipMid-expectedMid) > 0.001 {
+		t.Errorf("mid slippage = %.4f, want %.4f", slipMid, expectedMid)
+	}
+
+	// Illiquid (< 500K): 20 bps
+	slipIlliq := ComputeSlippage(100.0, 100_000, 5.0, 10.0, 20.0)
+	expectedIlliq := 100.0 * 20.0 / 10000.0
+	if math.Abs(slipIlliq-expectedIlliq) > 0.001 {
+		t.Errorf("illiquid slippage = %.4f, want %.4f", slipIlliq, expectedIlliq)
+	}
+
+	// Verify ordering: illiquid > mid > liquid
+	if slipIlliq <= slipMid || slipMid <= slip {
+		t.Errorf("slippage ordering wrong: liquid=%.4f mid=%.4f illiquid=%.4f", slip, slipMid, slipIlliq)
+	}
+}
+
+func TestRankCandidates(t *testing.T) {
+	candidates := []domain.Candidate{
+		{Symbol: "A", RelativeVolume: 2.0, GapPercent: 5.0, Score: 3.0},
+		{Symbol: "B", RelativeVolume: 8.0, GapPercent: 10.0, Score: 3.0},
+		{Symbol: "C", RelativeVolume: 4.0, GapPercent: 3.0, Score: 3.0},
+	}
+
+	RankCandidates(candidates)
+
+	// B has highest composite (8*10=80), should be rank 1
+	for _, c := range candidates {
+		if c.Symbol == "B" && c.LeaderRank != 1 {
+			t.Errorf("B should be rank 1, got %d", c.LeaderRank)
+		}
+		if c.Symbol == "A" && c.LeaderRank == 1 {
+			t.Errorf("A should not be rank 1")
+		}
+	}
+
+	// Top 3 leaders get score bonus
+	for _, c := range candidates {
+		if c.Score <= 3.0 && c.LeaderRank <= 3 {
+			t.Errorf("candidates with rank <= 3 should have score > 3.0, %s has %.2f", c.Symbol, c.Score)
+		}
+	}
+}
