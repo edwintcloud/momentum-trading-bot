@@ -14,6 +14,7 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
+	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 )
 
 // Optimizer runs walk-forward parameter optimization.
@@ -49,13 +50,41 @@ func NewOptimizer(bars []backtest.InputBar, asOf time.Time, outDir string) *Opti
 	return &Optimizer{bars: bars, asOf: asOf, outDir: outDir}
 }
 
+// formatDuration formats a duration as a human-readable string like "2m15s" or "1h3m".
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) - m*60
+		if s == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) - h*60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
+}
+
 // Run executes the optimization.
 func (o *Optimizer) Run() (Report, error) {
 	if len(o.bars) == 0 {
 		return Report{}, fmt.Errorf("no bars provided")
 	}
 
-	log.Printf("optimizer: starting with %d bars, as-of %s", len(o.bars), o.asOf.Format("2006-01-02"))
+	now := time.Now().In(markethours.Location())
+	optimizerStart := now
+
+	log.Printf("=== Optimizer Starting ===")
+	log.Printf("As-of date: %s", o.asOf.Format("2006-01-02"))
+	log.Printf("Input bars: %d", len(o.bars))
+	log.Printf("Start time: %s ET", now.Format("2006-01-02 15:04:05"))
 
 	// Define search space
 	profiles := []config.StrategyProfile{
@@ -64,61 +93,158 @@ func (o *Optimizer) Run() (Report, error) {
 		config.StrategyProfileContinuation,
 	}
 
-	var candidates []CandidateResult
+	// Count total combinations upfront
+	variationsPerProfile := 10
+	totalCombinations := len(profiles) * variationsPerProfile
+
+	// Split data: 60% search, 20% validation, 20% holdout
+	searchBars, validBars, holdoutBars := o.splitBars(0.6, 0.2)
+	log.Printf("Data split: search=%d bars, validation=%d bars, holdout=%d bars",
+		len(searchBars), len(validBars), len(holdoutBars))
+
+	// === Search Phase ===
+	log.Printf("=== Optimization Search Phase ===")
+	log.Printf("Profiles: %d (%d variations each)", len(profiles), variationsPerProfile)
+	log.Printf("Parameter grid: %d combinations", totalCombinations)
+
+	type searchCandidate struct {
+		profile string
+		cfg     config.TradingConfig
+		score   float64
+		search  backtest.Result
+		valid   backtest.Result
+	}
+
+	var searchResults []searchCandidate
+	bestScore := math.Inf(-1)
+	searchStart := time.Now()
+	combo := 0
 
 	for _, profile := range profiles {
-		// Generate parameter variations
-		variations := o.generateVariations(profile, 10)
+		variations := o.generateVariations(profile, variationsPerProfile)
 		for _, cfg := range variations {
-			// Split data: 60% search, 20% validation, 20% holdout
-			searchBars, validBars, holdoutBars := o.splitBars(0.6, 0.2)
+			combo++
 
 			searchResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
 				Bars: searchBars,
 			})
 			if err != nil {
+				elapsed := time.Since(searchStart)
+				log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (search): %v | elapsed: %s",
+					combo, totalCombinations,
+					float64(combo)/float64(totalCombinations)*100,
+					profile, err, formatDuration(elapsed))
 				continue
 			}
+
 			validResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
 				Bars: validBars,
 			})
 			if err != nil {
+				elapsed := time.Since(searchStart)
+				log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (validation): %v | elapsed: %s",
+					combo, totalCombinations,
+					float64(combo)/float64(totalCombinations)*100,
+					profile, err, formatDuration(elapsed))
 				continue
 			}
 
-			// Score combines search and validation
 			score := o.scoreResult(searchResult, validResult)
 
-			candidate := CandidateResult{
-				ProfileName:      string(profile),
-				SearchResult:     searchResult,
-				ValidationResult: validResult,
-				Score:            score,
-				Config:           cfg,
+			elapsed := time.Since(searchStart)
+			avgPerCombo := elapsed / time.Duration(combo)
+			remaining := time.Duration(totalCombinations-combo) * avgPerCombo
+
+			newBest := ""
+			if score > bestScore {
+				bestScore = score
+				newBest = " (new best \u2605)"
 			}
 
-			// Run holdout for top candidates
-			if score > 0 && len(holdoutBars) > 0 {
-				holdoutResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
-					Bars: holdoutBars,
-				})
-				if err == nil {
-					candidate.HoldoutResult = &holdoutResult
-				}
-			}
+			log.Printf("[%d/%d] (%.1f%%) profile=%-16s score=%.4f%s | elapsed: %s | eta: ~%s",
+				combo, totalCombinations,
+				float64(combo)/float64(totalCombinations)*100,
+				profile, score, newBest,
+				formatDuration(elapsed), formatDuration(remaining))
 
-			candidates = append(candidates, candidate)
+			searchResults = append(searchResults, searchCandidate{
+				profile: string(profile),
+				cfg:     cfg,
+				score:   score,
+				search:  searchResult,
+				valid:   validResult,
+			})
 		}
 	}
 
-	// Sort by score descending
+	searchElapsed := time.Since(searchStart)
+	log.Printf("Search phase complete: %d candidates scored in %s (best=%.4f)",
+		len(searchResults), formatDuration(searchElapsed), bestScore)
+
+	// Sort search results by score descending
+	sort.Slice(searchResults, func(i, j int) bool {
+		return searchResults[i].score > searchResults[j].score
+	})
+
+	// === Validation Phase ===
+	log.Printf("=== Validation Phase ===")
+	topN := len(searchResults)
+	if topN > 10 {
+		topN = 10
+	}
+	log.Printf("Validating top %d candidates", topN)
+
+	var candidates []CandidateResult
+	for i, sc := range searchResults {
+		if i >= topN {
+			break
+		}
+		log.Printf("  Candidate %d: profile=%-16s search_score=%.4f", i+1, sc.profile, sc.score)
+		candidates = append(candidates, CandidateResult{
+			ProfileName:      sc.profile,
+			SearchResult:     sc.search,
+			ValidationResult: sc.valid,
+			Score:            sc.score,
+			Config:           sc.cfg,
+		})
+	}
+
+	// === Holdout Phase ===
+	log.Printf("=== Holdout Phase ===")
+	bestHoldoutScore := math.Inf(-1)
+	if len(holdoutBars) > 0 {
+		for i := range candidates {
+			if candidates[i].Score <= 0 {
+				log.Printf("  Candidate %d: skipped (non-positive score)", i+1)
+				continue
+			}
+			holdoutResult, err := backtest.Run(context.Background(), candidates[i].Config, backtest.RunConfig{
+				Bars: holdoutBars,
+			})
+			if err != nil {
+				log.Printf("  Candidate %d: holdout ERROR: %v", i+1, err)
+				continue
+			}
+			candidates[i].HoldoutResult = &holdoutResult
+			holdoutScore := holdoutResult.ProfitFactor
+			if holdoutScore > bestHoldoutScore {
+				bestHoldoutScore = holdoutScore
+			}
+			log.Printf("  Candidate %d: holdout profit_factor=%.4f net_pnl=%.2f trades=%d",
+				i+1, holdoutResult.ProfitFactor, holdoutResult.NetPnL, holdoutResult.Trades)
+		}
+	} else {
+		log.Printf("  No holdout bars available, skipping")
+	}
+
+	// Sort by score descending (already sorted, but re-sort to be safe)
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].Score > candidates[j].Score
 	})
 
 	report := Report{
 		AsOf:            o.asOf,
-		GeneratedAt:     time.Now(),
+		GeneratedAt:     time.Now().In(markethours.Location()),
 		SearchWeeks:     12,
 		ValidationWeeks: 4,
 		HoldoutWeeks:    4,
@@ -129,10 +255,28 @@ func (o *Optimizer) Run() (Report, error) {
 		report.Recommendation = &candidates[0]
 	}
 
-	// Write artifacts
+	// === Artifact Saving ===
+	log.Printf("=== Saving Artifacts ===")
 	if err := o.writeArtifacts(report); err != nil {
 		log.Printf("optimizer: write artifacts warning: %v", err)
+	} else {
+		log.Printf("Artifacts saved to: %s", o.outDir)
 	}
+
+	// === Final Summary ===
+	totalDuration := time.Since(optimizerStart)
+	log.Printf("=== Optimization Complete ===")
+	log.Printf("Duration: %s", formatDuration(totalDuration))
+	log.Printf("Combinations tested: %d", totalCombinations)
+	log.Printf("Candidates scored: %d", len(searchResults))
+	log.Printf("Best search score: %.4f", bestScore)
+	if len(candidates) > 0 && candidates[0].Score > 0 {
+		log.Printf("Best validation score: %.4f", candidates[0].ValidationResult.ProfitFactor)
+	}
+	if bestHoldoutScore > math.Inf(-1) {
+		log.Printf("Holdout score: %.4f", bestHoldoutScore)
+	}
+	log.Printf("Artifacts saved to: %s", o.outDir)
 
 	return report, nil
 }
