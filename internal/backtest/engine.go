@@ -68,6 +68,17 @@ type Result struct {
 	OpenPositionsAtEnd  int
 	Diagnostics         Diagnostics
 	ClosedTrades        []domain.ClosedTrade
+
+	// Phase 4: Statistical rigor
+	MonteCarlo          *MonteCarloResult `json:"monteCarlo,omitempty"`
+	Bootstrap           *BootstrapResult  `json:"bootstrap,omitempty"`
+	WalkForward         *WalkForwardResult `json:"walkForward,omitempty"`
+	TotalCommissions    float64           `json:"totalCommissions,omitempty"`
+	TotalSECFees        float64           `json:"totalSECFees,omitempty"`
+	TotalTAFFees        float64           `json:"totalTAFFees,omitempty"`
+	TotalSpreadCosts    float64           `json:"totalSpreadCosts,omitempty"`
+	TotalTransactionCosts float64         `json:"totalTransactionCosts,omitempty"`
+	ImplementationShortfall float64       `json:"implementationShortfall,omitempty"`
 }
 
 type TradeBreakdown struct {
@@ -462,7 +473,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		avgTimeToStopMin = stopMinutesTotal / float64(stopMinutesCount)
 	}
 
-	return Result{
+	result := Result{
 		StartingCapital:     cfg.StartingCapital,
 		RealizedPnL:         round2(realizedPnL),
 		UnrealizedPnL:       round2(unrealizedPnL),
@@ -485,7 +496,75 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		OpenPositionsAtEnd:  openPositionsAtEnd,
 		Diagnostics:         diagnostics,
 		ClosedTrades:        closedTrades,
-	}, nil
+	}
+
+	// Phase 4: Transaction cost accounting
+	if cfg.TransactionCostsEnabled && len(closedTrades) > 0 {
+		var totalComm, totalSEC, totalTAF, totalSpread float64
+		for _, trade := range closedTrades {
+			qty := int(trade.Quantity)
+			entryCosts := ComputeTransactionCosts(trade.EntryPrice, qty, "buy", cfg.DefaultSpreadBps, cfg.CommissionPerShare)
+			exitCosts := ComputeTransactionCosts(trade.ExitPrice, qty, "sell", cfg.DefaultSpreadBps, cfg.CommissionPerShare)
+			totalComm += entryCosts.Commission + exitCosts.Commission
+			totalSEC += entryCosts.SECFee + exitCosts.SECFee
+			totalTAF += entryCosts.TAFFee + exitCosts.TAFFee
+			totalSpread += entryCosts.SpreadCost + exitCosts.SpreadCost
+		}
+		result.TotalCommissions = round2(totalComm)
+		result.TotalSECFees = round2(totalSEC)
+		result.TotalTAFFees = round2(totalTAF)
+		result.TotalSpreadCosts = round2(totalSpread)
+		result.TotalTransactionCosts = round2(totalComm + totalSEC + totalTAF + totalSpread)
+		totalGrossPnL := grossWins + grossLosses
+		if totalGrossPnL > 0 {
+			result.ImplementationShortfall = round2(result.TotalTransactionCosts / totalGrossPnL * 100)
+		}
+	}
+
+	// Phase 4: Monte Carlo simulation
+	if cfg.MonteCarloEnabled && len(closedTrades) > 0 {
+		trades := make([]TradeResult, len(closedTrades))
+		for i, ct := range closedTrades {
+			trades[i] = TradeResult{PnL: ct.PnL}
+		}
+		tradingDays := estimateTradingDays(closedTrades)
+		mcResult := RunMonteCarlo(trades, cfg.StartingCapital, cfg.MonteCarloSims, tradingDays)
+		result.MonteCarlo = &mcResult
+	}
+
+	// Phase 4: Bootstrap significance testing
+	if cfg.BootstrapEnabled && len(closedTrades) >= 10 {
+		tradeReturns := make([]float64, len(closedTrades))
+		for i, ct := range closedTrades {
+			if cfg.StartingCapital > 0 {
+				tradeReturns[i] = ct.PnL / cfg.StartingCapital
+			}
+		}
+		pValue, ciLower, ciUpper := BootstrapSignificance(tradeReturns, cfg.BootstrapResamples)
+		result.Bootstrap = &BootstrapResult{
+			PValue:      pValue,
+			CI95Lower:   ciLower,
+			CI95Upper:   ciUpper,
+			Significant: pValue < 0.05,
+			Resamples:   cfg.BootstrapResamples,
+		}
+	}
+
+	return result, nil
+}
+
+func estimateTradingDays(trades []domain.ClosedTrade) int {
+	if len(trades) == 0 {
+		return 1
+	}
+	first := trades[0].OpenedAt
+	last := trades[len(trades)-1].ClosedAt
+	calDays := last.Sub(first).Hours() / 24
+	tradingDays := int(calDays * 5 / 7) // approximate
+	if tradingDays < 1 {
+		tradingDays = 1
+	}
+	return tradingDays
 }
 
 func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.Time) {
