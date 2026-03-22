@@ -624,6 +624,51 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.SectorNeutralTolerance = 0.10
 	}
 
+	// ML Pipeline: Fractional differentiation defaults (disabled by default)
+	if cfg.FracDiffMinD == 0 {
+		cfg.FracDiffMinD = 0.3
+	}
+	if cfg.FracDiffMaxD == 0 {
+		cfg.FracDiffMaxD = 0.5
+	}
+
+	// ML Pipeline: Training defaults (disabled by default)
+	if cfg.MLRetrainIntervalDays == 0 {
+		cfg.MLRetrainIntervalDays = 7
+	}
+	if cfg.MLFeatureHorizonBars == 0 {
+		cfg.MLFeatureHorizonBars = 15
+	}
+
+	// ML Pipeline: Concept drift defaults (disabled by default)
+	if cfg.PSIThreshold == 0 {
+		cfg.PSIThreshold = 0.2
+	}
+	if cfg.SharpeDecayThreshold == 0 {
+		cfg.SharpeDecayThreshold = 0.5
+	}
+
+	// ML Pipeline: Meta-label confidence default
+	if cfg.MetaLabelConfidenceThreshold == 0 {
+		cfg.MetaLabelConfidenceThreshold = 0.5
+	}
+
+	// ML Pipeline: Ensemble defaults (disabled by default)
+	if cfg.EnsembleMethod == "" {
+		cfg.EnsembleMethod = "equal"
+	}
+	if cfg.EnsembleDiversityThreshold == 0 {
+		cfg.EnsembleDiversityThreshold = 0.6
+	}
+
+	// ML Pipeline: Scoring integration defaults
+	if cfg.MLScoringThreshold == 0 {
+		cfg.MLScoringThreshold = 0.5
+	}
+	if cfg.MLScoringWeightInEnsemble == 0 {
+		cfg.MLScoringWeightInEnsemble = 1.0
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

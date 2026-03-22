@@ -300,6 +300,33 @@ type TradingConfig struct {
 	BetaNeutralThreshold      float64 // max |beta_long - beta_short|
 	MaxGrossLeverage          float64 // (long + |short|) / equity cap
 	SectorNeutralTolerance    float64 // per-sector net exposure tolerance
+
+	// ML Pipeline: Fractional Differentiation (Section 6.1)
+	FracDiffEnabled bool
+	FracDiffMinD    float64 // minimum fractional diff order (default 0.3)
+	FracDiffMaxD    float64 // maximum fractional diff order (default 0.5)
+
+	// ML Pipeline: Training (Section 6.2)
+	MLTrainingEnabled      bool
+	MLRetrainIntervalDays  int     // days between retraining (default 7)
+	MLFeatureHorizonBars   int     // forward return horizon for labels (default 15)
+
+	// ML Pipeline: Concept Drift Detection (Section 6.3)
+	ConceptDriftEnabled    bool
+	PSIThreshold           float64 // PSI threshold to trigger retrain (default 0.2)
+	SharpeDecayThreshold   float64 // live/backtest Sharpe ratio threshold (default 0.5)
+
+	// ML Pipeline: Meta-Label Confidence (Section 6.4)
+	MetaLabelConfidenceThreshold float64 // minimum meta-label probability (default 0.5)
+
+	// ML Pipeline: Ensemble Methods (Section 6.5)
+	EnsembleEnabled            bool
+	EnsembleMethod             string  // "equal", "ir_weighted", or "regime_conditional"
+	EnsembleDiversityThreshold float64 // max avg pairwise signal correlation (default 0.6)
+
+	// ML Pipeline: Scoring Integration (Section 6.2)
+	MLScoringThreshold         float64 // minimum ML score to allow trade (default 0.5)
+	MLScoringWeightInEnsemble  float64 // ML signal weight in ensemble (default 1.0)
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.
