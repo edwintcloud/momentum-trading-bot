@@ -49,7 +49,7 @@ services:
       - ./.cache:/app/.cache
       - ./profiles:/app/profiles
     entrypoint: ["/app/momentum-bot"]
-    command: ["auto-optimize", "-profile", "/app/profiles/default.json"]
+    command: ["auto-optimize", "-profile", "/app/profiles/default.json", "-now"]
 
 volumes:
   pgdata:

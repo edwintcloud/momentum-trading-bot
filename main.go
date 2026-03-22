@@ -242,7 +242,7 @@ func runLive() {
 
 	// Start API server
 	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst}
-	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg)
+	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg, optimizer.DefaultArtifactDir)
 	for _, u := range configUpdaters {
 		apiServer.RegisterConfigUpdater(u)
 	}
@@ -522,6 +522,8 @@ func runAutoOptimize(args []string) error {
 	maxDrawdown := fs.Float64("max-drawdown", 0.20, "maximum drawdown percentage")
 	requireImprovement := fs.Bool("require-improvement", true, "require improvement over current profile")
 	maxSymbols := fs.Int("max-symbols", 500, "maximum symbols for optimization (0=unlimited)")
+	runNow := fs.Bool("now", false, "run optimization immediately, then continue on schedule")
+	runOnce := fs.Bool("once", false, "run a single optimization and exit (no scheduling loop)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -561,6 +563,15 @@ func runAutoOptimize(args []string) error {
 		cancel()
 	}()
 
+	if *runOnce {
+		return sched.RunOnce(ctx)
+	}
+	if *runNow {
+		if err := sched.RunOnce(ctx); err != nil {
+			log.Printf("auto-optimize: initial run failed: %v", err)
+			// Continue to schedule loop anyway
+		}
+	}
 	return sched.Run(ctx)
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 )
@@ -41,13 +42,16 @@ type ConfigUpdater interface {
 
 // Server wraps the HTTP API.
 type Server struct {
-	portfolio      *portfolio.Manager
-	runtime        *runtime.State
-	closeAll       chan<- domain.OrderRequest
-	upgrader       websocket.Upgrader
-	authToken      string
-	tradingConfig  config.TradingConfig
-	configUpdaters []ConfigUpdater
+	portfolio        *portfolio.Manager
+	runtime          *runtime.State
+	closeAll         chan<- domain.OrderRequest
+	upgrader         websocket.Upgrader
+	authToken        string
+	tradingConfig    config.TradingConfig
+	configUpdaters   []ConfigUpdater
+	optimizerDir     string
+	cachedArtifact   optimizer.ArtifactStatus
+	cachedArtifactAt time.Time
 }
 
 // NewServer creates an API server.
@@ -57,6 +61,7 @@ func NewServer(
 	closeAll chan<- domain.OrderRequest,
 	appConfig config.AppConfig,
 	tradingConfig config.TradingConfig,
+	optimizerDir string,
 ) *Server {
 	return &Server{
 		portfolio:     portfolioManager,
@@ -65,6 +70,7 @@ func NewServer(
 		upgrader:      websocket.Upgrader{CheckOrigin: sameOriginRequest},
 		authToken:     strings.TrimSpace(appConfig.ControlPlaneAuthToken),
 		tradingConfig: tradingConfig,
+		optimizerDir:  optimizerDir,
 	}
 }
 
@@ -291,6 +297,14 @@ func (s *Server) snapshot() domain.DashboardSnapshot {
 	status := s.portfolio.StatusSnapshot()
 	status.Paused = s.runtime.IsPaused()
 	status.EmergencyStop = s.runtime.IsEmergencyStopped()
+
+	// Merge optimizer artifact status
+	artifactStatus := s.optimizerStatus()
+	status.LastOptimizerRun = artifactStatus.LastOptimizerRun
+	status.PendingProfile = artifactStatus.PendingProfileName
+	status.PendingVersion = artifactStatus.PendingProfileVersion
+	status.PaperValidation = artifactStatus.LastPaperValidationResult
+
 	return domain.DashboardSnapshot{
 		Status:       status,
 		MarketRegime: s.runtime.MarketRegime(),
@@ -300,6 +314,17 @@ func (s *Server) snapshot() domain.DashboardSnapshot {
 		Logs:         s.runtime.Logs(),
 		UpdatedAt:    time.Now(),
 	}
+}
+
+func (s *Server) optimizerStatus() optimizer.ArtifactStatus {
+	if time.Since(s.cachedArtifactAt) < 60*time.Second {
+		return s.cachedArtifact
+	}
+	if status, err := optimizer.LoadArtifactStatus(s.optimizerDir); err == nil {
+		s.cachedArtifact = status
+		s.cachedArtifactAt = time.Now()
+	}
+	return s.cachedArtifact
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, payload any) {

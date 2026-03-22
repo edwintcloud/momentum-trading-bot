@@ -2,8 +2,11 @@ package autooptimize
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
@@ -102,6 +105,7 @@ func (s *Scheduler) runOnce(ctx context.Context) error {
 	if !result.Passed {
 		log.Printf("auto-optimize: candidate rejected: %s", result.Reason)
 		s.Notifier.NotifyRejected(result.Reason)
+		s.writeStatusFile(false, result.Reason, sharpe, winRate, trades)
 		return nil
 	}
 
@@ -113,7 +117,40 @@ func (s *Scheduler) runOnce(ctx context.Context) error {
 
 	log.Printf("auto-optimize: profile promoted to %s", s.ProfilePath)
 	s.Notifier.NotifyPromoted(rec.Config.StrategyProfileVersion, sharpe)
+	s.writeStatusFile(true, "", sharpe, winRate, trades)
 	return nil
+}
+
+// writeStatusFile writes a latest-status.json to the optimizer dir with run metadata.
+func (s *Scheduler) writeStatusFile(promoted bool, reason string, sharpe, winRate float64, trades int) {
+	if err := os.MkdirAll(s.OptimizerDir, 0755); err != nil {
+		log.Printf("auto-optimize: failed to create optimizer dir: %v", err)
+		return
+	}
+
+	statusData := map[string]any{
+		"lastRun":  time.Now().In(markethours.Location()),
+		"promoted": promoted,
+		"reason":   reason,
+		"sharpe":   sharpe,
+		"winRate":  winRate,
+		"trades":   trades,
+	}
+	data, err := json.MarshalIndent(statusData, "", "  ")
+	if err != nil {
+		log.Printf("auto-optimize: failed to marshal status: %v", err)
+		return
+	}
+
+	statusFile := filepath.Join(s.OptimizerDir, "latest-status.json")
+	tmpFile := statusFile + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		log.Printf("auto-optimize: failed to write status tmp: %v", err)
+		return
+	}
+	if err := os.Rename(tmpFile, statusFile); err != nil {
+		log.Printf("auto-optimize: failed to rename status file: %v", err)
+	}
 }
 
 // nextRunTime computes the next Saturday 6 AM ET (for weekly) or next 6 AM ET (for daily).
