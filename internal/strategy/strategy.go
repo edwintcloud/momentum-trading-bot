@@ -9,6 +9,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
@@ -70,6 +71,8 @@ type Strategy struct {
 	runtime             *runtime.State
 	riskEngine          *risk.Engine
 	volEstimator        *risk.VolatilityEstimator
+	scorer              ml.Scorer
+	driftDetector       *ml.DriftDetector
 	lastEntryAt         map[string]time.Time
 	lastExitAt          map[string]time.Time
 	symbolStates        map[string]symbolTradeState
@@ -109,6 +112,10 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 			s.volEstimator = v
 		case *signals.Aggregator:
 			s.signalAggregator = v
+		case ml.Scorer:
+			s.scorer = v
+		case *ml.DriftDetector:
+			s.driftDetector = v
 		}
 	}
 	if s.signalAggregator == nil {
@@ -438,6 +445,65 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			if volBasedQty > 0 && volBasedQty < quantity {
 				quantity = volBasedQty
 			}
+		}
+	}
+
+	// ML Scoring gate: skip trade if ML score below threshold
+	if s.config.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
+		features := ml.ScorerFeatures{
+			RelativeVolume:     c.RelativeVolume,
+			GapPercent:         c.GapPercent,
+			VolumeRate:         c.VolumeRate,
+			OneMinuteReturn:    c.OneMinuteReturnPct,
+			ThreeMinuteReturn:  c.ThreeMinuteReturnPct,
+			BreakoutPct:        c.BreakoutPct,
+			PriceVsVWAPPct:     c.PriceVsVWAPPct,
+			RSIMASlope:         c.RSIMASlope,
+			ATR:                c.ATR,
+			ConsolidationRange: c.ConsolidationRangePct,
+			PullbackDepth:      c.PullbackDepthPct,
+			RegimeProb:         c.RegimeConfidence,
+			VolumeLeaderPct:    c.VolumeLeaderPct,
+		}
+		if c.EMASlow > 0 {
+			features.EMAAlignment = (c.EMAFast - c.EMASlow) / c.EMASlow
+		}
+		localTime := now.In(markethours.Location())
+		features.TimeOfDay = float64(localTime.Hour()*60+localTime.Minute()-9*60-30) / 390.0
+
+		mlScore, err := s.scorer.Score(features)
+		if err == nil {
+			// Apply drift confidence reduction if detector available
+			if s.config.ConceptDriftEnabled && s.driftDetector != nil {
+				psi, drifted := s.driftDetector.CheckPSI(nil, s.config.PSIThreshold)
+				if drifted {
+					mlScore *= ml.ConfidenceMultiplier(psi, s.config.PSIThreshold)
+				}
+			}
+			if mlScore < s.config.MLScoringThreshold {
+				return domain.TradeSignal{}, false
+			}
+			// Scale position by ML score (above threshold gets boost)
+			mlSizeMultiplier := 0.5 + mlScore
+			if mlSizeMultiplier > 1.5 {
+				mlSizeMultiplier = 1.5
+			}
+			quantity = int64(math.Floor(float64(quantity) * mlSizeMultiplier))
+			if quantity <= 0 {
+				return domain.TradeSignal{}, false
+			}
+		}
+	}
+
+	// Meta-label confidence gating: skip trade if confidence too low
+	if s.config.MetaLabelEnabled {
+		metaProb := c.Score / 8.0 // use rule-based score as proxy probability
+		if metaProb > 1.0 {
+			metaProb = 1.0
+		}
+		quantity = int64(ml.MetaLabelSizing(metaProb, int(quantity), s.config.MetaLabelConfidenceThreshold))
+		if quantity <= 0 {
+			return domain.TradeSignal{}, false
 		}
 	}
 
