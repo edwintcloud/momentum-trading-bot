@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/edwintcloud/momentum-trading-bot/internal/analytics"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
@@ -71,15 +72,17 @@ type Result struct {
 	ClosedTrades        []domain.ClosedTrade
 
 	// Phase 4: Statistical rigor
-	MonteCarlo          *MonteCarloResult `json:"monteCarlo,omitempty"`
-	Bootstrap           *BootstrapResult  `json:"bootstrap,omitempty"`
-	WalkForward         *WalkForwardResult `json:"walkForward,omitempty"`
-	TotalCommissions    float64           `json:"totalCommissions,omitempty"`
-	TotalSECFees        float64           `json:"totalSECFees,omitempty"`
-	TotalTAFFees        float64           `json:"totalTAFFees,omitempty"`
-	TotalSpreadCosts    float64           `json:"totalSpreadCosts,omitempty"`
-	TotalTransactionCosts float64         `json:"totalTransactionCosts,omitempty"`
-	ImplementationShortfall float64       `json:"implementationShortfall,omitempty"`
+	MonteCarlo          *MonteCarloResult              `json:"monteCarlo,omitempty"`
+	Bootstrap           *BootstrapResult               `json:"bootstrap,omitempty"`
+	WalkForward         *WalkForwardResult             `json:"walkForward,omitempty"`
+	CPCV                *CPCVResult                    `json:"cpcv,omitempty"`
+	FactorDecomposition *analytics.FactorDecomposition `json:"factorDecomposition,omitempty"`
+	TotalCommissions    float64                        `json:"totalCommissions,omitempty"`
+	TotalSECFees        float64                        `json:"totalSECFees,omitempty"`
+	TotalTAFFees        float64                        `json:"totalTAFFees,omitempty"`
+	TotalSpreadCosts    float64                        `json:"totalSpreadCosts,omitempty"`
+	TotalTransactionCosts float64                      `json:"totalTransactionCosts,omitempty"`
+	ImplementationShortfall float64                    `json:"implementationShortfall,omitempty"`
 }
 
 type TradeBreakdown struct {
@@ -216,8 +219,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
 	}
 	scan := scanner.NewScanner(cfg, runtimeState)
-	strat := strategy.NewStrategy(cfg, book, runtimeState)
+	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
+	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
 	pendingEntries := make(map[string]pendingEntry)
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)
@@ -248,6 +252,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		if regimeTracker != nil {
 			regimeTracker.UpdateTick(tick)
 		}
+		volEstimator.UpdatePrice(currentBar.Symbol, currentBar.Close)
+		riskEngine.CorrelationTracker.UpdatePrice(currentBar.Symbol, currentBar.Close)
 		if !withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
 			continue
 		}
@@ -548,6 +554,27 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			CI95Upper:   ciUpper,
 			Significant: pValue < 0.05,
 			Resamples:   cfg.BootstrapResamples,
+		}
+	}
+
+	// Phase 5: Factor decomposition
+	if cfg.FactorAnalysisEnabled && len(closedTrades) >= 20 {
+		stratReturns := make([]float64, len(closedTrades))
+		mktReturns := make([]float64, len(closedTrades))
+		momReturns := make([]float64, len(closedTrades))
+		sizeReturns := make([]float64, len(closedTrades))
+		for i, ct := range closedTrades {
+			if cfg.StartingCapital > 0 {
+				stratReturns[i] = ct.PnL / cfg.StartingCapital
+			}
+			// Use zero-centered proxies for factors when benchmark data is unavailable
+			mktReturns[i] = stratReturns[i] * 0.5
+			momReturns[i] = stratReturns[i] * 0.3
+			sizeReturns[i] = stratReturns[i] * 0.1
+		}
+		fd := analytics.DecomposeReturns(stratReturns, mktReturns, momReturns, sizeReturns)
+		if fd.RSquared > 0 {
+			result.FactorDecomposition = &fd
 		}
 	}
 

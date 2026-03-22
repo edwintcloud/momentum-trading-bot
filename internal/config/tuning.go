@@ -88,7 +88,10 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.ScannerVWAPTolerancePct == 0 {
 		cfg.ScannerVWAPTolerancePct = 2.0
 	}
-	// Market regime
+	// Market regime — enable by default for regime-aware trading
+	if !cfg.EnableMarketRegime {
+		cfg.EnableMarketRegime = true
+	}
 	if len(cfg.MarketRegimeBenchmarkSymbols) == 0 {
 		cfg.MarketRegimeBenchmarkSymbols = []string{"SPY", "QQQ", "IWM"}
 	}

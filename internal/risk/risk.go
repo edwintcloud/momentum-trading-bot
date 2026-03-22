@@ -8,6 +8,7 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
@@ -195,6 +196,21 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 					signal.Symbol, avgCorr, e.config.MaxAvgCorrelation))
 				return domain.OrderRequest{}, false, "correlation-limit"
 			}
+		}
+	}
+
+	// Phase 5: Market impact model — cap position size based on estimated impact
+	if e.config.ImpactModelEnabled && signal.Price > 0 && signal.Quantity > 0 {
+		// Estimate ADV as 100x order size as a conservative default
+		estimatedADV := float64(signal.Quantity) * 100
+		impactParams := execution.DefaultImpactParams(estimatedADV, e.config.DefaultVolatility)
+		impact := execution.EstimateImpact(int(signal.Quantity), signal.Price, impactParams)
+		if impact > e.config.MaxAcceptableImpactPct {
+			maxQty := execution.FindMaxQtyWithinImpact(signal.Price, impactParams, e.config.MaxAcceptableImpactPct)
+			if maxQty <= 0 {
+				return domain.OrderRequest{}, false, "market-impact-limit"
+			}
+			signal.Quantity = int64(maxQty)
 		}
 	}
 

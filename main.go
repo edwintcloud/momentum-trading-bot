@@ -110,6 +110,7 @@ func runLive() {
 	// Initialize pipeline components
 	portfolioMgr := portfolio.NewManager(tradingCfg, logger)
 	portfolioMgr.SetBrokerEquity(acct.Equity)
+	volEstimator := risk.NewVolatilityEstimator(tradingCfg.DefaultVolatility)
 
 	// Seed broker positions
 	brokerPositions, err := alpacaClient.GetPositions(ctx)
@@ -156,7 +157,8 @@ func runLive() {
 
 	// Start components
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
-	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState)
+	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
+	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
 
 	// Fan-out ticks to strategy and scanner
@@ -170,6 +172,9 @@ func runLive() {
 			}
 			// Update portfolio prices
 			portfolioMgr.UpdatePrice(tick.Symbol, tick.Price)
+			// Feed vol estimator and correlation tracker
+			volEstimator.UpdatePrice(tick.Symbol, tick.Price)
+			riskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 
 			select {
 			case scannerTicks <- tick:
@@ -196,7 +201,6 @@ func runLive() {
 	}()
 
 	// Start risk engine
-	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
 	go func() {
 		if err := riskEngine.Start(ctx, signalCh, orderCh); err != nil {
 			log.Printf("risk: %v", err)
