@@ -173,6 +173,10 @@ type TradingConfig struct {
 	// Phase 5: Factor model decomposition (Change 3)
 	FactorAnalysisEnabled bool
 
+	// Backtest fixes: entry throttle and ATR minimum
+	MaxEntriesPerMinute int `json:"max_entries_per_minute" yaml:"max_entries_per_minute"`
+	MinATRBars          int `json:"min_atr_bars" yaml:"min_atr_bars"`
+
 	// Phase 5: Almgren-Chriss impact model (Change 4)
 	ImpactModelEnabled      bool
 	MaxAcceptableImpactPct  float64

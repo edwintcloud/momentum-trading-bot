@@ -391,6 +391,14 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.WFStepDays = 20
 	}
 
+	// Backtest fixes: entry throttle and ATR minimum defaults
+	if cfg.MaxEntriesPerMinute == 0 {
+		cfg.MaxEntriesPerMinute = 3
+	}
+	if cfg.MinATRBars == 0 {
+		cfg.MinATRBars = 5
+	}
+
 	// Phase 5: HMM regime detection defaults
 	if !cfg.HMMRegimeEnabled && cfg.HMMConfidenceMin == 0 {
 		cfg.HMMRegimeEnabled = true
