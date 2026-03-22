@@ -27,6 +27,7 @@ type symbolState struct {
 	day                  string
 	bars                 []symbolBar
 	cumulativeDollarFlow float64
+	cumulativeVolume     float64
 }
 
 // Scanner scans market ticks for momentum candidates.
@@ -250,8 +251,9 @@ func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 	if tick.BarHigh > 0 && tick.BarLow > 0 {
 		typical := (tick.BarHigh + tick.BarLow + tick.Price) / 3
 		state.cumulativeDollarFlow += typical * float64(tick.Volume)
-		if tick.Volume > 0 {
-			bar.vwap = state.cumulativeDollarFlow / float64(tick.Volume)
+		state.cumulativeVolume += float64(tick.Volume)
+		if state.cumulativeVolume > 0 {
+			bar.vwap = state.cumulativeDollarFlow / state.cumulativeVolume
 		}
 	}
 	state.bars = append(state.bars, bar)
@@ -311,6 +313,22 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	m.emaFast = computeEMA(bars, s.config.MarketRegimeEMAFastPeriod)
 	m.emaSlow = computeEMA(bars, s.config.MarketRegimeEMASlowPeriod)
 
+	// RSI and RSI MA Slope (14-period Wilder RSI)
+	if n >= 15 {
+		rsiValues := make([]float64, 0, 10)
+		start := n - 10
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < n; i++ {
+			subBars := bars[:i+1]
+			rsiValues = append(rsiValues, computeRSI(subBars, 14))
+		}
+		if len(rsiValues) >= 2 {
+			m.rsiMASlope = (rsiValues[len(rsiValues)-1] - rsiValues[0]) / float64(len(rsiValues))
+		}
+	}
+
 	// Setup detection
 	if n >= 5 {
 		high5 := bars[n-5].high
@@ -350,63 +368,81 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	return m
 }
 
+// continuousScore returns a value in [0, 1] that ramps linearly from 0 at threshold to 1 at saturation.
+func continuousScore(value, threshold, saturation float64) float64 {
+	if value <= 0 || value < threshold {
+		return 0
+	}
+	if saturation <= threshold {
+		return 1
+	}
+	normalized := (value - threshold) / (saturation - threshold)
+	if normalized > 1.0 {
+		normalized = 1.0
+	}
+	return normalized
+}
+
 func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction string) float64 {
+	cfg := s.config
 	score := 0.0
 
-	// Volume factors
-	if tick.RelativeVolume > 3.0 {
-		score += 1.0
-	}
-	if m.volumeRate > s.config.MinVolumeRate*2 {
-		score += 0.5
-	}
+	// Relative Volume: ramp from 2.0 to 8.0, weight 1.5
+	score += 1.5 * continuousScore(tick.RelativeVolume, 2.0, 8.0)
 
-	// Gap factors
+	// Volume Rate: ramp from minVolumeRate to minVolumeRate*4, weight 0.5
+	score += 0.5 * continuousScore(m.volumeRate, cfg.MinVolumeRate, cfg.MinVolumeRate*4)
+
+	// Gap Percent: ramp from minGap to 15%, weight 1.5
 	gapAbs := math.Abs(tick.GapPercent)
-	if gapAbs > 5.0 {
-		score += 1.0
-	}
-	if gapAbs > 10.0 {
-		score += 0.5
-	}
+	score += 1.5 * continuousScore(gapAbs, cfg.MinGapPercent, 15.0)
 
-	// Momentum factors
+	// One-minute return: weight 0.5
 	if direction == domain.DirectionLong {
-		if m.oneMinuteReturn > s.config.MinOneMinuteReturnPct {
-			score += 0.5
-		}
-		if m.threeMinuteReturn > s.config.MinThreeMinuteReturnPct {
-			score += 0.5
-		}
-		if m.breakoutPct > 0 {
-			score += 1.0
-		}
+		score += 0.5 * continuousScore(m.oneMinuteReturn, cfg.MinOneMinuteReturnPct, cfg.MinOneMinuteReturnPct*3)
 	} else {
-		if m.oneMinuteReturn < -s.config.MinOneMinuteReturnPct {
-			score += 0.5
-		}
-		if m.threeMinuteReturn < -s.config.MinThreeMinuteReturnPct {
-			score += 0.5
-		}
-		if m.setupType == "breakdown" {
-			score += 1.0
+		score += 0.5 * continuousScore(-m.oneMinuteReturn, cfg.MinOneMinuteReturnPct, cfg.MinOneMinuteReturnPct*3)
+	}
+
+	// Three-minute return: weight 0.5
+	if direction == domain.DirectionLong {
+		score += 0.5 * continuousScore(m.threeMinuteReturn, cfg.MinThreeMinuteReturnPct, cfg.MinThreeMinuteReturnPct*3)
+	} else {
+		score += 0.5 * continuousScore(-m.threeMinuteReturn, cfg.MinThreeMinuteReturnPct, cfg.MinThreeMinuteReturnPct*3)
+	}
+
+	// Breakout strength: ramp from 0 to 3%, weight 1.0
+	if direction == domain.DirectionLong {
+		score += 1.0 * continuousScore(m.breakoutPct, 0, 3.0)
+	} else {
+		score += 1.0 * continuousScore(-m.breakoutPct, 0, 3.0)
+	}
+
+	// VWAP alignment: weight 0.5
+	if m.vwap > 0 {
+		vwapPct := (tick.Price - m.vwap) / m.vwap * 100
+		if direction == domain.DirectionLong {
+			score += 0.5 * continuousScore(vwapPct, 0, 2.0)
+		} else {
+			score += 0.5 * continuousScore(-vwapPct, 0, 2.0)
 		}
 	}
 
-	// VWAP alignment
-	if direction == domain.DirectionLong && tick.Price > m.vwap {
-		score += 0.5
-	}
-	if direction == domain.DirectionShort && tick.Price < m.vwap {
-		score += 0.5
+	// EMA alignment: weight 0.5
+	if m.emaFast > 0 && m.emaSlow > 0 {
+		emaDiff := (m.emaFast - m.emaSlow) / m.emaSlow * 100
+		if direction == domain.DirectionLong {
+			score += 0.5 * continuousScore(emaDiff, 0, 1.0)
+		} else {
+			score += 0.5 * continuousScore(-emaDiff, 0, 1.0)
+		}
 	}
 
-	// EMA alignment
-	if m.emaFast > m.emaSlow && direction == domain.DirectionLong {
-		score += 0.5
-	}
-	if m.emaFast < m.emaSlow && direction == domain.DirectionShort {
-		score += 0.5
+	// RSI momentum alignment: weight 0.5
+	if direction == domain.DirectionLong && m.rsiMASlope > 0 {
+		score += 0.5 * continuousScore(m.rsiMASlope, 0, 2.0)
+	} else if direction == domain.DirectionShort && m.rsiMASlope < 0 {
+		score += 0.5 * continuousScore(-m.rsiMASlope, 0, 2.0)
 	}
 
 	return score
@@ -460,6 +496,44 @@ func computeEMA(bars []symbolBar, period int) float64 {
 		ema = (bars[i].close-ema)*multiplier + ema
 	}
 	return ema
+}
+
+// computeRSI computes the 14-period Wilder RSI from a series of bars.
+func computeRSI(bars []symbolBar, period int) float64 {
+	if len(bars) < period+1 {
+		return 50.0 // neutral default
+	}
+
+	var avgGain, avgLoss float64
+	// Initial average over first 'period' changes
+	for i := 1; i <= period; i++ {
+		change := bars[i].close - bars[i-1].close
+		if change > 0 {
+			avgGain += change
+		} else {
+			avgLoss += -change
+		}
+	}
+	avgGain /= float64(period)
+	avgLoss /= float64(period)
+
+	// Wilder's smoothing for remaining bars
+	for i := period + 1; i < len(bars); i++ {
+		change := bars[i].close - bars[i-1].close
+		if change > 0 {
+			avgGain = (avgGain*float64(period-1) + change) / float64(period)
+			avgLoss = (avgLoss * float64(period-1)) / float64(period)
+		} else {
+			avgGain = (avgGain * float64(period-1)) / float64(period)
+			avgLoss = (avgLoss*float64(period-1) + (-change)) / float64(period)
+		}
+	}
+
+	if avgLoss == 0 {
+		return 100.0
+	}
+	rs := avgGain / avgLoss
+	return 100.0 - (100.0 / (1.0 + rs))
 }
 
 func safePct(numerator, denominator float64) float64 {

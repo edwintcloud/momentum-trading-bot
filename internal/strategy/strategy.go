@@ -179,13 +179,53 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false
 	}
 
+	// Regime gating
+	if s.config.RegimeGatingEnabled {
+		switch c.MarketRegime {
+		case domain.RegimeBearish:
+			if c.Direction == domain.DirectionLong {
+				return domain.TradeSignal{}, false
+			}
+		case domain.RegimeBullish:
+			if c.Direction == domain.DirectionShort {
+				return domain.TradeSignal{}, false
+			}
+		case domain.RegimeMixed:
+			boosted := minScore * s.config.RegimeMixedScoreBoost
+			if c.Score < boosted {
+				return domain.TradeSignal{}, false
+			}
+		case domain.RegimeNeutral:
+			boosted := minScore * s.config.RegimeNeutralScoreBoost
+			if c.Score < boosted {
+				return domain.TradeSignal{}, false
+			}
+		}
+	}
+
 	// Compute position sizing
 	riskPerShare := s.computeRiskPerShare(c)
 	if riskPerShare <= 0 {
 		return domain.TradeSignal{}, false
 	}
 
-	riskBudget := s.config.StartingCapital * s.config.RiskPerTradePct
+	currentEquity := s.portfolio.CurrentEquity()
+	if currentEquity <= 0 {
+		currentEquity = s.config.StartingCapital
+	}
+	riskBudget := currentEquity * s.config.RiskPerTradePct
+
+	// Scale position size by confidence (Change 7)
+	if s.config.ConfidenceSizingEnabled {
+		confidence := c.Score / 8.0
+		if confidence > 1.0 {
+			confidence = 1.0
+		}
+		floor := s.config.ConfidenceSizingFloor
+		sizeMultiplier := floor + (1.0-floor)*confidence
+		riskBudget *= sizeMultiplier
+	}
+
 	quantity := int64(math.Floor(riskBudget / riskPerShare))
 	if quantity <= 0 {
 		return domain.TradeSignal{}, false
@@ -210,7 +250,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		EntryATR:         c.ATR,
 		SetupType:        c.SetupType,
 		Reason:           fmt.Sprintf("scanner score=%.1f setup=%s", c.Score, c.SetupType),
-		Confidence:       c.Score / 6.0,
+		Confidence:       c.Score / 8.0,
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
 		Playbook:         c.Playbook,
@@ -279,8 +319,24 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	return signal, true
 }
 
+func (s *Strategy) getPlaybookExitConfig(playbook string) config.PlaybookExitConfig {
+	switch playbook {
+	case "breakout":
+		return s.config.PlaybookExits.Breakout
+	case "pullback":
+		return s.config.PlaybookExits.Pullback
+	case "continuation":
+		return s.config.PlaybookExits.Continuation
+	case "reversal":
+		return s.config.PlaybookExits.Reversal
+	default:
+		return s.config.PlaybookExits.Breakout
+	}
+}
+
 func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (string, bool) {
 	r := s.currentR(pos, tick.Price)
+	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
 	// Hard stop
 	if domain.IsLong(pos.Side) && tick.Price <= pos.StopPrice {
@@ -290,15 +346,15 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		return "stop-loss", true
 	}
 
-	// Profit target
-	if r >= s.config.ProfitTargetR {
+	// Profit target (playbook-specific)
+	if r >= exitCfg.ProfitTargetR {
 		return "profit-target", true
 	}
 
-	// Failed breakout cut
-	if r <= s.config.FailedBreakoutCutR {
-		holdMinutes := time.Since(pos.OpenedAt).Minutes()
-		if holdMinutes < float64(s.config.BreakoutFailureWindowMin) {
+	// Failed breakout cut (playbook-specific)
+	if r <= exitCfg.FailedBreakoutCutR {
+		holdMinutes := tick.Timestamp.Sub(pos.OpenedAt).Minutes()
+		if holdMinutes < float64(exitCfg.BreakoutFailureWindowMin) {
 			return "failed-breakout", true
 		}
 	}
@@ -309,9 +365,10 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		return "end-of-day", true
 	}
 
-	// Stagnation check
+	// Stagnation check (Change 8 fix: use peakR directly, not pct/100)
 	holdMinutes := tick.Timestamp.Sub(pos.OpenedAt).Minutes()
-	if holdMinutes > float64(s.config.StagnationWindowMin) && r < s.config.StagnationMinPeakPct/100 {
+	peakR := s.peakR(pos)
+	if holdMinutes > float64(exitCfg.StagnationWindowMin) && peakR < exitCfg.StagnationMinPeakR {
 		return "stagnation", true
 	}
 
@@ -320,6 +377,7 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 
 func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	r := s.currentR(pos, tick.Price)
+	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
 	var newStop float64
 	if domain.IsLong(pos.Side) {
@@ -328,17 +386,17 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 			newStop = pos.AvgPrice + pos.EntryATR*0.1
 		}
 
-		// Trailing stop activation
-		if r >= s.config.TrailActivationR {
-			trailStop := tick.Price - pos.EntryATR*s.config.TrailATRMultiplier
+		// Trailing stop activation (playbook-specific)
+		if r >= exitCfg.TrailActivationR {
+			trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier
 			if trailStop > pos.StopPrice {
 				newStop = trailStop
 			}
 		}
 
-		// Tight trail
-		if r >= s.config.TightTrailTriggerR {
-			tightStop := tick.Price - pos.EntryATR*s.config.TightTrailATRMultiplier
+		// Tight trail (playbook-specific)
+		if r >= exitCfg.TightTrailTriggerR {
+			tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier
 			if tightStop > pos.StopPrice {
 				newStop = tightStop
 			}
@@ -348,14 +406,14 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 		if r >= s.config.BreakEvenMinR && pos.StopPrice > pos.AvgPrice {
 			newStop = pos.AvgPrice - pos.EntryATR*0.1
 		}
-		if r >= s.config.TrailActivationR {
-			trailStop := tick.Price + pos.EntryATR*s.config.TrailATRMultiplier
+		if r >= exitCfg.TrailActivationR {
+			trailStop := tick.Price + pos.EntryATR*exitCfg.TrailATRMultiplier
 			if trailStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = trailStop
 			}
 		}
-		if r >= s.config.TightTrailTriggerR {
-			tightStop := tick.Price + pos.EntryATR*s.config.TightTrailATRMultiplier
+		if r >= exitCfg.TightTrailTriggerR {
+			tightStop := tick.Price + pos.EntryATR*exitCfg.TightTrailATRMultiplier
 			if tightStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = tightStop
 			}
@@ -365,6 +423,17 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	if newStop > 0 {
 		s.portfolio.UpdateStopPrice(pos.Symbol, newStop)
 	}
+}
+
+// peakR computes the peak R-multiple reached during the position's life.
+func (s *Strategy) peakR(pos domain.Position) float64 {
+	if pos.RiskPerShare <= 0 {
+		return 0
+	}
+	if domain.IsLong(pos.Side) {
+		return (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+	}
+	return (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
 }
 
 func (s *Strategy) currentR(pos domain.Position, price float64) float64 {

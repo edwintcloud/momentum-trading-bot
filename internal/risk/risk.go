@@ -105,7 +105,11 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	// Exposure limit
 	totalExposure, longExposure, shortExposure := e.portfolio.Exposure()
 	proposedValue := signal.Price * float64(signal.Quantity)
-	maxExposure := e.config.StartingCapital * e.config.MaxExposurePct
+	currentEquity := e.portfolio.CurrentEquity()
+	if currentEquity <= 0 {
+		currentEquity = e.config.StartingCapital
+	}
+	maxExposure := currentEquity * e.config.MaxExposurePct
 	if totalExposure+proposedValue > maxExposure {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: exposure limit (%.0f + %.0f > %.0f)", signal.Symbol, totalExposure, proposedValue, maxExposure))
 		return domain.OrderRequest{}, false, "exposure-limit"
@@ -123,7 +127,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: max short positions reached", signal.Symbol))
 			return domain.OrderRequest{}, false, "max-short-positions"
 		}
-		maxShortExposure := e.config.StartingCapital * e.config.MaxShortExposurePct
+		maxShortExposure := currentEquity * e.config.MaxShortExposurePct
 		if shortExposure+proposedValue > maxShortExposure {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: short exposure limit", signal.Symbol))
 			return domain.OrderRequest{}, false, "short-exposure-limit"
@@ -136,14 +140,14 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 
 	// Daily loss limit
 	snapshot := e.portfolio.StatusSnapshot()
-	dailyLossLimit := e.config.StartingCapital * e.config.DailyLossLimitPct
+	dailyLossLimit := currentEquity * e.config.DailyLossLimitPct
 	if math.Abs(snapshot.DayPnL) >= dailyLossLimit && snapshot.DayPnL < 0 {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: daily loss limit reached (%.2f)", signal.Symbol, snapshot.DayPnL))
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 
 	// Position size cap
-	maxPositionValue := e.config.StartingCapital * e.config.MaxExposurePct / float64(e.config.MaxOpenPositions)
+	maxPositionValue := currentEquity * e.config.MaxExposurePct / float64(e.config.MaxOpenPositions)
 	if proposedValue > maxPositionValue {
 		newQty := int64(math.Floor(maxPositionValue / signal.Price))
 		if newQty <= 0 {
