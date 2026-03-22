@@ -250,6 +250,22 @@ type TradingConfig struct {
 	// Alpha signals: placeholders for future signals
 	NewsSentimentEnabled bool
 	UOAEnabled           bool
+
+	// Execution optimization: VWAP (Section 4.1)
+	VWAPExecutionEnabled bool
+	VWAPMinOrderADVPct   float64 // min order size as fraction of ADV to trigger VWAP
+
+	// Execution optimization: TWAP (Section 4.2)
+	TWAPExecutionEnabled bool
+	TWAPSlices           int // number of equal time slices
+	TWAPWindowSeconds    int // total execution window in seconds
+
+	// Execution optimization: Adaptive limit pricing (Section 4.5)
+	AdaptiveLimitEnabled          bool
+	AdaptiveLimitToleranceBps     float64 // initial limit offset from mid in bps
+	AdaptiveLimitWidenStepBps     float64 // widening step per interval in bps
+	AdaptiveLimitWidenIntervalSec int     // seconds between widening steps
+	AdaptiveLimitMaxSlippageBps   float64 // max allowed slippage from arrival price in bps
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

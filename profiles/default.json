@@ -64,7 +64,7 @@
 
     "RegimeGatingEnabled": true,
     "RegimeMixedScoreBoost": 1.25,
-    "RegimeNeutralScoreBoost": 1.10,
+    "RegimeNeutralScoreBoost": 1.1,
 
     "PlaybookExits": {
       "Breakout": {
@@ -132,7 +132,7 @@
 
     "CorrelationCheckEnabled": true,
     "CorrelationWindowSize": 20,
-    "MaxAvgCorrelation": 0.70,
+    "MaxAvgCorrelation": 0.7,
 
     "KellySizingEnabled": true,
     "KellyWindowSize": 200,
@@ -142,7 +142,7 @@
 
     "VolTargetSizingEnabled": true,
     "TargetVolPerPosition": 0.02,
-    "DefaultVolatility": 0.30,
+    "DefaultVolatility": 0.3,
 
     "DrawdownRiskEnabled": true,
     "MaxAcceptableDrawdown": 0.15,
@@ -155,9 +155,9 @@
 
     "PartialExitsEnabled": true,
     "PartialTrigger1R": 1.0,
-    "PartialTrigger1Pct": 0.50,
+    "PartialTrigger1Pct": 0.5,
     "PartialTrigger2R": 2.0,
-    "PartialTrigger2Pct": 0.50,
+    "PartialTrigger2Pct": 0.5,
     "MoveStopAfterPartial": true,
 
     "AdaptiveTrailEnabled": true,
@@ -192,7 +192,7 @@
     "WFStepDays": 20,
 
     "HMMRegimeEnabled": true,
-    "HMMConfidenceMin": 0.70,
+    "HMMConfidenceMin": 0.7,
 
     "BayesianOptEnabled": true,
     "BayesianExploration": 20,
@@ -203,10 +203,10 @@
     "MaxAcceptableImpactPct": 0.005,
 
     "MLScoringEnabled": false,
-    "MLScoreWeight": 0.50,
+    "MLScoreWeight": 0.5,
 
     "MetaLabelEnabled": false,
-    "MetaLabelMinProb": 0.40,
+    "MetaLabelMinProb": 0.4,
 
     "CPCVEnabled": true,
     "CPCVGroups": 6,
@@ -222,14 +222,14 @@
     "CVaRPositionSizing": false,
 
     "GARCHEnabled": false,
-    "GARCHAlpha": 0.10,
+    "GARCHAlpha": 0.1,
     "GARCHBeta": 0.85,
     "GARCHLongRunVar": 0.0004,
 
     "DynamicRiskBudgetEnabled": false,
-    "TargetVolAnnualized": 0.10,
+    "TargetVolAnnualized": 0.1,
     "DailyRiskBudgetPct": 0.01,
-    
+
     "OFIEnabled": false,
     "OFIWindowBars": 60,
     "OFIThresholdSigma": 3.0,
@@ -258,7 +258,20 @@
     "ORBTargetMultiplier": 1.5,
 
     "NewsSentimentEnabled": false,
-    "UOAEnabled": false
+    "UOAEnabled": false,
+
+    "VWAPExecutionEnabled": false,
+    "VWAPMinOrderADVPct": 0.005,
+
+    "TWAPExecutionEnabled": false,
+    "TWAPSlices": 10,
+    "TWAPWindowSeconds": 300,
+
+    "AdaptiveLimitEnabled": false,
+    "AdaptiveLimitToleranceBps": 5.0,
+    "AdaptiveLimitWidenStepBps": 0.5,
+    "AdaptiveLimitWidenIntervalSec": 5,
+    "AdaptiveLimitMaxSlippageBps": 20.0
   },
   "promotion": {
     "deploymentMode": "paper",

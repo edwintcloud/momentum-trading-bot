@@ -1,6 +1,5 @@
 package config
 
-
 const defaultStartingCapital = 25000.0
 
 // TuneTradingConfig adjusts parameters based on capital and broker PnL.
@@ -534,6 +533,32 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	}
 	if cfg.ORBTargetMultiplier == 0 {
 		cfg.ORBTargetMultiplier = 1.5
+	}
+	// Execution optimization: VWAP defaults (disabled by default)
+	if cfg.VWAPMinOrderADVPct == 0 {
+		cfg.VWAPMinOrderADVPct = 0.005
+	}
+
+	// Execution optimization: TWAP defaults (disabled by default)
+	if cfg.TWAPSlices == 0 {
+		cfg.TWAPSlices = 10
+	}
+	if cfg.TWAPWindowSeconds == 0 {
+		cfg.TWAPWindowSeconds = 300
+	}
+
+	// Execution optimization: Adaptive limit defaults (disabled by default)
+	if cfg.AdaptiveLimitToleranceBps == 0 {
+		cfg.AdaptiveLimitToleranceBps = 5.0
+	}
+	if cfg.AdaptiveLimitWidenStepBps == 0 {
+		cfg.AdaptiveLimitWidenStepBps = 0.5
+	}
+	if cfg.AdaptiveLimitWidenIntervalSec == 0 {
+		cfg.AdaptiveLimitWidenIntervalSec = 5
+	}
+	if cfg.AdaptiveLimitMaxSlippageBps == 0 {
+		cfg.AdaptiveLimitMaxSlippageBps = 20.0
 	}
 
 	// Playbook exit defaults
