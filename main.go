@@ -35,7 +35,9 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "backtest":
-			runBacktest(os.Args[2:])
+			if err := runBacktestCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
 			return
 		case "optimize":
 			runOptimize(os.Args[2:])

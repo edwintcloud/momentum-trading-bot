@@ -81,3 +81,61 @@ func envString(key, fallback string) string {
 	}
 	return val
 }
+
+// AlpacaConfig contains credentials and endpoint settings for Alpaca.
+type AlpacaConfig struct {
+	APIKey              string
+	APISecret           string
+	Paper               bool
+	LiveTradingEnabled  bool
+	DataFeed            string
+	AutoSelectDataFeed  bool
+	TradingBaseURL      string
+	MarketDataBaseURL   string
+	MarketDataStreamURL string
+	SubscribeAllBars    bool
+	Symbols             []string
+}
+
+// LoadBacktestAlpacaConfig loads only the Alpaca settings needed for historical
+// backtests, without requiring database or app runtime configuration.
+func LoadBacktestAlpacaConfig(symbolOverrides []string) (AlpacaConfig, error) {
+	paper := envBool("ALPACA_PAPER", true)
+	tradingBaseURL := "https://api.alpaca.markets"
+	if paper {
+		tradingBaseURL = "https://paper-api.alpaca.markets"
+	}
+
+	symbols := symbolOverrides
+	if len(symbols) == 0 {
+		if raw := strings.TrimSpace(os.Getenv("ALPACA_SYMBOLS")); raw != "" {
+			for _, s := range strings.Split(raw, ",") {
+				s = strings.ToUpper(strings.TrimSpace(s))
+				if s != "" {
+					symbols = append(symbols, s)
+				}
+			}
+		}
+	}
+
+	cfg := AlpacaConfig{
+		APIKey:              strings.TrimSpace(os.Getenv("ALPACA_API_KEY")),
+		APISecret:           strings.TrimSpace(os.Getenv("ALPACA_API_SECRET")),
+		Paper:               paper,
+		LiveTradingEnabled:  envBool("ALPACA_LIVE_TRADING_ENABLED", false),
+		DataFeed:            "iex",
+		AutoSelectDataFeed:  true,
+		TradingBaseURL:      strings.TrimRight(tradingBaseURL, "/"),
+		MarketDataBaseURL:   "https://data.alpaca.markets",
+		MarketDataStreamURL: "wss://stream.data.alpaca.markets",
+		SubscribeAllBars:    len(symbols) == 0,
+		Symbols:             symbols,
+	}
+	if cfg.APIKey == "" {
+		return AlpacaConfig{}, fmt.Errorf("ALPACA_API_KEY is required")
+	}
+	if cfg.APISecret == "" {
+		return AlpacaConfig{}, fmt.Errorf("ALPACA_API_SECRET is required")
+	}
+	return cfg, nil
+}
