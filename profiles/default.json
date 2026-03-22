@@ -210,7 +210,10 @@
 
     "CPCVEnabled": true,
     "CPCVGroups": 6,
-    "CPCVPurgeGap": 60
+    "CPCVPurgeGap": 60,
+
+    "MaxEntriesPerMinute": 3,
+    "MinATRBars": 5
   },
   "promotion": {
     "deploymentMode": "paper",

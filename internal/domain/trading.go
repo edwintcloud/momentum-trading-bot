@@ -24,7 +24,7 @@ func NormalizeDirection(value string) string {
 
 func NormalizeIntent(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case IntentClose:
+	case IntentClose, "partial":
 		return IntentClose
 	default:
 		return IntentOpen

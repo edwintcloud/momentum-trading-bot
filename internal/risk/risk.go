@@ -27,6 +27,8 @@ type Engine struct {
 	shortable          ShortabilityChecker
 	dayKey             string
 	approved           int
+	lastMinuteKey      string
+	minuteApproved     int
 	CorrelationTracker *CorrelationTracker
 }
 
@@ -41,7 +43,7 @@ func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, ru
 		portfolio:          portfolioManager,
 		runtime:            runtimeState,
 		shortable:          checker,
-		dayKey:             markethours.TradingDay(time.Now()),
+		dayKey:             "",
 		CorrelationTracker: NewCorrelationTracker(cfg.CorrelationWindowSize),
 	}
 }
@@ -72,12 +74,15 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 // Evaluate checks a trade signal against all risk gates.
 // Returns the approved order, whether it was approved, and the rejection reason.
 func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool, string) {
+	// Preserve original closing intent before inferIntent might override it
+	originalIntent := signal.Intent
+
 	// Infer intent
 	pos, posExists := e.portfolio.GetPosition(signal.Symbol)
 	signal = e.inferIntent(signal, pos, posExists)
 
-	// Closing trades always pass risk
-	if domain.IsClosingIntent(signal.Intent) {
+	// If the original signal was a close/partial, always allow the exit
+	if domain.IsClosingIntent(originalIntent) || domain.IsClosingIntent(signal.Intent) {
 		return e.toOrderRequest(signal), true, ""
 	}
 
@@ -99,10 +104,21 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	}
 
 	// Daily trade limit
-	e.resetDayIfNeeded()
+	e.resetDayIfNeeded(signal.Timestamp)
 	if e.approved >= e.config.MaxTradesPerDay {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max daily trades reached (%d)", signal.Symbol, e.config.MaxTradesPerDay))
 		return domain.OrderRequest{}, false, "max-daily-trades"
+	}
+
+	// Per-minute entry throttle
+	minuteKey := signal.Timestamp.In(markethours.Location()).Format("2006-01-02T15:04")
+	if minuteKey != e.lastMinuteKey {
+		e.lastMinuteKey = minuteKey
+		e.minuteApproved = 0
+	}
+	if e.minuteApproved >= e.config.MaxEntriesPerMinute {
+		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max entries per minute reached (%d)", signal.Symbol, e.config.MaxEntriesPerMinute))
+		return domain.OrderRequest{}, false, "max-entries-per-minute"
 	}
 
 	// Exposure limit
@@ -225,6 +241,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	}
 
 	e.approved++
+	e.minuteApproved++
 	_ = longExposure // used in exposure calc
 	return e.toOrderRequest(signal), true, ""
 }
@@ -342,8 +359,8 @@ func (e *Engine) toOrderRequest(signal domain.TradeSignal) domain.OrderRequest {
 	}
 }
 
-func (e *Engine) resetDayIfNeeded() {
-	today := markethours.TradingDay(time.Now())
+func (e *Engine) resetDayIfNeeded(at time.Time) {
+	today := markethours.TradingDay(at)
 	if today != e.dayKey {
 		e.dayKey = today
 		e.approved = 0

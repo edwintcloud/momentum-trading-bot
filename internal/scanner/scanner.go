@@ -337,8 +337,11 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 		}
 	}
 
-	// ATR (14-period)
+	// ATR (14-period) — require minimum bars for reliable ATR
 	m.atr = computeATR(bars, 14)
+	if n < s.config.MinATRBars {
+		m.atr = 0 // force percentage fallback in strategy
+	}
 
 	// VWAP
 	if n > 0 {
