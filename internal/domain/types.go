@@ -14,10 +14,10 @@ type EventRecorder interface {
 
 // IndicatorSnapshot captures the raw mathematical state of indicators at a point in time.
 type IndicatorSnapshot struct {
-	Symbol     string    `json:"symbol"`
-	Timestamp  time.Time `json:"timestamp"`
-	SignalType string    `json:"signalType"` // e.g., "entry", "exit"
-	Reason     string    `json:"reason"`
+	Symbol     string             `json:"symbol"`
+	Timestamp  time.Time          `json:"timestamp"`
+	SignalType string             `json:"signalType"` // e.g., "entry", "exit"
+	Reason     string             `json:"reason"`
 	Indicators map[string]float64 `json:"indicators"`
 }
 
@@ -43,6 +43,7 @@ type Tick struct {
 // Candidate is a stock that passed the scanner filters.
 type Candidate struct {
 	Symbol                string    `json:"symbol"`
+	Direction             string    `json:"direction"`
 	Price                 float64   `json:"price"`
 	Open                  float64   `json:"open"`
 	GapPercent            float64   `json:"gapPercent"`
@@ -68,8 +69,16 @@ type Candidate struct {
 	CloseOffHighPct       float64   `json:"closeOffHighPct"`
 	SetupHigh             float64   `json:"setupHigh"`
 	SetupLow              float64   `json:"setupLow"`
+	RSIMASlope            float64   `json:"rsiMASlope"`
+	FiveMinRange          float64   `json:"fiveMinRange"`
+	PriceVsEMA9Pct        float64   `json:"priceVsEma9Pct"`
+	EMAFast               float64   `json:"emaFast"`
+	EMASlow               float64   `json:"emaSlow"`
 	SetupType             string    `json:"setupType"`
 	Score                 float64   `json:"score"`
+	MarketRegime          string    `json:"marketRegime"`
+	RegimeConfidence      float64   `json:"regimeConfidence"`
+	Playbook              string    `json:"playbook"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
 	Timestamp             time.Time `json:"timestamp"`
@@ -79,6 +88,8 @@ type Candidate struct {
 type TradeSignal struct {
 	Symbol       string    `json:"symbol"`
 	Side         string    `json:"side"`
+	Intent       string    `json:"intent"`
+	PositionSide string    `json:"positionSide"`
 	Price        float64   `json:"price"`
 	Quantity     int64     `json:"quantity"`
 	StopPrice    float64   `json:"stopPrice"`
@@ -87,6 +98,9 @@ type TradeSignal struct {
 	SetupType    string    `json:"setupType"`
 	Reason       string    `json:"reason"`
 	Confidence   float64   `json:"confidence"`
+	MarketRegime string    `json:"marketRegime"`
+	RegimeConfidence float64 `json:"regimeConfidence"`
+	Playbook     string    `json:"playbook"`
 	Timestamp    time.Time `json:"timestamp"`
 }
 
@@ -94,6 +108,8 @@ type TradeSignal struct {
 type OrderRequest struct {
 	Symbol       string    `json:"symbol"`
 	Side         string    `json:"side"`
+	Intent       string    `json:"intent"`
+	PositionSide string    `json:"positionSide"`
 	Price        float64   `json:"price"`
 	Quantity     int64     `json:"quantity"`
 	StopPrice    float64   `json:"stopPrice"`
@@ -101,6 +117,9 @@ type OrderRequest struct {
 	EntryATR     float64   `json:"entryAtr"`
 	SetupType    string    `json:"setupType"`
 	Reason       string    `json:"reason"`
+	MarketRegime string    `json:"marketRegime"`
+	RegimeConfidence float64 `json:"regimeConfidence"`
+	Playbook     string    `json:"playbook"`
 	Timestamp    time.Time `json:"timestamp"`
 }
 
@@ -108,6 +127,8 @@ type OrderRequest struct {
 type ExecutionReport struct {
 	Symbol        string    `json:"symbol"`
 	Side          string    `json:"side"`
+	Intent        string    `json:"intent"`
+	PositionSide  string    `json:"positionSide"`
 	Price         float64   `json:"price"`
 	Quantity      int64     `json:"quantity"`
 	StopPrice     float64   `json:"stopPrice"`
@@ -115,6 +136,9 @@ type ExecutionReport struct {
 	EntryATR      float64   `json:"entryAtr"`
 	SetupType     string    `json:"setupType"`
 	Reason        string    `json:"reason"`
+	MarketRegime  string    `json:"marketRegime"`
+	RegimeConfidence float64 `json:"regimeConfidence"`
+	Playbook      string    `json:"playbook"`
 	BrokerOrderID string    `json:"brokerOrderId"`
 	BrokerStatus  string    `json:"brokerStatus"`
 	FilledAt      time.Time `json:"filledAt"`
@@ -123,6 +147,7 @@ type ExecutionReport struct {
 // Position is an open portfolio holding.
 type Position struct {
 	Symbol           string    `json:"symbol"`
+	Side             string    `json:"side"`
 	Quantity         int64     `json:"quantity"`
 	AvgPrice         float64   `json:"avgPrice"`
 	StopPrice        float64   `json:"stopPrice"`
@@ -130,10 +155,15 @@ type Position struct {
 	RiskPerShare     float64   `json:"riskPerShare"`
 	EntryATR         float64   `json:"entryAtr"`
 	SetupType        string    `json:"setupType"`
+	MarketRegime     string    `json:"marketRegime"`
+	RegimeConfidence float64   `json:"regimeConfidence"`
+	Playbook         string    `json:"playbook"`
 	LastPrice        float64   `json:"lastPrice"`
 	HighestPrice     float64   `json:"highestPrice"`
+	LowestPrice      float64   `json:"lowestPrice"`
 	MarketValue      float64   `json:"marketValue"`
 	UnrealizedPnL    float64   `json:"unrealizedPnL"`
+	BrokerSeeded     bool      `json:"brokerSeeded"`
 	OpenedAt         time.Time `json:"openedAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
@@ -141,14 +171,19 @@ type Position struct {
 // ClosedTrade records a completed round-trip trade.
 type ClosedTrade struct {
 	Symbol     string    `json:"symbol"`
+	Side       string    `json:"side"`
 	Quantity   int64     `json:"quantity"`
 	EntryPrice float64   `json:"entryPrice"`
 	ExitPrice  float64   `json:"exitPrice"`
 	PnL        float64   `json:"pnl"`
 	RMultiple  float64   `json:"rMultiple"`
+	SetupType  string    `json:"setupType"`
 	OpenedAt   time.Time `json:"openedAt"`
 	ClosedAt   time.Time `json:"closedAt"`
 	ExitReason string    `json:"exitReason"`
+	MarketRegime string  `json:"marketRegime"`
+	RegimeConfidence float64 `json:"regimeConfidence"`
+	Playbook   string    `json:"playbook"`
 }
 
 // LogEntry is a structured operational event.
@@ -172,19 +207,31 @@ type StatusSnapshot struct {
 	UnrealizedPnL    float64   `json:"unrealizedPnL"`
 	NetPnL           float64   `json:"netPnL"`
 	Exposure         float64   `json:"exposure"`
+	LongExposure     float64   `json:"longExposure"`
+	ShortExposure    float64   `json:"shortExposure"`
 	OpenPositions    int       `json:"openPositions"`
 	TradesToday      int       `json:"tradesToday"`
+	EntriesToday     int       `json:"entriesToday"`
 	DailyLossLimit   float64   `json:"dailyLossLimit"`
 	MaxOpenPositions int       `json:"maxOpenPositions"`
 	MaxTradesPerDay  int       `json:"maxTradesPerDay"`
+	ActiveProfile    string    `json:"activeProfile"`
+	ActiveVersion    string    `json:"activeVersion"`
+	PendingProfile   string    `json:"pendingProfile"`
+	PendingVersion   string    `json:"pendingVersion"`
+	LastOptimizerRun time.Time `json:"lastOptimizerRun"`
+	PaperValidation  string    `json:"paperValidation"`
+	CurrentRegime    string    `json:"currentRegime"`
+	RegimeConfidence float64   `json:"regimeConfidence"`
 }
 
 // DashboardSnapshot is streamed to the frontend.
 type DashboardSnapshot struct {
-	Status       StatusSnapshot `json:"status"`
-	Candidates   []Candidate    `json:"candidates"`
-	Positions    []Position     `json:"positions"`
-	ClosedTrades []ClosedTrade  `json:"closedTrades"`
-	Logs         []LogEntry     `json:"logs"`
-	UpdatedAt    time.Time      `json:"updatedAt"`
+	Status       StatusSnapshot      `json:"status"`
+	MarketRegime MarketRegimeSnapshot `json:"marketRegime"`
+	Candidates   []Candidate         `json:"candidates"`
+	Positions    []Position          `json:"positions"`
+	ClosedTrades []ClosedTrade       `json:"closedTrades"`
+	Logs         []LogEntry          `json:"logs"`
+	UpdatedAt    time.Time           `json:"updatedAt"`
 }

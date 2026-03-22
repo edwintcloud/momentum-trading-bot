@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -21,12 +22,12 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
-var easternLocation = mustLoadLocation("America/New_York")
-
 // Client wraps Alpaca trading and market data APIs.
 type Client struct {
+	mu         sync.RWMutex
 	cfg        config.AlpacaConfig
 	httpClient *http.Client
+	assets     map[string]AssetMetadata
 }
 
 // MarketDataCapabilities captures plan-dependent market-data behavior detected at runtime.
@@ -51,13 +52,26 @@ type BrokerPosition struct {
 	Qty           string `json:"qty"`
 	AvgEntryPrice string `json:"avg_entry_price"`
 	CurrentPrice  string `json:"current_price"`
+	Side          string `json:"side"`
 }
 
 type asset struct {
-	Symbol     string `json:"symbol"`
-	Tradable   bool   `json:"tradable"`
-	AssetClass string `json:"class"`
-	Status     string `json:"status"`
+	Symbol       string `json:"symbol"`
+	Exchange     string `json:"exchange"`
+	Tradable     bool   `json:"tradable"`
+	Shortable    bool   `json:"shortable"`
+	EasyToBorrow bool   `json:"easy_to_borrow"`
+	Marginable   bool   `json:"marginable"`
+	AssetClass   string `json:"class"`
+	Status       string `json:"status"`
+}
+
+type AssetMetadata struct {
+	Symbol       string
+	Tradable     bool
+	Shortable    bool
+	EasyToBorrow bool
+	Marginable   bool
 }
 
 // RESTBar is a REST representation of an Alpaca stock bar.
@@ -102,6 +116,10 @@ type Order struct {
 	Qty            string `json:"qty"`
 	FilledQty      string `json:"filled_qty"`
 	FilledAvgPrice string `json:"filled_avg_price"`
+}
+
+type accountActivity struct {
+	ID string `json:"id"`
 }
 
 // APIError preserves structured Alpaca HTTP error details for callers that
@@ -205,6 +223,7 @@ func NewClient(cfg config.AlpacaConfig) *Client {
 	return &Client{
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: 20 * time.Second},
+		assets:     make(map[string]AssetMetadata),
 	}
 }
 
@@ -273,6 +292,38 @@ func (c *Client) ListOpenPositions(ctx context.Context) ([]BrokerPosition, error
 	return positions, err
 }
 
+// CountFillsForDay returns the number of broker-reported fill activities for
+// the provided New York trading day.
+func (c *Client) CountFillsForDay(ctx context.Context, day time.Time) (int, error) {
+	tradingDay := day.In(markethours.Location()).Format("2006-01-02")
+	total := 0
+	pageToken := ""
+
+	for {
+		endpoint := fmt.Sprintf("%s/v2/account/activities/FILL?date=%s&direction=desc&page_size=100",
+			c.cfg.TradingBaseURL,
+			url.QueryEscape(tradingDay),
+		)
+		if pageToken != "" {
+			endpoint += "&page_token=" + url.QueryEscape(pageToken)
+		}
+
+		var activities []accountActivity
+		if err := c.getJSON(ctx, endpoint, &activities); err != nil {
+			return 0, err
+		}
+		total += len(activities)
+		if len(activities) < 100 {
+			return total, nil
+		}
+		lastID := strings.TrimSpace(activities[len(activities)-1].ID)
+		if lastID == "" {
+			return total, nil
+		}
+		pageToken = lastID
+	}
+}
+
 // GetPosition fetches a single open position by symbol. Returns (position, true, nil)
 // when found, (BrokerPosition{}, false, nil) when no position is held, or an error
 // for unexpected failures.
@@ -335,9 +386,9 @@ func (c *Client) GetPremarketVolumes(ctx context.Context, symbols []string, day 
 	if len(normalized) == 0 {
 		return map[string]int64{}, nil
 	}
-	marketDay := day.In(easternLocation)
-	start := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 4, 0, 0, 0, easternLocation).UTC()
-	end := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 9, 29, 59, 0, easternLocation).UTC()
+	marketDay := day.In(markethours.Location())
+	start := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 4, 0, 0, 0, markethours.Location())
+	end := time.Date(marketDay.Year(), marketDay.Month(), marketDay.Day(), 9, 29, 59, 0, markethours.Location())
 	endpoint := fmt.Sprintf(
 		"%s/v2/stocks/bars?symbols=%s&timeframe=1Min&start=%s&end=%s&adjustment=raw&feed=%s&limit=10000",
 		c.cfg.MarketDataBaseURL,
@@ -406,8 +457,8 @@ func (c *Client) GetHistoricalBarsPage(ctx context.Context, symbols []string, st
 		c.cfg.MarketDataBaseURL,
 		url.QueryEscape(strings.Join(normalized, ",")),
 		url.QueryEscape(timeframe),
-		url.QueryEscape(start.UTC().Format(time.RFC3339)),
-		url.QueryEscape(end.UTC().Format(time.RFC3339)),
+		url.QueryEscape(start.Format(time.RFC3339)),
+		url.QueryEscape(end.Format(time.RFC3339)),
 		url.QueryEscape(c.cfg.DataFeed),
 	)
 	if pageToken != "" {
@@ -433,23 +484,60 @@ func (c *Client) GetHistoricalBarsPage(ctx context.Context, symbols []string, st
 	return page, nil
 }
 
-// ListActiveEquitySymbols returns Alpaca's current tradable US equity symbol universe.
-func (c *Client) ListActiveEquitySymbols(ctx context.Context) ([]string, error) {
-	endpoint := c.cfg.TradingBaseURL + "/v2/assets?status=active&asset_class=us_equity"
+var allowedPrimaryExchanges = map[string]struct{}{
+	"NASDAQ": {},
+	"NYSE":   {},
+}
+
+// ListEquitySymbols returns Alpaca's tradable US equity symbol universe
+// limited to NYSE and NASDAQ primary listings.
+func (c *Client) ListEquitySymbols(ctx context.Context, includeInactive bool) ([]string, error) {
+	status := "active"
+	if includeInactive {
+		status = "all"
+	}
+	endpoint := c.cfg.TradingBaseURL + fmt.Sprintf("/v2/assets?status=%s&asset_class=us_equity", status)
 	var assets []asset
 	if err := c.getJSON(ctx, endpoint, &assets); err != nil {
 		return nil, err
 	}
 
 	symbols := make([]string, 0, len(assets))
+	metadata := make(map[string]AssetMetadata, len(assets))
 	for _, item := range assets {
+		symbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		metadata[symbol] = AssetMetadata{
+			Symbol:       symbol,
+			Tradable:     item.Tradable,
+			Shortable:    item.Shortable,
+			EasyToBorrow: item.EasyToBorrow,
+			Marginable:   item.Marginable,
+		}
 		if !item.Tradable {
 			continue
 		}
-		symbols = append(symbols, strings.ToUpper(strings.TrimSpace(item.Symbol)))
+		if _, ok := allowedPrimaryExchanges[strings.ToUpper(strings.TrimSpace(item.Exchange))]; !ok {
+			continue
+		}
+		symbols = append(symbols, symbol)
 	}
+	c.mu.Lock()
+	c.assets = metadata
+	c.mu.Unlock()
 	sort.Strings(symbols)
 	return symbols, nil
+}
+
+// IsShortable reports whether the latest known Alpaca asset metadata marks a
+// symbol as both shortable and easy to borrow.
+func (c *Client) IsShortable(symbol string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	metadata, ok := c.assets[strings.ToUpper(strings.TrimSpace(symbol))]
+	if !ok {
+		return false
+	}
+	return metadata.Shortable && metadata.EasyToBorrow
 }
 
 // NewsCatalyst holds a headline and its source URL.
@@ -495,7 +583,7 @@ func (c *Client) GetNews(ctx context.Context, symbols []string, limit int) (map[
 // during pre-market, regular, and post-market sessions.
 func (c *Client) SubmitOrder(ctx context.Context, request domain.OrderRequest) (Order, error) {
 	if !markethours.IsTradableSessionAt(request.Timestamp) {
-		return Order{}, fmt.Errorf("order rejected outside tradable session for %s at %s", request.Symbol, request.Timestamp.UTC().Format(time.RFC3339))
+		return Order{}, fmt.Errorf("order rejected outside tradable session for %s at %s", request.Symbol, request.Timestamp.Format(time.RFC3339))
 	}
 	payload := map[string]any{
 		"symbol":         request.Symbol,
@@ -669,7 +757,7 @@ func (c *Client) streamOnce(ctx context.Context, handler func(StreamMessage) err
 					Low:       bar.Low,
 					Close:     bar.Close,
 					Volume:    bar.Volume,
-					Timestamp: bar.Timestamp.UTC(),
+					Timestamp: bar.Timestamp,
 				}); err != nil {
 					return err
 				}
@@ -685,7 +773,7 @@ func (c *Client) streamOnce(ctx context.Context, handler func(StreamMessage) err
 					StatusMessage: status.StatusMessage,
 					ReasonCode:    status.ReasonCode,
 					ReasonMessage: status.ReasonMessage,
-					Timestamp:     status.Timestamp.UTC(),
+					Timestamp:     status.Timestamp,
 				}); err != nil {
 					return err
 				}
@@ -966,12 +1054,4 @@ func decodeResponse(response *http.Response, target any) error {
 		return apiErr
 	}
 	return json.NewDecoder(response.Body).Decode(target)
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }

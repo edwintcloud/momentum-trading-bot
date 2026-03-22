@@ -5,23 +5,22 @@ import "time"
 var newYorkLocation = mustLoadLocation("America/New_York")
 
 const (
-	premarketOpenMinute   = 4 * 60
-	postmarketCloseMinute = 20 * 60
+	premarketOpen   = 4  // 4 am
+	postmarketClose = 20 // 8 pm
 )
 
 // IsTradableSessionAt reports whether US equities can be traded at the given
 // timestamp, including premarket and postmarket extended hours.
 func IsTradableSessionAt(at time.Time) bool {
 	if at.IsZero() {
-		at = time.Now().UTC()
+		at = time.Now()
 	}
-	local := at.In(newYorkLocation)
+	local := at.In(Location())
 	switch local.Weekday() {
 	case time.Saturday, time.Sunday:
 		return false
 	}
-	minutes := local.Hour()*60 + local.Minute()
-	return minutes >= premarketOpenMinute && minutes < postmarketCloseMinute
+	return local.Hour() >= premarketOpen && local.Hour() < postmarketClose
 }
 
 // Location returns the shared America/New_York market timezone.

@@ -2,17 +2,24 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
@@ -24,39 +31,25 @@ type Server struct {
 	runtime   *runtime.State
 	closeAll  chan<- domain.OrderRequest
 	upgrader  websocket.Upgrader
+	authToken string
 }
 
 // NewServer creates an API server.
-func NewServer(portfolioManager *portfolio.Manager, runtimeState *runtime.State, closeAll chan<- domain.OrderRequest) *Server {
+func NewServer(portfolioManager *portfolio.Manager, runtimeState *runtime.State, closeAll chan<- domain.OrderRequest, appConfig config.AppConfig) *Server {
 	return &Server{
 		portfolio: portfolioManager,
 		runtime:   runtimeState,
 		closeAll:  closeAll,
-		upgrader:  websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }},
+		upgrader:  websocket.Upgrader{CheckOrigin: sameOriginRequest},
+		authToken: strings.TrimSpace(appConfig.ControlPlaneAuthToken),
 	}
 }
 
 // Start begins serving HTTP on the given address.
 func (s *Server) Start(ctx context.Context, addr string) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/readyz", s.handleReadyz)
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/positions", s.handlePositions)
-	mux.HandleFunc("/api/candidates", s.handleCandidates)
-	mux.HandleFunc("/api/trades", s.handleTrades)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	mux.HandleFunc("/api/dashboard", s.handleDashboard)
-	mux.HandleFunc("/api/pause", s.handlePause)
-	mux.HandleFunc("/api/resume", s.handleResume)
-	mux.HandleFunc("/api/close-all", s.handleCloseAll)
-	mux.HandleFunc("/api/emergency-stop", s.handleEmergencyStop)
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	mux.Handle("/", s.webHandler())
-
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -76,12 +69,31 @@ func (s *Server) Start(ctx context.Context, addr string) error {
 	return err
 }
 
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
+	mux.HandleFunc("/api/status", s.requireControlPlaneAuth(s.handleStatus))
+	mux.HandleFunc("/api/positions", s.requireControlPlaneAuth(s.handlePositions))
+	mux.HandleFunc("/api/candidates", s.requireControlPlaneAuth(s.handleCandidates))
+	mux.HandleFunc("/api/trades", s.requireControlPlaneAuth(s.handleTrades))
+	mux.HandleFunc("/api/logs", s.requireControlPlaneAuth(s.handleLogs))
+	mux.HandleFunc("/api/dashboard", s.requireControlPlaneAuth(s.handleDashboard))
+	mux.HandleFunc("/api/pause", s.requireControlPlaneAuth(s.handlePause))
+	mux.HandleFunc("/api/resume", s.requireControlPlaneAuth(s.handleResume))
+	mux.HandleFunc("/api/close-all", s.requireControlPlaneAuth(s.handleCloseAll))
+	mux.HandleFunc("/api/emergency-stop", s.requireControlPlaneAuth(s.handleEmergencyStop))
+	mux.HandleFunc("/ws", s.requireControlPlaneAuth(s.handleWebSocket))
+	mux.Handle("/", s.requireControlPlaneAuth(s.webHandler().ServeHTTP))
+	return mux
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.portfolio.StatusSnapshot())
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now().UTC()})
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now()})
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
@@ -165,10 +177,38 @@ func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"emergencyStop": true, "queued": len(orders)})
 }
 
+func (s *Server) requireControlPlaneAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			s.unauthorized(w)
+			return
+		}
+		if s.hasValidControlPlaneSession(r) {
+			next(w, r)
+			return
+		}
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "operator" || subtle.ConstantTimeCompare([]byte(password), []byte(s.authToken)) != 1 {
+			s.unauthorized(w)
+			return
+		}
+		s.setControlPlaneSession(w, r)
+		next(w, r)
+	}
+}
+
+func (s *Server) unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="Momentum Trading Bot"`)
+	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+}
+
 const (
 	wsWriteTimeout = 5 * time.Second
 	wsPingInterval = 25 * time.Second
 	wsPongTimeout  = 60 * time.Second
+
+	controlPlaneSessionCookieName = "mtb_control_plane_session"
+	controlPlaneSessionTTL        = 30 * 24 * time.Hour
 )
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -225,11 +265,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) snapshot() domain.DashboardSnapshot {
 	return domain.DashboardSnapshot{
 		Status:       s.portfolio.StatusSnapshot(),
+		MarketRegime: s.runtime.MarketRegime(),
 		Candidates:   s.runtime.Candidates(),
 		Positions:    s.portfolio.GetPositions(),
 		ClosedTrades: s.portfolio.GetClosedTrades(),
 		Logs:         s.runtime.Logs(),
-		UpdatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now(),
 	}
 }
 
@@ -267,4 +308,60 @@ func (s *Server) webHandler() http.Handler {
 		}
 		fs.ServeHTTP(w, r)
 	})
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if originURL.Host == "" || r.Host == "" {
+		return false
+	}
+	return strings.EqualFold(originURL.Host, r.Host)
+}
+
+func (s *Server) hasValidControlPlaneSession(r *http.Request) bool {
+	cookie, err := r.Cookie(controlPlaneSessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return false
+	}
+
+	expiresAt, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().Unix() > expiresAt {
+		return false
+	}
+
+	expected := s.signControlPlaneSession(parts[0])
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expected)) == 1
+}
+
+func (s *Server) setControlPlaneSession(w http.ResponseWriter, r *http.Request) {
+	expiresAt := time.Now().Add(controlPlaneSessionTTL)
+	payload := strconv.FormatInt(expiresAt.Unix(), 10)
+	http.SetCookie(w, &http.Cookie{
+		Name:     controlPlaneSessionCookieName,
+		Value:    payload + "." + s.signControlPlaneSession(payload),
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   int(controlPlaneSessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+}
+
+func (s *Server) signControlPlaneSession(payload string) string {
+	mac := hmac.New(sha256.New, []byte(s.authToken))
+	_, _ = mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

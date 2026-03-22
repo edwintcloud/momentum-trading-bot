@@ -20,6 +20,7 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/execution"
 	"github.com/edwincloud/momentum-trading-bot/internal/market"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
+	"github.com/edwincloud/momentum-trading-bot/internal/regime"
 	"github.com/edwincloud/momentum-trading-bot/internal/risk"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwincloud/momentum-trading-bot/internal/scanner"
@@ -31,6 +32,12 @@ import (
 func main() {
 	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "backtest") {
 		if err := runBacktest(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "optimize") {
+		if err := runOptimize(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -48,7 +55,7 @@ func main() {
 	runtimeState.SetDependencyStatus("database", false, "not checked")
 	runtimeState.SetDependencyStatus("alpaca_trading", false, "not checked")
 	runtimeState.SetDependencyStatus("market_data_stream", false, "not connected")
-	
+
 	pgRecorder, err := storage.NewRecorder(ctx, appConfig.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -80,10 +87,6 @@ func main() {
 		runtimeState.RecordLog("warn", "market", fmt.Sprintf("market-data capability probe failed: %v", err))
 	} else {
 		historicalRateLimit = capabilities.HistoricalRateLimitPerMin
-		if appConfig.Alpaca.AutoSelectDataFeed {
-			appConfig.Alpaca.DataFeed = capabilities.DetectedFeed
-			alpacaClient.SetDataFeed(capabilities.DetectedFeed)
-		}
 		appConfig.Trading.HydrationRequestsPerMin = recommendedHydrationBudget(capabilities.HistoricalRateLimitPerMin)
 		if capabilities.UnlimitedWebsocketSymbols {
 			runtimeState.RecordLog("info", "market", fmt.Sprintf("detected Alpaca %s plan: feed=%s historical_limit=%d/min websocket_symbols=unlimited", capabilities.PlanName, alpacaClient.DataFeed(), capabilities.HistoricalRateLimitPerMin))
@@ -95,15 +98,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("alpaca account fetch failed: %v", err)
 	}
-	if equity, _, ok := brokerAccountValues(account); ok {
-		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, equity, historicalRateLimit)
-	} else if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
+	if cash, ok := brokerCashValue(account); ok {
+		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, cash, historicalRateLimit)
+	} else if equity, _, ok := brokerAccountValues(account); ok {
 		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, equity, historicalRateLimit)
 	} else {
 		appConfig.Trading = config.TuneTradingConfig(appConfig.Trading, appConfig.Trading.StartingCapital, historicalRateLimit)
 	}
+	profileLabel := ""
+	appConfig.Trading, profileLabel, err = applyConfiguredTradingProfile(appConfig.Trading, appConfig.TradingProfilePath)
+	if err != nil {
+		log.Fatalf("trading profile load failed: %v", err)
+	}
+	runtimeState.SetOptimizerStatus(buildRuntimeOptimizerStatus(appConfig.Trading))
 	runtimeState.RecordLog("info", "risk", fmt.Sprintf(
-		"broker-tuned config risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f min_score=%.1f min_1m=%.2f model_threshold=%.2f",
+		"active profile=%s version=%s risk_per_trade=%.2f%% daily_loss=%.2f%% max_open=%d max_exposure=%.2f%% min_gap=%.1f%% min_rvol=%.1f min_score=%.1f min_1m=%.2f",
+		appConfig.Trading.StrategyProfileName,
+		appConfig.Trading.StrategyProfileVersion,
 		appConfig.Trading.RiskPerTradePct*100,
 		appConfig.Trading.DailyLossLimitPct*100,
 		appConfig.Trading.MaxOpenPositions,
@@ -112,8 +123,11 @@ func main() {
 		appConfig.Trading.MinRelativeVolume,
 		appConfig.Trading.MinEntryScore,
 		appConfig.Trading.MinOneMinuteReturnPct,
-		appConfig.Trading.EntryModelMinPredictedReturnPct,
 	))
+	if profileLabel != "" {
+		runtimeState.RecordLog("info", "optimizer", "loaded trading profile "+profileLabel)
+	}
+	appConfig.Alpaca = ensureBenchmarkSubscriptions(appConfig.Alpaca, appConfig.Trading)
 	portfolioManager := portfolio.NewManager(appConfig.Trading, runtimeState)
 	portfolioManager.SetRecorder(recorder)
 	runtimeState.SetDependencyStatus("alpaca_trading", true, liveModeLabel(appConfig.Alpaca.Paper))
@@ -142,9 +156,13 @@ func main() {
 
 	// Core components
 	marketEngine := market.NewEngine(alpacaClient, appConfig.Trading, portfolioManager, runtimeState)
+	var regimeTracker *regime.Tracker
+	if appConfig.Trading.EnableMarketRegime {
+		regimeTracker = regime.NewTracker(appConfig.Trading, runtimeState)
+	}
 	scannerEngine := scanner.NewScanner(appConfig.Trading, runtimeState)
 	strategyEngine := strategy.NewStrategy(appConfig.Trading, portfolioManager, runtimeState)
-	riskEngine := risk.NewEngine(appConfig.Trading, portfolioManager, runtimeState)
+	riskEngine := risk.NewEngine(appConfig.Trading, portfolioManager, runtimeState, alpacaClient)
 	executionEngine := execution.NewEngine(alpacaClient, appConfig.Alpaca, runtimeState)
 
 	// Start the market data engine
@@ -165,6 +183,9 @@ func main() {
 			case tick, ok := <-marketUpdates:
 				if !ok {
 					return
+				}
+				if regimeTracker != nil {
+					regimeTracker.UpdateTick(tick)
 				}
 				select {
 				case <-ctx.Done():
@@ -229,7 +250,7 @@ func main() {
 	}()
 
 	// Start API server
-	apiServer := api.NewServer(portfolioManager, runtimeState, operatorOrders)
+	apiServer := api.NewServer(portfolioManager, runtimeState, operatorOrders, appConfig)
 	go func() {
 		if err := apiServer.Start(ctx, appConfig.HTTPAddr); err != nil {
 			if !errors.Is(err, context.Canceled) {
@@ -249,11 +270,12 @@ func main() {
 			case <-ticker.C:
 				recorder.RecordDashboard(domain.DashboardSnapshot{
 					Status:       portfolioManager.StatusSnapshot(),
+					MarketRegime: runtimeState.MarketRegime(),
 					Candidates:   runtimeState.Candidates(),
 					Positions:    portfolioManager.GetPositions(),
 					ClosedTrades: portfolioManager.GetClosedTrades(),
 					Logs:         runtimeState.Logs(),
-					UpdatedAt:    time.Now().UTC(),
+					UpdatedAt:    time.Now(),
 				})
 			}
 		}
@@ -276,15 +298,19 @@ func main() {
 					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("position reconciliation failed: %v", reconcileErr))
 					continue
 				}
-				brokerQuantities := make(map[string]int64, len(brokerPositions))
+				brokerSnapshots := make(map[string]domain.Position, len(brokerPositions))
 				for _, p := range brokerPositions {
 					quantity, qtyErr := strconv.ParseInt(stringsBeforeDecimal(p.Qty), 10, 64)
 					if qtyErr != nil {
 						continue
 					}
-					brokerQuantities[strings.ToUpper(p.Symbol)] = quantity
+					brokerSnapshots[strings.ToUpper(p.Symbol)] = domain.Position{
+						Symbol:   strings.ToUpper(p.Symbol),
+						Side:     domain.NormalizeDirection(p.Side),
+						Quantity: quantity,
+					}
 				}
-				portfolioManager.ReconcileWithBroker(brokerQuantities)
+				portfolioManager.ReconcileWithBroker(brokerSnapshots)
 			}
 		}
 	}()
@@ -311,6 +337,38 @@ func recommendedHydrationBudget(limitPerMinute int) int {
 	return budget
 }
 
+func ensureBenchmarkSubscriptions(alpacaCfg config.AlpacaConfig, tradingCfg config.TradingConfig) config.AlpacaConfig {
+	if alpacaCfg.SubscribeAllBars || !tradingCfg.EnableMarketRegime {
+		return alpacaCfg
+	}
+	seen := make(map[string]struct{}, len(alpacaCfg.Symbols)+len(tradingCfg.MarketRegimeBenchmarkSymbols))
+	out := make([]string, 0, len(alpacaCfg.Symbols)+len(tradingCfg.MarketRegimeBenchmarkSymbols))
+	for _, symbol := range alpacaCfg.Symbols {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	for _, symbol := range tradingCfg.MarketRegimeBenchmarkSymbols {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	alpacaCfg.Symbols = out
+	return alpacaCfg
+}
+
 func seedClosedTradesFromDB(ctx context.Context, recorder *storage.Recorder, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
 	loadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -328,6 +386,9 @@ func seedClosedTradesFromDB(ctx context.Context, recorder *storage.Recorder, por
 func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State, account alpaca.Account) {
 	if equity, parseErr := strconv.ParseFloat(account.Equity, 64); parseErr == nil && equity > 0 {
 		portfolioManager.SetStartingCapital(math.Round(equity*100) / 100)
+	}
+	if cash, ok := brokerCashValue(account); ok {
+		portfolioManager.SyncBrokerCash(cash)
 	}
 	if equity, lastEquity, ok := brokerAccountValues(account); ok {
 		portfolioManager.SyncBrokerAccount(equity, lastEquity)
@@ -347,15 +408,18 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 		if qtyErr != nil || avgErr != nil || currentErr != nil || quantity <= 0 {
 			continue
 		}
-		now := time.Now().UTC()
+		now := time.Now()
 		portfolioManager.SeedPosition(domain.Position{
 			Symbol:        brokerPosition.Symbol,
+			Side:          domain.NormalizeDirection(brokerPosition.Side),
 			Quantity:      quantity,
 			AvgPrice:      avgPrice,
 			LastPrice:     currentPrice,
 			HighestPrice:  math.Max(avgPrice, currentPrice),
+			LowestPrice:   math.Min(avgPrice, currentPrice),
 			MarketValue:   float64(quantity) * currentPrice,
-			UnrealizedPnL: (currentPrice - avgPrice) * float64(quantity),
+			UnrealizedPnL: seedPositionPnL(domain.NormalizeDirection(brokerPosition.Side), avgPrice, currentPrice, quantity),
+			BrokerSeeded:  true,
 			OpenedAt:      now,
 			UpdatedAt:     now,
 		})
@@ -364,6 +428,7 @@ func seedFromBroker(ctx context.Context, client *alpaca.Client, portfolioManager
 
 func startBrokerAccountSync(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
 	go func() {
+		syncBrokerDashboardState(ctx, client, portfolioManager, runtimeState)
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -371,19 +436,35 @@ func startBrokerAccountSync(ctx context.Context, client *alpaca.Client, portfoli
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-				account, err := client.GetAccount(accountCtx)
-				cancel()
-				if err != nil {
-					runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker account sync failed: %v", err))
-					continue
-				}
-				if equity, lastEquity, ok := brokerAccountValues(account); ok {
-					portfolioManager.SyncBrokerAccount(equity, lastEquity)
-				}
+				syncBrokerDashboardState(ctx, client, portfolioManager, runtimeState)
 			}
 		}
 	}()
+}
+
+func syncBrokerDashboardState(ctx context.Context, client *alpaca.Client, portfolioManager *portfolio.Manager, runtimeState *runtime.State) {
+	accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	account, err := client.GetAccount(accountCtx)
+	cancel()
+	if err != nil {
+		runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker account sync failed: %v", err))
+		return
+	}
+	if cash, ok := brokerCashValue(account); ok {
+		portfolioManager.SyncBrokerCash(cash)
+	}
+	if equity, lastEquity, ok := brokerAccountValues(account); ok {
+		portfolioManager.SyncBrokerAccount(equity, lastEquity)
+	}
+
+	tradesCtx, tradesCancel := context.WithTimeout(ctx, 15*time.Second)
+	tradesToday, err := client.CountFillsForDay(tradesCtx, time.Now())
+	tradesCancel()
+	if err != nil {
+		runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker trade-count sync failed: %v", err))
+		return
+	}
+	portfolioManager.SyncBrokerTradesToday(tradesToday)
 }
 
 func brokerAccountValues(account alpaca.Account) (float64, float64, bool) {
@@ -395,9 +476,24 @@ func brokerAccountValues(account alpaca.Account) (float64, float64, bool) {
 	return equity, lastEquity, true
 }
 
+func brokerCashValue(account alpaca.Account) (float64, bool) {
+	cash, err := strconv.ParseFloat(account.Cash, 64)
+	if err != nil || cash < 0 {
+		return 0, false
+	}
+	return cash, true
+}
+
 func stringsBeforeDecimal(value string) string {
 	parts := strings.SplitN(value, ".", 2)
 	return parts[0]
+}
+
+func seedPositionPnL(side string, avgPrice, currentPrice float64, quantity int64) float64 {
+	if domain.IsShort(side) {
+		return (avgPrice - currentPrice) * float64(quantity)
+	}
+	return (currentPrice - avgPrice) * float64(quantity)
 }
 
 func liveModeLabel(paper bool) string {

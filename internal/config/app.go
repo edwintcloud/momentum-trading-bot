@@ -13,6 +13,8 @@ import (
 type AppConfig struct {
 	HTTPAddr                   string
 	DatabaseURL                string
+	ControlPlaneAuthToken      string
+	TradingProfilePath         string
 	SnapshotPersistIntervalSec int
 	StartupTimeoutSec          int
 	ShutdownTimeoutSec         int
@@ -27,7 +29,6 @@ type AlpacaConfig struct {
 	Paper                bool
 	LiveTradingEnabled   bool
 	DataFeed             string
-	AutoSelectDataFeed   bool
 	TradingBaseURL       string
 	MarketDataBaseURL    string
 	MarketDataStreamURL  string
@@ -49,15 +50,16 @@ func Load() (AppConfig, error) {
 	_ = godotenv.Load()
 
 	trading := DefaultTradingConfig()
-	trading.EntryModelPath = getEnvString("ENTRY_MODEL_PATH", trading.EntryModelPath)
 	alpacaCfg, err := loadAlpacaConfig(nil)
 	if err != nil {
 		return AppConfig{}, err
 	}
 
 	cfg := AppConfig{
-		HTTPAddr:                   getEnvString("HTTP_ADDR", ":8080"),
+		HTTPAddr:                   ":8080",
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		ControlPlaneAuthToken:      strings.TrimSpace(os.Getenv("CONTROL_PLANE_AUTH_TOKEN")),
+		TradingProfilePath:         ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH")),
 		SnapshotPersistIntervalSec: 10,
 		StartupTimeoutSec:          30,
 		ShutdownTimeoutSec:         10,
@@ -74,6 +76,9 @@ func Load() (AppConfig, error) {
 	if cfg.DatabaseURL == "" {
 		return AppConfig{}, fmt.Errorf("DATABASE_URL is required")
 	}
+	if cfg.ControlPlaneAuthToken == "" {
+		return AppConfig{}, fmt.Errorf("CONTROL_PLANE_AUTH_TOKEN is required")
+	}
 	if cfg.Alpaca.OrderFillTimeoutSec < 5 {
 		return AppConfig{}, fmt.Errorf("default order fill timeout must be at least 5 seconds")
 	}
@@ -88,6 +93,11 @@ func Load() (AppConfig, error) {
 	}
 	if cfg.Trading.HydrationQueueSize < 32 {
 		return AppConfig{}, fmt.Errorf("default hydration queue size must be at least 32")
+	}
+	if cfg.TradingProfilePath != "" {
+		if _, err := LoadTradingProfile(cfg.TradingProfilePath); err != nil {
+			return AppConfig{}, err
+		}
 	}
 	if !cfg.Alpaca.Paper && !cfg.Alpaca.LiveTradingEnabled {
 		return AppConfig{}, fmt.Errorf("live trading requires ALPACA_LIVE_TRADING_ENABLED=true")
@@ -112,8 +122,7 @@ func loadAlpacaConfig(symbolOverrides []string) (AlpacaConfig, error) {
 		APISecret:            strings.TrimSpace(os.Getenv("ALPACA_API_SECRET")),
 		Paper:                paper,
 		LiveTradingEnabled:   getEnvBool("ALPACA_LIVE_TRADING_ENABLED", false),
-		DataFeed:             "iex",
-		AutoSelectDataFeed:   true,
+		DataFeed:             "sip",
 		TradingBaseURL:       strings.TrimRight(tradingBaseURL, "/"),
 		MarketDataBaseURL:    "https://data.alpaca.markets",
 		MarketDataStreamURL:  "wss://stream.data.alpaca.markets",

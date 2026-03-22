@@ -7,3 +7,6 @@ web/dist/
 logs/
 progress.txt
 tasks.md
+*results*.csv
+__pycache__/
+*.pyc

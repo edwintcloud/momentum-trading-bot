@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 const (
@@ -23,9 +24,9 @@ type State struct {
 	logs          []domain.LogEntry
 	recorder      domain.EventRecorder
 	dependencies  map[string]DependencyStatus
+	optimizer     OptimizerStatus
+	regime        domain.MarketRegimeSnapshot
 }
-
-var tradingDayLocation = mustLoadLocation("America/New_York")
 
 // DependencyStatus tracks readiness for critical runtime dependencies.
 type DependencyStatus struct {
@@ -34,9 +35,20 @@ type DependencyStatus struct {
 	LastChecked time.Time `json:"lastChecked"`
 }
 
+// OptimizerStatus tracks which profile is active and what candidate profile is
+// waiting on paper validation or operator review.
+type OptimizerStatus struct {
+	ActiveProfileName         string    `json:"activeProfileName"`
+	ActiveProfileVersion      string    `json:"activeProfileVersion"`
+	PendingProfileName        string    `json:"pendingProfileName"`
+	PendingProfileVersion     string    `json:"pendingProfileVersion"`
+	LastOptimizerRun          time.Time `json:"lastOptimizerRun"`
+	LastPaperValidationResult string    `json:"lastPaperValidationResult"`
+}
+
 // NewState creates runtime state with the trading system marked as running.
 func NewState() *State {
-	return &State{lastUpdate: time.Now().UTC(), dependencies: make(map[string]DependencyStatus)}
+	return &State{lastUpdate: time.Now(), dependencies: make(map[string]DependencyStatus)}
 }
 
 // SetRecorder attaches an optional persistence sink.
@@ -58,19 +70,19 @@ func (s *State) Pause() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = true
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 }
 
 // Resume clears the paused flag if the system is not emergency stopped.
 func (s *State) Resume() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshDailyLossStopLocked(time.Now().UTC())
+	s.refreshDailyLossStopLocked(time.Now())
 	if s.emergencyStop {
 		return false
 	}
 	s.paused = false
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 	return s.dailyLossDay == ""
 }
 
@@ -80,7 +92,7 @@ func (s *State) EmergencyStop() {
 	defer s.mu.Unlock()
 	s.paused = true
 	s.emergencyStop = true
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 }
 
 // TriggerDailyLossStop halts new entries for the rest of the active trading day.
@@ -88,12 +100,12 @@ func (s *State) TriggerDailyLossStop(at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dailyLossDay = tradingDay(at)
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 }
 
 // CanOpenNewPositions reports whether the system may open fresh positions.
 func (s *State) CanOpenNewPositions() bool {
-	return s.EntryBlockReasonAt(time.Now().UTC()) == ""
+	return s.EntryBlockReasonAt(time.Now()) == ""
 }
 
 // EntryBlockReasonAt returns the current gate reason for new entries at the provided time.
@@ -122,7 +134,7 @@ func (s *State) IsDailyLossStopped() bool {
 
 // IsPaused reports the current pause state.
 func (s *State) IsPaused() bool {
-	return s.EntryBlockReasonAt(time.Now().UTC()) != ""
+	return s.EntryBlockReasonAt(time.Now()) != ""
 }
 
 // IsEmergencyStopped reports whether an emergency stop is active.
@@ -136,7 +148,7 @@ func (s *State) IsEmergencyStopped() bool {
 func (s *State) Touch() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 }
 
 // LastUpdate returns the latest heartbeat or control change timestamp.
@@ -153,9 +165,9 @@ func (s *State) SetDependencyStatus(name string, ready bool, message string) {
 	s.dependencies[name] = DependencyStatus{
 		Ready:       ready,
 		Message:     message,
-		LastChecked: time.Now().UTC(),
+		LastChecked: time.Now(),
 	}
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 }
 
 // DependencyStatuses returns a copy of all dependency readiness states.
@@ -167,6 +179,36 @@ func (s *State) DependencyStatuses() map[string]DependencyStatus {
 		out[name] = status
 	}
 	return out
+}
+
+// SetOptimizerStatus replaces the operator-visible optimizer metadata.
+func (s *State) SetOptimizerStatus(status OptimizerStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.optimizer = status
+	s.lastUpdate = time.Now()
+}
+
+// OptimizerStatus returns the latest optimizer metadata snapshot.
+func (s *State) OptimizerStatus() OptimizerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.optimizer
+}
+
+// SetMarketRegime replaces the operator-visible market regime snapshot.
+func (s *State) SetMarketRegime(snapshot domain.MarketRegimeSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.regime = snapshot
+	s.lastUpdate = time.Now()
+}
+
+// MarketRegime returns the latest market regime snapshot.
+func (s *State) MarketRegime() domain.MarketRegimeSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.regime
 }
 
 // IsReady reports whether all tracked dependencies are healthy.
@@ -199,7 +241,7 @@ func (s *State) RecordCandidate(candidate domain.Candidate) {
 	if len(s.candidates) > maxCandidates {
 		s.candidates = s.candidates[:maxCandidates]
 	}
-	s.lastUpdate = time.Now().UTC()
+	s.lastUpdate = time.Now()
 	if s.recorder != nil {
 		s.recorder.RecordCandidate(candidate)
 	}
@@ -219,7 +261,7 @@ func (s *State) RecordLog(level, component, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry := domain.LogEntry{
-		Timestamp: time.Now().UTC(),
+		Timestamp: time.Now(),
 		Level:     level,
 		Component: component,
 		Message:   message,
@@ -255,15 +297,7 @@ func (s *State) refreshDailyLossStopLocked(at time.Time) {
 
 func tradingDay(at time.Time) string {
 	if at.IsZero() {
-		at = time.Now().UTC()
+		at = time.Now()
 	}
-	return at.In(tradingDayLocation).Format("2006-01-02")
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
+	return at.In(markethours.Location()).Format("2006-01-02")
 }

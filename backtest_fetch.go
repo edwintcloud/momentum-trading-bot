@@ -1,33 +1,28 @@
 package main
 
 import (
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/gob"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 )
 
 const (
 	historicalBatchSize    = 100
 	historicalMaxRetries   = 5
-	historicalCacheVersion = "v1"
+	historicalCacheVersion = "v3"
 )
 
 var historicalCacheRoot = filepath.Join(".cache", "backtest", "historical-bars")
@@ -45,20 +40,11 @@ type historicalFetchResult struct {
 	cacheHit bool
 }
 
-type historicalCacheEntry struct {
-	Version string
-	Feed    string
-	Start   time.Time
-	End     time.Time
-	Symbols []string
-	SavedAt time.Time
-	Bars    []backtest.InputBar
-}
-
 type requestLimiter struct {
-	mu       sync.Mutex
-	interval time.Duration
-	next     time.Time
+	tokenCh  chan struct{}
+	delayCh  chan time.Time
+	stopOnce sync.Once
+	stopCh   chan struct{}
 }
 
 func newRequestLimiter(requestsPerMinute int) *requestLimiter {
@@ -66,153 +52,60 @@ func newRequestLimiter(requestsPerMinute int) *requestLimiter {
 		requestsPerMinute = 200
 	}
 	interval := time.Minute / time.Duration(requestsPerMinute)
-	if interval < 100*time.Millisecond {
-		interval = 100 * time.Millisecond
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
 	}
-	return &requestLimiter{interval: interval}
+	l := &requestLimiter{
+		tokenCh: make(chan struct{}),
+		delayCh: make(chan time.Time, 1),
+		stopCh:  make(chan struct{}),
+	}
+	go l.run(interval)
+	return l
+}
+
+func (l *requestLimiter) run(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-l.stopCh:
+			return
+		case delay := <-l.delayCh:
+			if wait := time.Until(delay); wait > 0 {
+				time.Sleep(wait)
+			}
+		case <-ticker.C:
+			select {
+			case <-l.stopCh:
+				return
+			case l.tokenCh <- struct{}{}:
+			}
+		}
+	}
 }
 
 func (l *requestLimiter) Wait(ctx context.Context) error {
-	l.mu.Lock()
-	now := time.Now()
-	runAt := now
-	if l.next.After(runAt) {
-		runAt = l.next
-	}
-	l.next = runAt.Add(l.interval)
-	l.mu.Unlock()
-
-	if !runAt.After(now) {
-		return nil
-	}
-	timer := time.NewTimer(runAt.Sub(now))
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-l.tokenCh:
 		return nil
 	}
 }
 
 func (l *requestLimiter) DelayUntil(next time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if next.After(l.next) {
-		l.next = next
+	select {
+	case l.delayCh <- next:
+	default:
 	}
 }
 
-func fetchBarsFromAlpaca(ctx context.Context, client *alpaca.Client, symbols []string, start, end time.Time, historicalRateLimit int) ([]backtest.InputBar, error) {
-	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols available for historical fetch")
-	}
-
-	jobs := buildHistoricalFetchJobs(symbols, start, end)
-	if len(jobs) == 0 {
-		return []backtest.InputBar{}, nil
-	}
-
-	workerCount := historicalWorkerCount(historicalRateLimit)
-	limiter := newRequestLimiter(historicalRateLimit)
-	feed := client.DataFeed()
-	if strings.TrimSpace(feed) == "" {
-		feed = "iex"
-	}
-	log.Printf("Historical fetch starting jobs=%d symbols=%d workers=%d window=%s..%s", len(jobs), len(symbols), workerCount, start.Format(time.RFC3339), end.Format(time.RFC3339))
-
-	jobCh := make(chan historicalFetchJob)
-	resultCh := make(chan historicalFetchResult, len(jobs))
-	errCh := make(chan error, 1)
-
-	var completedJobs atomic.Int64
-	var cacheHits atomic.Int64
-	var cacheMisses atomic.Int64
-	var workers sync.WaitGroup
-	for worker := 0; worker < workerCount; worker++ {
-		workers.Add(1)
-		go func(workerID int) {
-			defer workers.Done()
-			for job := range jobCh {
-				result, err := fetchHistoricalJob(ctx, client, limiter, job, feed)
-				if err != nil {
-					select {
-					case errCh <- err:
-					default:
-					}
-					return
-				}
-				if result.cacheHit {
-					cacheHits.Add(1)
-				} else {
-					cacheMisses.Add(1)
-				}
-				done := completedJobs.Add(1)
-				if done == 1 || done%25 == 0 || int(done) == len(jobs) {
-					source := "api"
-					if result.cacheHit {
-						source = "cache"
-					}
-					log.Printf("Historical fetch progress jobs=%d/%d bars=%d pages=%d last_job=%d worker=%d source=%s", done, len(jobs), len(result.bars), result.pageHits, job.index, workerID, source)
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case resultCh <- result:
-				}
-			}
-		}(worker + 1)
-	}
-
-	go func() {
-		defer close(jobCh)
-		for _, job := range jobs {
-			select {
-			case <-ctx.Done():
-				return
-			case jobCh <- job:
-			}
-		}
-	}()
-
-	go func() {
-		workers.Wait()
-		close(resultCh)
-	}()
-
-	inputBars := make([]backtest.InputBar, 0, len(jobs)*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case err := <-errCh:
-			if err != nil {
-				return nil, err
-			}
-		case result, ok := <-resultCh:
-			if !ok {
-				sort.Slice(inputBars, func(i, j int) bool {
-					if inputBars[i].Timestamp.Equal(inputBars[j].Timestamp) {
-						return inputBars[i].Symbol < inputBars[j].Symbol
-					}
-					return inputBars[i].Timestamp.Before(inputBars[j].Timestamp)
-				})
-				log.Printf("Historical cache summary hits=%d misses=%d dir=%s", cacheHits.Load(), cacheMisses.Load(), historicalCacheRoot)
-				return inputBars, nil
-			}
-			inputBars = append(inputBars, result.bars...)
-		}
-	}
+func (l *requestLimiter) Stop() {
+	l.stopOnce.Do(func() { close(l.stopCh) })
 }
 
-func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
-	if cached, ok, err := loadHistoricalJobCache(job, feed); err == nil && ok {
-		cached.cacheHit = true
-		return cached, nil
-	} else if err != nil {
-		log.Printf("Historical cache read failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
-	}
-
+func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
 	pageToken := ""
 	result := historicalFetchResult{
 		bars: make([]backtest.InputBar, 0, 1024),
@@ -226,8 +119,8 @@ func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *req
 		for symbol, bars := range page.Bars {
 			for _, item := range bars {
 				result.bars = append(result.bars, backtest.InputBar{
-					Timestamp: item.Timestamp.UTC(),
-					Symbol:    symbol,
+					Timestamp: item.Timestamp,
+					Symbol:    strings.ToUpper(symbol),
 					Open:      item.Open,
 					High:      item.High,
 					Low:       item.Low,
@@ -238,6 +131,7 @@ func fetchHistoricalJob(ctx context.Context, client *alpaca.Client, limiter *req
 		}
 		applyRateLimitHeaders(limiter, page.Headers)
 		if page.NextPageToken == "" {
+			sortHistoricalBars(result.bars)
 			if err := saveHistoricalJobCache(job, feed, result); err != nil {
 				log.Printf("Historical cache write failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
 			}
@@ -284,12 +178,8 @@ func buildHistoricalFetchJobs(symbols []string, start, end time.Time) []historic
 	if len(symbols) == 0 || end.Before(start) {
 		return nil
 	}
-	location, _ := time.LoadLocation("America/New_York")
-	if location == nil {
-		location = time.UTC
-	}
 
-	days := tradingDayWindows(start, end, location)
+	days := tradingDayWindows(start, end, markethours.Location())
 	jobs := make([]historicalFetchJob, 0, len(days)*(len(symbols)/historicalBatchSize+1))
 	index := 0
 	for _, day := range days {
@@ -326,8 +216,8 @@ func tradingDayWindows(start, end time.Time, location *time.Location) []tradingD
 	out := make([]tradingDayWindow, 0)
 	for !cursor.After(finalDay) {
 		if cursor.Weekday() != time.Saturday && cursor.Weekday() != time.Sunday {
-			dayStart := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 4, 0, 0, 0, location).UTC()
-			dayEnd := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 20, 0, 0, 0, location).UTC()
+			dayStart := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 4, 0, 0, 0, location)
+			dayEnd := time.Date(cursor.Year(), cursor.Month(), cursor.Day(), 20, 0, 0, 0, location)
 			if dayStart.Before(start) {
 				dayStart = start
 			}
@@ -353,7 +243,7 @@ func historicalWorkerCount(rateLimit int) int {
 	case rateLimit < 600:
 		return 4
 	default:
-		return 6
+		return 10
 	}
 }
 
@@ -422,11 +312,11 @@ func rateResetTime(headers http.Header) time.Time {
 		return time.Time{}
 	}
 	if unixSeconds, err := time.ParseDuration(value + "s"); err == nil {
-		epoch := time.Unix(0, 0).UTC()
+		epoch := time.Unix(0, 0)
 		return epoch.Add(unixSeconds)
 	}
 	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
-		return parsed.UTC()
+		return parsed
 	}
 	return time.Time{}
 }
@@ -438,11 +328,8 @@ func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 	if symbolCount <= 0 {
 		return 20 * time.Minute
 	}
-	location, _ := time.LoadLocation("America/New_York")
-	if location == nil {
-		location = time.UTC
-	}
-	dayCount := len(tradingDayWindows(start, end, location))
+	
+	dayCount := len(tradingDayWindows(start, end, markethours.Location()))
 	if dayCount == 0 {
 		dayCount = 1
 	}
@@ -462,103 +349,11 @@ func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 	return timeout
 }
 
-func historicalCachePath(job historicalFetchJob, feed string) string {
-	hasher := sha256.New()
-	hasher.Write([]byte(historicalCacheVersion))
-	hasher.Write([]byte("|"))
-	hasher.Write([]byte(strings.ToLower(strings.TrimSpace(feed))))
-	hasher.Write([]byte("|"))
-	hasher.Write([]byte(job.start.UTC().Format(time.RFC3339Nano)))
-	hasher.Write([]byte("|"))
-	hasher.Write([]byte(job.end.UTC().Format(time.RFC3339Nano)))
-	for _, symbol := range job.symbols {
-		hasher.Write([]byte("|"))
-		hasher.Write([]byte(strings.ToUpper(strings.TrimSpace(symbol))))
-	}
-	key := hex.EncodeToString(hasher.Sum(nil))
-	return filepath.Join(historicalCacheRoot, historicalCacheVersion, key[:2], key+".gob.gz")
-}
-
-func loadHistoricalJobCache(job historicalFetchJob, feed string) (historicalFetchResult, bool, error) {
-	path := historicalCachePath(job, feed)
-	file, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return historicalFetchResult{}, false, nil
+func sortHistoricalBars(bars []backtest.InputBar) {
+	sort.Slice(bars, func(i, j int) bool {
+		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
+			return bars[i].Symbol < bars[j].Symbol
 		}
-		return historicalFetchResult{}, false, err
-	}
-	defer file.Close()
-
-	reader, err := gzip.NewReader(file)
-	if err != nil {
-		return historicalFetchResult{}, false, err
-	}
-	defer reader.Close()
-
-	var entry historicalCacheEntry
-	if err := gob.NewDecoder(reader).Decode(&entry); err != nil {
-		return historicalFetchResult{}, false, err
-	}
-	if entry.Version != historicalCacheVersion {
-		return historicalFetchResult{}, false, nil
-	}
-	return historicalFetchResult{bars: entry.Bars}, true, nil
-}
-
-func saveHistoricalJobCache(job historicalFetchJob, feed string, result historicalFetchResult) error {
-	path := historicalCachePath(job, feed)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	tempPath := fmt.Sprintf("%s.tmp-%d", path, time.Now().UnixNano())
-	file, err := os.Create(tempPath)
-	if err != nil {
-		return err
-	}
-
-	success := false
-	closed := false
-	defer func() {
-		if !closed {
-			_ = file.Close()
-		}
-		if !success {
-			_ = os.Remove(tempPath)
-		}
-	}()
-
-	writer := gzip.NewWriter(file)
-	entry := historicalCacheEntry{
-		Version: historicalCacheVersion,
-		Feed:    strings.ToLower(strings.TrimSpace(feed)),
-		Start:   job.start.UTC(),
-		End:     job.end.UTC(),
-		Symbols: append([]string(nil), job.symbols...),
-		SavedAt: time.Now().UTC(),
-		Bars:    append([]backtest.InputBar(nil), result.bars...),
-	}
-	if err := gob.NewEncoder(writer).Encode(entry); err != nil {
-		_ = writer.Close()
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	closed = true
-	if err := os.Rename(tempPath, path); err != nil {
-		if removeErr := os.Remove(path); removeErr == nil {
-			if retryErr := os.Rename(tempPath, path); retryErr == nil {
-				success = true
-				return nil
-			}
-		}
-		return err
-	}
-	success = true
-	return nil
+		return bars[i].Timestamp.Before(bars[j].Timestamp)
+	})
 }

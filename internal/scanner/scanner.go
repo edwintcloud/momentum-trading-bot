@@ -3,15 +3,15 @@ package scanner
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 )
-
-var marketLocation = mustLoadLocation("America/New_York")
 
 type symbolBar struct {
 	timestamp        time.Time
@@ -44,6 +44,11 @@ type scanMetrics struct {
 	setupHigh             float64
 	setupLow              float64
 	setupType             string
+	rsiMASlope            float64
+	fiveMinRange          float64
+	ema9                  float64
+	emaFast               float64
+	emaSlow               float64
 }
 
 // Scanner scans market ticks for momentum candidates.
@@ -126,6 +131,9 @@ func (s *Scanner) evaluateTick(tick domain.Tick) (domain.Candidate, bool) {
 func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
 	metrics := s.updateSymbolState(tick)
 	priceVsOpenPct := percentChange(tick.Open, tick.Price)
+	if s.isBenchmarkSymbol(tick.Symbol) {
+		return domain.Candidate{}, false, "market-benchmark"
+	}
 
 	if tick.Price <= s.config.MinPrice {
 		return domain.Candidate{}, false, "min-price"
@@ -139,7 +147,14 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if !tick.VolumeSpike {
 		return domain.Candidate{}, false, "volume-spike"
 	}
-	if !s.qualifiesMomentumProfile(tick, priceVsOpenPct, metrics) {
+	direction := domain.DirectionLong
+	shortSetupEnabled := metrics.setupType == "parabolic-failed-reclaim-short"
+	switch {
+	case shortSetupEnabled && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, metrics):
+		direction = domain.DirectionShort
+	case s.qualifiesMomentumProfile(tick, priceVsOpenPct, metrics):
+		direction = domain.DirectionLong
+	default:
 		return domain.Candidate{}, false, "not-gap-or-squeeze"
 	}
 
@@ -152,6 +167,7 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	}
 	return domain.Candidate{
 		Symbol:                tick.Symbol,
+		Direction:             direction,
 		Price:                 tick.Price,
 		Open:                  tick.Open,
 		GapPercent:            tick.GapPercent,
@@ -177,6 +193,11 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		CloseOffHighPct:       round2(scoreOrZero(metrics.closeOffHighPct)),
 		SetupHigh:             round2(scoreOrZero(metrics.setupHigh)),
 		SetupLow:              round2(scoreOrZero(metrics.setupLow)),
+		RSIMASlope:            round2(scoreOrZero(metrics.rsiMASlope)),
+		FiveMinRange:          round2(scoreOrZero(metrics.fiveMinRange)),
+		PriceVsEMA9Pct:        round2(scoreOrZero(priceVsEMA9Pct(tick.Price, metrics.ema9))),
+		EMAFast:               round2(scoreOrZero(metrics.emaFast)),
+		EMASlow:               round2(scoreOrZero(metrics.emaSlow)),
 		SetupType:             metrics.setupType,
 		Score:                 round2(scoreOrZero(score)),
 		Catalyst:              tick.Catalyst,
@@ -186,6 +207,17 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 }
 
 func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
+	direction := domain.DirectionLong
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
+		direction = domain.DirectionShort
+	}
+	if domain.IsShort(direction) {
+		return s.shortMomentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, leaderRank, metrics)
+	}
+	return s.longMomentumScore(tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct, leaderRank, metrics)
+}
+
+func (s *Scanner) longMomentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
 	score := (clampFloat(tick.GapPercent, -10, 35) * 0.15) +
 		(clampFloat(tick.RelativeVolume, 0, 18) * 1.25) +
 		(clampFloat(priceVsOpenPct, -5, 30) * 0.45) +
@@ -223,29 +255,97 @@ func (s *Scanner) momentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHi
 }
 
 func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct float64, metrics scanMetrics) bool {
-	if tick.GapPercent >= s.config.MinGapPercent && tick.PreMarketVolume >= s.config.MinPremarketVolume {
+	if (tick.GapPercent >= s.config.MinGapPercent || priceVsOpenPct >= s.config.MinGapPercent) && tick.PreMarketVolume >= s.config.MinPremarketVolume {
 		return true
 	}
 	if metrics.setupType == "" {
 		return false
 	}
-	if priceVsOpenPct < maxFloat(2.5, s.config.MinGapPercent*0.25) {
+	if priceVsOpenPct < maxFloat(s.config.ScannerMinPriceVsOpenPctFloor, s.config.MinGapPercent*s.config.ScannerMinPriceVsOpenGapMultiplier) {
 		return false
 	}
 	if metrics.threeMinuteReturn < s.config.MinThreeMinuteReturnPct && metrics.oneMinuteReturn < s.config.MinOneMinuteReturnPct {
 		return false
 	}
-	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate-0.05) {
+	if metrics.volumeRate < maxFloat(1.0, s.config.MinVolumeRate+s.config.ScannerMinSetupVolumeRateOffset) {
 		return false
 	}
-	return tick.RelativeVolume >= s.config.MinRelativeVolume+0.25
+	return tick.RelativeVolume >= s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra
+}
+
+func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct float64, metrics scanMetrics) bool {
+	if !s.config.EnableShorts {
+		return false
+	}
+	if metrics.setupType != "parabolic-failed-reclaim-short" {
+		return false
+	}
+	if tick.RelativeVolume < s.config.MinRelativeVolume+s.config.ScannerMinSetupRelativeVolumeExtra {
+		return false
+	}
+	vwapLimit := s.config.ShortVWAPBreakMinPct
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
+		vwapLimit = 2.0
+	}
+	if metrics.priceVsVWAPPct > vwapLimit {
+		return false
+	}
+	if metrics.oneMinuteReturn >= -maxFloat(0.25, s.config.MinOneMinuteReturnPct*0.50) {
+		return false
+	}
+	if metrics.threeMinuteReturn >= -maxFloat(0.50, s.config.MinThreeMinuteReturnPct*0.75) {
+		return false
+	}
+	if metrics.breakoutPct > -0.05 {
+		return false
+	}
+	if tick.Open <= 0 || tick.HighOfDay <= 0 {
+		return false
+	}
+	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
+	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
+		return false
+	}
+	if tick.GapPercent < s.config.MinGapPercent {
+		return false
+	}
+	return priceVsOpenPct >= maxFloat(2.0, s.config.MinGapPercent*0.5)
+}
+
+func (s *Scanner) shortMomentumScore(tick domain.Tick, priceVsOpenPct, distanceFromHighPct, volumeLeaderPct float64, leaderRank int, metrics scanMetrics) float64 {
+	peakExtensionPct := 0.0
+	if tick.Open > 0 && tick.HighOfDay > tick.Open {
+		peakExtensionPct = ((tick.HighOfDay - tick.Open) / tick.Open) * 100
+	}
+	score := (clampFloat(tick.GapPercent, 0, 35) * 0.20) +
+		(clampFloat(tick.RelativeVolume, 0, 18) * 1.30) +
+		(clampFloat(priceVsOpenPct, 0, 30) * 0.20) +
+		(clampFloat(peakExtensionPct, 0, 35) * 0.55) +
+		(clampFloat(-metrics.oneMinuteReturn, 0, 4.5) * 1.45) +
+		(clampFloat(-metrics.threeMinuteReturn, 0, 8) * 1.20) +
+		(clampFloat(metrics.volumeRate, 0.5, 4) * 1.15) +
+		(clampFloat(-metrics.priceVsVWAPPct, 0, 8) * 1.35) +
+		(clampFloat(-metrics.breakoutPct, 0, 5) * 1.65) +
+		(clampFloat(distanceFromHighPct, 0, 12) * 0.55) +
+		(clampFloat(metrics.closeOffHighPct, 0, 100) * 0.08) +
+		(clampFloat(volumeLeaderPct, 0, 1) * 5.50)
+
+	if leaderRank == 1 {
+		score += 2.5
+	} else if leaderRank == 2 {
+		score += 1.25
+	}
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
+		score += 8.5
+	}
+	return score
 }
 
 func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
+	dayKey := tick.Timestamp.In(markethours.Location()).Format("2006-01-02")
 	state := s.state[tick.Symbol]
 	if state == nil {
 		state = &symbolState{}
@@ -278,7 +378,7 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	}
 
 	state.bars = append(state.bars, symbolBar{
-		timestamp:        tick.Timestamp.UTC(),
+		timestamp:        tick.Timestamp,
 		open:             barOpen,
 		high:             barHigh,
 		low:              barLow,
@@ -287,7 +387,7 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 		cumulativeVolume: tick.Volume,
 		vwap:             vwap,
 	})
-	cutoff := tick.Timestamp.UTC().Add(-90 * time.Minute)
+	cutoff := tick.Timestamp.Add(-90 * time.Minute)
 	trimmed := state.bars[:0]
 	for _, bar := range state.bars {
 		if bar.timestamp.Before(cutoff) {
@@ -297,14 +397,15 @@ func (s *Scanner) updateSymbolState(tick domain.Tick) scanMetrics {
 	}
 	state.bars = trimmed
 
-	return deriveMetrics(state.bars)
+	return deriveMetrics(state.bars, s.config)
 }
 
-func deriveMetrics(bars []symbolBar) scanMetrics {
+func deriveMetrics(bars []symbolBar, cfg config.TradingConfig) scanMetrics {
 	if len(bars) == 0 {
 		return scanMetrics{}
 	}
 	current := bars[len(bars)-1]
+	emaFast, emaSlow := computeEMAPair(bars, 8, 21)
 	metrics := scanMetrics{
 		oneMinuteReturn:   lookbackReturn(bars, 1),
 		threeMinuteReturn: lookbackReturn(bars, 3),
@@ -313,6 +414,11 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 		vwap:              current.vwap,
 		priceVsVWAPPct:    percentChange(current.vwap, current.close),
 		closeOffHighPct:   closeOffHighPct(current),
+		rsiMASlope:        computeRSIMASlope(bars, 14, 5, 3),
+		fiveMinRange:      fiveMinuteRange(bars),
+		ema9:              computeEMA(bars, 9),
+		emaFast:           emaFast,
+		emaSlow:           emaSlow,
 	}
 
 	if len(bars) < 4 {
@@ -335,7 +441,7 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	metrics.consolidationRangePct = rangePct(setupLow, setupHigh)
 	metrics.pullbackDepthPct = drawdownPct(impulseHigh, setupLow)
 
-	aboveVWAP := metrics.priceVsVWAPPct >= -0.10
+	aboveVWAP := metrics.priceVsVWAPPct >= cfg.ScannerVWAPTolerancePct
 	vwapReclaim := false
 	if len(completed) > 0 {
 		previous := completed[len(completed)-1]
@@ -345,14 +451,31 @@ func deriveMetrics(bars []symbolBar) scanMetrics {
 	if current.close > 0 && metrics.atr > 0 {
 		atrPct = (metrics.atr / current.close) * 100
 	}
-	tightConsolidation := metrics.consolidationRangePct <= maxFloat(atrPct*1.75, 4.5)
-	shallowEnoughPullback := metrics.pullbackDepthPct >= maxFloat(atrPct*0.35, 0.40) &&
-		metrics.pullbackDepthPct <= maxFloat(atrPct*2.40, 8.0)
+	tightConsolidation := metrics.consolidationRangePct <= maxFloat(atrPct*cfg.ScannerConsolidationATRMultiplier, cfg.ScannerConsolidationMaxPct)
+	shallowEnoughPullback := metrics.pullbackDepthPct >= maxFloat(atrPct*cfg.ScannerPullbackDepthMinATRMultiplier, cfg.ScannerPullbackDepthMinPct) &&
+		metrics.pullbackDepthPct <= maxFloat(atrPct*cfg.ScannerPullbackDepthMaxATRMultiplier, cfg.ScannerPullbackDepthMaxPct)
 	strengthClose := metrics.closeOffHighPct <= 35
 	higherLow := priorPullbackLow > 0 && setupLow > priorPullbackLow
-	renewedVolume := metrics.volumeRate >= 1.05
+	renewedVolume := metrics.volumeRate >= cfg.ScannerRenewedVolumeRateMin
+	peakHigh := maxBarHigh(lastNBars(completed, 12))
+	peakExtensionPct := percentChange(bars[0].open, peakHigh)
+	reclaimFailureHigh := maxBarHigh(lastNBars(completed, 3))
+	breakdownLow := minBarLow(lastNBars(completed, 3))
+	weakClose := metrics.closeOffHighPct >= 60
 
 	switch {
+	case peakExtensionPct >= cfg.ShortPeakExtensionMinPct &&
+		metrics.oneMinuteReturn <= -0.35 &&
+		metrics.threeMinuteReturn <= -0.75 &&
+		weakClose &&
+		breakdownLow > 0 &&
+		current.close < breakdownLow &&
+		reclaimFailureHigh > current.close &&
+		reclaimFailureHigh < peakHigh:
+		metrics.setupType = "parabolic-failed-reclaim-short"
+		metrics.setupHigh = reclaimFailureHigh
+		metrics.setupLow = breakdownLow
+		metrics.breakoutPct = percentChange(breakdownLow, current.close)
 	case metrics.breakoutPct >= -0.15 && tightConsolidation && shallowEnoughPullback && aboveVWAP && strengthClose:
 		metrics.setupType = "consolidation-breakout"
 	case metrics.breakoutPct >= -maxFloat(atrPct*0.60, 0.45) &&
@@ -374,7 +497,7 @@ func (s *Scanner) updateVolumeLeadership(tick domain.Tick) (float64, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dayKey := tick.Timestamp.In(marketLocation).Format("2006-01-02")
+	dayKey := tick.Timestamp.In(markethours.Location()).Format("2006-01-02")
 	if s.leaderDay != dayKey {
 		s.leaderDay = dayKey
 		s.leaderMetrics = make(map[string]float64)
@@ -404,6 +527,19 @@ func (s *Scanner) updateVolumeLeadership(tick domain.Tick) (float64, int) {
 func momentumLeaderMetric(tick domain.Tick) float64 {
 	relativeVolume := clampFloat(tick.RelativeVolume, 1, 25)
 	return tick.Price * float64(tick.Volume) * relativeVolume
+}
+
+func (s *Scanner) isBenchmarkSymbol(symbol string) bool {
+	if !s.config.EnableMarketRegime {
+		return false
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	for _, benchmark := range s.config.MarketRegimeBenchmarkSymbols {
+		if normalized == strings.ToUpper(strings.TrimSpace(benchmark)) {
+			return true
+		}
+	}
+	return false
 }
 
 func lookbackReturn(bars []symbolBar, lookback int) float64 {
@@ -529,7 +665,7 @@ func percentChange(from, to float64) float64 {
 }
 
 func minutesSinceOpen(timestamp time.Time) float64 {
-	est := timestamp.In(marketLocation)
+	est := timestamp.In(markethours.Location())
 	minutes := est.Hour()*60 + est.Minute()
 	// Premarket: return minutes since 4:00 AM ET as a negative offset
 	// so time-based filters can distinguish premarket from regular session.
@@ -589,10 +725,108 @@ func scoreOrZero(value float64) float64 {
 	return value
 }
 
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
+// computeEMA returns the EMA of close prices over the given period.
+func computeEMA(bars []symbolBar, period int) float64 {
+	if len(bars) < 2 {
+		return 0
 	}
-	return location
+	ema := bars[0].close
+	mul := 2.0 / (float64(period) + 1.0)
+	for i := 1; i < len(bars); i++ {
+		ema += (bars[i].close - ema) * mul
+	}
+	return ema
+}
+
+func priceVsEMA9Pct(price, ema9 float64) float64 {
+	if ema9 <= 0 {
+		return 0
+	}
+	return ((price - ema9) / ema9) * 100
+}
+
+// computeRSIMASlope computes the slope of a moving average of RSI values.
+// Positive slope = upward momentum building; negative = declining.
+func computeRSIMASlope(bars []symbolBar, rsiPeriod, maPeriod, slopeLookback int) float64 {
+	needRSI := maPeriod + slopeLookback
+	minBars := rsiPeriod + needRSI + 1
+	if len(bars) < minBars {
+		return 0
+	}
+	rsiValues := make([]float64, needRSI)
+	for i := 0; i < needRSI; i++ {
+		endIdx := len(bars) - needRSI + i + 1
+		rsiValues[i] = computeRSI(bars[:endIdx], rsiPeriod)
+	}
+	currentMA := 0.0
+	for i := needRSI - maPeriod; i < needRSI; i++ {
+		currentMA += rsiValues[i]
+	}
+	currentMA /= float64(maPeriod)
+
+	pastMA := 0.0
+	for i := needRSI - maPeriod - slopeLookback; i < needRSI-slopeLookback; i++ {
+		pastMA += rsiValues[i]
+	}
+	pastMA /= float64(maPeriod)
+
+	return (currentMA - pastMA) / float64(slopeLookback)
+}
+
+// fiveMinuteRange returns the high-low range over the last 5 bars as a
+// percentage of price. Measures recent activity/volatility.
+func fiveMinuteRange(bars []symbolBar) float64 {
+	if len(bars) < 5 {
+		return 0
+	}
+	window := lastNBars(bars, 5)
+	high := maxBarHigh(window)
+	low := minBarLow(window)
+	if low <= 0 {
+		return 0
+	}
+	return ((high - low) / low) * 100
+}
+
+// computeRSI calculates a Wilder-smoothed RSI over the given period.
+// Returns 50 (neutral) when there is insufficient data.
+func computeRSI(bars []symbolBar, period int) float64 {
+	if len(bars) < period+1 {
+		return 50
+	}
+	window := lastNBars(bars, period+1)
+	var avgGain, avgLoss float64
+	for i := 1; i < len(window); i++ {
+		change := window[i].close - window[i-1].close
+		if change > 0 {
+			avgGain += change
+		} else {
+			avgLoss -= change
+		}
+	}
+	avgGain /= float64(period)
+	avgLoss /= float64(period)
+	if avgLoss == 0 {
+		return 100
+	}
+	rs := avgGain / avgLoss
+	return 100 - (100 / (1 + rs))
+}
+
+// computeEMAPair returns (emaFast, emaSlow) over the given bars using
+// exponential moving average of close prices.
+func computeEMAPair(bars []symbolBar, fastPeriod, slowPeriod int) (float64, float64) {
+	if len(bars) < 2 {
+		return 0, 0
+	}
+	fast := bars[0].close
+	slow := bars[0].close
+	fastMul := 2.0 / (float64(fastPeriod) + 1.0)
+	slowMul := 2.0 / (float64(slowPeriod) + 1.0)
+	for i := 1; i < len(bars); i++ {
+		price := bars[i].close
+		fast += (price - fast) * fastMul
+		slow += (price - slow) * slowMul
+	}
+	return fast, slow
 }

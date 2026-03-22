@@ -2,80 +2,79 @@ package config
 
 import "math"
 
+const defaultStartingCapital = 100_000
+
 // TuneTradingConfig applies broker-aware defaults that bias toward conservative
 // momentum participation without requiring manual knob tuning.
-func TuneTradingConfig(base TradingConfig, equity float64, historicalRateLimitPerMin int) TradingConfig {
+func TuneTradingConfig(base TradingConfig, capital float64, historicalRateLimitPerMin int) TradingConfig {
 	cfg := base
-	if equity <= 0 {
-		equity = cfg.StartingCapital
+	if capital <= 0 {
+		capital = cfg.StartingCapital
 	}
-	cfg.StartingCapital = round2(equity)
+	cfg.StartingCapital = round2(capital)
 
-	cfg.RiskPerTradePct = 0.035
-	cfg.DailyLossLimitPct = 0.200
-	cfg.MaxTradesPerDay = 30
-	cfg.MaxOpenPositions = 5
-	cfg.MinPrice = 2.0
-
-	// switch {
-	// case equity < 25_000:
-	// 	cfg.RiskPerTradePct = 0.005
-	// 	cfg.DailyLossLimitPct = 0.015
-	// 	cfg.MaxTradesPerDay = 6
-	// 	cfg.MaxOpenPositions = 2
-	// 	cfg.MinPrice = 2.0
-	// case equity < 100_000:
-	// 	cfg.RiskPerTradePct = 0.035
-	// 	cfg.DailyLossLimitPct = 0.200
-	// 	cfg.MaxTradesPerDay = 30
-	// 	cfg.MaxOpenPositions = 5
-	// 	cfg.MinPrice = 2.0
-	// default:
-	// 	cfg.RiskPerTradePct = 0.015
-	// 	cfg.DailyLossLimitPct = 0.080
-	// 	cfg.MaxTradesPerDay = 20
-	// 	cfg.MaxOpenPositions = 5
-	// 	cfg.MinPrice = 2.0
-	// }
-
-	cfg.StopLossPct = 0.03
-	cfg.TrailingStopPct = 0.03
-	cfg.TrailingStopActivationPct = 0.02
+	cfg.EnableMarketRegime = false
+	cfg.EnableShorts = true
+	cfg.RiskPerTradePct = inferRiskPerTradePct(capital)
+	cfg.DailyLossLimitPct = 0.2
+	cfg.MaxTradesPerDay = 20
+	cfg.MaxOpenPositions = inferMaxOpenPositions(capital)
+	cfg.StopLossPct = 0.05
+	cfg.MaxShortOpenPositions = inferMaxShortOpenPositions(cfg.MaxOpenPositions)
+	cfg.MaxShortExposurePct = inferMaxShortExposurePct(cfg.MaxExposurePct)
 	cfg.EntryCooldownSec = 60
 	cfg.ExitCooldownSec = 5
-	cfg.EntryModelEnabled = true
-	cfg.EntryModelMinPredictedReturnPct = 0.16
-	cfg.MinEntryScore = 18.0
-	cfg.MinOneMinuteReturnPct = 0.40
-	cfg.MinThreeMinuteReturnPct = 0.80
-	cfg.MinVolumeRate = 1.40
-	cfg.MaxPriceVsOpenPct = 30.0
-	cfg.BreakoutFailureWindowMin = 3
-	cfg.BreakoutFailureLossPct = 0.0050
-	cfg.BreakEvenActivationPct = 0.015
-	cfg.BreakEvenFloorPct = 0.001
-	cfg.StagnationWindowMin = 3
-	cfg.StagnationMinPeakPct = 0.005
-	cfg.MinGapPercent = 0.0
-	cfg.MaxPrice = 50.0
-	cfg.MinRelativeVolume = 5.0
-	cfg.MinPremarketVolume = 10_000
+	cfg.MinEntryScore = 18
+	cfg.ShortMinEntryScore = 20
+	cfg.MinOneMinuteReturnPct = 0.4
+	cfg.MinThreeMinuteReturnPct = 0.8
+	cfg.MinVolumeRate = 1.8
+	cfg.MaxPriceVsOpenPct = 30
+	cfg.BreakoutFailureWindowMin = 10
+	cfg.StagnationWindowMin = 10
+	cfg.StagnationMinPeakPct = 0.10
 	cfg.ScannerWorkers = 4
+	cfg.MinPrice = 3.5
+	cfg.MaxPrice = 40
+	cfg.MinGapPercent = 1
+	cfg.MinRelativeVolume = 4
+	cfg.MinPremarketVolume = 60_000
+	cfg.ScannerMinPriceVsOpenPctFloor = 2.50
+	cfg.ScannerMinPriceVsOpenGapMultiplier = 0.25
+	cfg.ScannerMinSetupVolumeRateOffset = -0.05
+	cfg.ScannerMinSetupRelativeVolumeExtra = 0.25
+	cfg.ScannerVWAPTolerancePct = -0.10
+	cfg.ScannerConsolidationATRMultiplier = 1.75
+	cfg.ScannerConsolidationMaxPct = 4.50
+	cfg.ScannerPullbackDepthMinATRMultiplier = 0.35
+	cfg.ScannerPullbackDepthMinPct = 0.40
+	cfg.ScannerPullbackDepthMaxATRMultiplier = 2.40
+	cfg.ScannerPullbackDepthMaxPct = 8.00
+	cfg.ScannerRenewedVolumeRateMin = 1.05
+	cfg.MarketRegimeBenchmarkSymbols = []string{"SPY", "QQQ", "IWM"}
+	cfg.MarketRegimeMinBenchmarks = 2
+	cfg.MarketRegimeEMAFastPeriod = 20
+	cfg.MarketRegimeEMASlowPeriod = 60
+	cfg.MarketRegimeReturnLookbackMin = 30
+	cfg.HydrationRequestsPerMin = 120
+	cfg.HydrationRetrySec = 300
+	cfg.HydrationQueueSize = 512
 	cfg.LimitOrderSlippageDollars = 0.02
 	cfg.EntryATRPercentFallback = 0.02
-	cfg.EntryStopATRMultiplier = 2.00
-	cfg.MaxRiskATRMultiplier = 4.00
-	cfg.BreakEvenHoldMinutes = 5
-	cfg.BreakEvenMinR = 0.50
-	cfg.TrailActivationR = 0.70
+	cfg.EntryStopATRMultiplier = 2
+	cfg.MaxRiskATRMultiplier = 4
+	cfg.BreakEvenHoldMinutes = 10
+	cfg.BreakEvenMinR = 0.5
+	cfg.TrailActivationR = 0.50
 	cfg.TrailATRMultiplier = 1.50
-	cfg.TightTrailTriggerR = 1.20
-	cfg.TightTrailATRMultiplier = 0.70
-	cfg.ProfitTargetR = 1.20
-	cfg.ProfitTrailActivationR = 1.50 
-	cfg.ProfitTrailPct = 0.03 
+	cfg.TightTrailTriggerR = 2.5
+	cfg.TightTrailATRMultiplier = 0.75
+	cfg.ProfitTargetR = 3
 	cfg.FailedBreakoutCutR = 0.05
-	cfg.StructureConfirmR = 0.00
+	cfg.StructureConfirmR = 0
+	cfg.ShortPeakExtensionMinPct = 12
+	cfg.ShortVWAPBreakMinPct = -0.75
+	cfg.ShortStopATRMultiplier = 1.25
 	cfg.MaxExposurePct = inferMaxExposurePct(cfg)
 
 	if historicalRateLimitPerMin > 0 {
@@ -107,8 +106,55 @@ func inferMaxExposurePct(cfg TradingConfig) float64 {
 	if exposure < 0.25 {
 		exposure = 0.25
 	}
-	if exposure > 10.00 {
-		exposure = 10.00
+	if exposure > 1.00 {
+		exposure = 1.00
 	}
 	return round2(exposure)
+}
+
+func inferRiskPerTradePct(capital float64) float64 {
+	switch {
+	case capital <= 25_000:
+		return 0.005
+	case capital >= 100_000:
+		return 0.015
+	default:
+		return 0.01
+	}
+}
+
+func inferMaxOpenPositions(capital float64) int {
+	switch {
+	case capital <= 25_000:
+		return 2
+	case capital >= 100_000:
+		return 4
+	default:
+		return 3
+	}
+}
+
+func inferMaxShortOpenPositions(maxOpenPositions int) int {
+	switch {
+	case maxOpenPositions <= 1:
+		return 1
+	case maxOpenPositions >= 4:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func inferMaxShortExposurePct(maxExposurePct float64) float64 {
+	if maxExposurePct <= 0 {
+		return 0.20
+	}
+	shortExposure := round2(maxExposurePct * 0.45)
+	if shortExposure < 0.15 {
+		shortExposure = 0.15
+	}
+	if shortExposure > 0.40 {
+		shortExposure = 0.40
+	}
+	return shortExposure
 }

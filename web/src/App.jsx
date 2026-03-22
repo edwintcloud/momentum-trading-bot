@@ -12,11 +12,28 @@ const emptySnapshot = {
     unrealizedPnL: 0,
     netPnL: 0,
     exposure: 0,
+    longExposure: 0,
+    shortExposure: 0,
     openPositions: 0,
     tradesToday: 0,
+    entriesToday: 0,
     dailyLossLimit: 0,
     maxOpenPositions: 0,
     maxTradesPerDay: 0,
+    activeProfile: '',
+    activeVersion: '',
+    pendingProfile: '',
+    pendingVersion: '',
+    lastOptimizerRun: '',
+    paperValidation: '',
+    currentRegime: '',
+    regimeConfidence: 0,
+  },
+  marketRegime: {
+    regime: '',
+    confidence: 0,
+    benchmarks: [],
+    timestamp: '',
   },
   candidates: [],
   positions: [],
@@ -27,6 +44,26 @@ const emptySnapshot = {
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 const number = new Intl.NumberFormat('en-US');
+
+function normalizeSnapshot(next = {}) {
+  return {
+    ...emptySnapshot,
+    ...next,
+    status: {
+      ...emptySnapshot.status,
+      ...(next.status || {}),
+    },
+    marketRegime: {
+      ...emptySnapshot.marketRegime,
+      ...(next.marketRegime || {}),
+      benchmarks: Array.isArray(next.marketRegime?.benchmarks) ? next.marketRegime.benchmarks : [],
+    },
+    candidates: Array.isArray(next.candidates) ? next.candidates : [],
+    positions: Array.isArray(next.positions) ? next.positions : [],
+    closedTrades: Array.isArray(next.closedTrades) ? next.closedTrades : [],
+    logs: Array.isArray(next.logs) ? next.logs : [],
+  };
+}
 
 function compactVolume(value) {
   if (value >= 1_000_000_000) return (value / 1_000_000_000).toFixed(2) + ' B';
@@ -97,7 +134,7 @@ export function App() {
 
       socket.onmessage = (event) => {
         const next = JSON.parse(event.data);
-        setSnapshot(next);
+        setSnapshot(normalizeSnapshot(next));
         setError('');
       };
 
@@ -116,7 +153,7 @@ export function App() {
       .then((response) => response.json())
       .then((data) => {
         if (!cancelled) {
-          setSnapshot(data);
+          setSnapshot(normalizeSnapshot(data));
         }
       })
       .catch((fetchError) => {
@@ -135,6 +172,7 @@ export function App() {
   }, []);
 
   const statusTone = snapshot.status.emergencyStop ? 'danger' : snapshot.status.paused ? 'warn' : 'good';
+  const closedTradesToday = snapshot.closedTrades.length;
 
   return (
     <main className="app-shell">
@@ -162,9 +200,12 @@ export function App() {
         <StatCard label="System" value={snapshot.status.emergencyStop ? 'Stopped' : snapshot.status.paused ? 'Paused' : 'Running'} tone={statusTone} />
         <StatCard label="Today's PnL" value={money.format(snapshot.status.dayPnL)} tone={snapshot.status.dayPnL >= 0 ? 'good' : 'danger'} />
         <StatCard label="Exposure" value={money.format(snapshot.status.exposure)} />
+        <StatCard label="Long Exposure" value={money.format(snapshot.status.longExposure)} />
+        <StatCard label="Short Exposure" value={money.format(snapshot.status.shortExposure)} />
         <StatCard label="Open Positions" value={number.format(snapshot.status.openPositions)} />
-        <StatCard label="Trades Today" value={number.format(snapshot.status.tradesToday)} />
+        <StatCard label="Closed Trades" value={number.format(closedTradesToday)} />
         <StatCard label="Daily Loss Limit" value={money.format(snapshot.status.dailyLossLimit)} tone="warn" />
+        <StatCard label="Market Regime" value={snapshot.status.currentRegime || 'n/a'} />
       </section>
 
       <section className="panel status-panel">
@@ -198,25 +239,67 @@ export function App() {
             <strong>{snapshot.status.openPositions}/{snapshot.status.maxOpenPositions}</strong>
           </div>
           <div>
-            <span>Trade Limit</span>
-            <strong>{snapshot.status.tradesToday}/{snapshot.status.maxTradesPerDay}</strong>
+            <span>Entry Limit</span>
+            <strong>{snapshot.status.entriesToday}/{snapshot.status.maxTradesPerDay}</strong>
+          </div>
+          <div>
+            <span>Broker Fills Today</span>
+            <strong>{number.format(snapshot.status.tradesToday)}</strong>
+          </div>
+          <div>
+            <span>Regime Confidence</span>
+            <strong>{snapshot.status.regimeConfidence ? snapshot.status.regimeConfidence.toFixed(2) : 'n/a'}</strong>
           </div>
           <div>
             <span>Emergency Stop</span>
             <strong>{snapshot.status.emergencyStop ? 'Active' : 'Inactive'}</strong>
           </div>
+          <div>
+            <span>Active Profile</span>
+            <strong>{snapshot.status.activeProfile ? `${snapshot.status.activeProfile} (${snapshot.status.activeVersion || 'n/a'})` : 'Built-in baseline'}</strong>
+          </div>
+          <div>
+            <span>Pending Candidate</span>
+            <strong>{snapshot.status.pendingProfile ? `${snapshot.status.pendingProfile} (${snapshot.status.pendingVersion || 'n/a'})` : 'None queued'}</strong>
+          </div>
+          <div>
+            <span>Last Optimizer Run</span>
+            <strong>{snapshot.status.lastOptimizerRun ? new Date(snapshot.status.lastOptimizerRun).toLocaleString() : 'Not run yet'}</strong>
+          </div>
+          <div>
+            <span>Paper Validation</span>
+            <strong>{snapshot.status.paperValidation || 'n/a'}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel status-panel">
+        <div className="panel-header">
+          <h2>Market Regime</h2>
+          <span>{snapshot.marketRegime.timestamp ? new Date(snapshot.marketRegime.timestamp).toLocaleTimeString() : 'n/a'}</span>
+        </div>
+        <div className="status-grid">
+          {snapshot.marketRegime.benchmarks.map((benchmark) => (
+            <div key={benchmark.symbol}>
+              <span>{benchmark.symbol}</span>
+              <strong>{`VWAP ${benchmark.priceVsVwapPct.toFixed(2)}% | EMA ${benchmark.emaFast.toFixed(2)}/${benchmark.emaSlow.toFixed(2)} | 30m ${benchmark.returnLookbackPct.toFixed(2)}%`}</strong>
+            </div>
+          ))}
         </div>
       </section>
 
       <div className="panel-grid">
         <TableSection
           title="Scanner Candidates"
-          columns={['Symbol', 'Price', 'Gap %', 'Rel Vol', 'Premarket Vol', 'Catalyst']}
+          columns={['Symbol', 'Side', 'Regime', 'Playbook', 'Price', 'Gap %', 'Rel Vol', 'Premarket Vol', 'Catalyst']}
           rows={snapshot.candidates}
           emptyMessage="No symbols currently satisfy the scanner filters."
           renderRow={(candidate) => (
             <tr key={candidate.symbol}>
               <td>{candidate.symbol}</td>
+              <td>{candidate.direction || 'long'}</td>
+              <td>{candidate.marketRegime || 'n/a'}</td>
+              <td>{candidate.playbook || 'n/a'}</td>
               <td>{money.format(candidate.price)}</td>
               <td>{candidate.gapPercent.toFixed(2)}%</td>
               <td>{candidate.relativeVolume.toFixed(2)}x</td>
@@ -236,12 +319,13 @@ export function App() {
 
         <TableSection
           title="Open Positions"
-          columns={['Symbol', 'Qty', 'Avg', 'Last', 'Market Value', 'Unrealized']}
+          columns={['Symbol', 'Side', 'Qty', 'Avg', 'Last', 'Market Value', 'Unrealized']}
           rows={snapshot.positions}
           emptyMessage="No open positions."
           renderRow={(position) => (
             <tr key={position.symbol}>
               <td>{position.symbol}</td>
+              <td>{position.side || 'long'}</td>
               <td>{number.format(position.quantity)}</td>
               <td>{money.format(position.avgPrice)}</td>
               <td>{money.format(position.lastPrice)}</td>
@@ -255,12 +339,13 @@ export function App() {
       <div className="panel-grid bottom-grid">
         <TableSection
           title="Closed Trades"
-          columns={['Symbol', 'Qty', 'Entry', 'Exit', 'PnL', 'Reason']}
+          columns={['Symbol', 'Side', 'Qty', 'Entry', 'Exit', 'PnL', 'Reason']}
           rows={snapshot.closedTrades.slice(0, 8)}
           emptyMessage="No trades closed yet."
           renderRow={(trade, index) => (
             <tr key={`${trade.symbol}-${index}`}>
               <td>{trade.symbol}</td>
+              <td>{trade.side || 'long'}</td>
               <td>{number.format(trade.quantity)}</td>
               <td>{money.format(trade.entryPrice)}</td>
               <td>{money.format(trade.exitPrice)}</td>

@@ -18,13 +18,50 @@ type Engine struct {
 	config    config.TradingConfig
 	portfolio *portfolio.Manager
 	runtime   *runtime.State
+	shortable ShortabilityChecker
 	dayKey    string
 	approved  int
 }
 
+// ShortabilityChecker reports whether a symbol may be shorted.
+type ShortabilityChecker interface {
+	IsShortable(symbol string) bool
+}
+
+func inferSignalIntent(signal domain.TradeSignal, position domain.Position, exists bool) domain.TradeSignal {
+	signal.Side = domain.NormalizeSide(signal.Side)
+	if exists && signal.PositionSide == "" {
+		signal.PositionSide = position.Side
+	}
+	signal.PositionSide = domain.NormalizeDirection(signal.PositionSide)
+	if signal.Intent != "" {
+		signal.Intent = domain.NormalizeIntent(signal.Intent)
+		return signal
+	}
+	switch {
+	case exists && signal.Side == domain.CloseBrokerSide(position.Side):
+		signal.Intent = domain.IntentClose
+		signal.PositionSide = position.Side
+	case exists && signal.Side == domain.OpenBrokerSide(position.Side):
+		signal.Intent = domain.IntentOpen
+		signal.PositionSide = position.Side
+	case signal.Side == domain.SideSell:
+		signal.Intent = domain.IntentOpen
+		signal.PositionSide = domain.DirectionShort
+	default:
+		signal.Intent = domain.IntentOpen
+		signal.PositionSide = domain.DirectionLong
+	}
+	return signal
+}
+
 // NewEngine creates a new risk engine.
-func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State) *Engine {
-	return &Engine{config: cfg, portfolio: portfolioManager, runtime: runtimeState}
+func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State, shortable ...ShortabilityChecker) *Engine {
+	var checker ShortabilityChecker
+	if len(shortable) > 0 {
+		checker = shortable[0]
+	}
+	return &Engine{config: cfg, portfolio: portfolioManager, runtime: runtimeState, shortable: checker}
 }
 
 // Start receives trade signals and applies risk checks.
@@ -56,9 +93,11 @@ func (r *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 
 // Evaluate validates a signal and returns an execution request when allowed.
 func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool, string) {
+	position, exists := r.portfolio.Position(signal.Symbol)
+	signal = inferSignalIntent(signal, position, exists)
 	orderTime := signal.Timestamp
 	if orderTime.IsZero() {
-		orderTime = time.Now().UTC()
+		orderTime = time.Now()
 	}
 	if !markethours.IsTradableSessionAt(orderTime) {
 		return domain.OrderRequest{}, false, "outside-session"
@@ -66,10 +105,12 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if signal.Quantity <= 0 {
 		return domain.OrderRequest{}, false, "invalid-quantity"
 	}
-	if signal.Side == "sell" {
-		position, exists := r.portfolio.Position(signal.Symbol)
+	if domain.IsClosingIntent(signal.Intent) {
 		if !exists || position.Quantity == 0 {
 			return domain.OrderRequest{}, false, "no-position"
+		}
+		if domain.NormalizeDirection(position.Side) != signal.PositionSide {
+			return domain.OrderRequest{}, false, "position-side-mismatch"
 		}
 		quantity := signal.Quantity
 		if quantity > position.Quantity {
@@ -79,6 +120,8 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{
 			Symbol:       signal.Symbol,
 			Side:         signal.Side,
+			Intent:       signal.Intent,
+			PositionSide: signal.PositionSide,
 			Price:        limitPrice,
 			Quantity:     quantity,
 			StopPrice:    signal.StopPrice,
@@ -86,6 +129,9 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			EntryATR:     signal.EntryATR,
 			SetupType:    signal.SetupType,
 			Reason:       signal.Reason,
+			MarketRegime: signal.MarketRegime,
+			RegimeConfidence: signal.RegimeConfidence,
+			Playbook:     signal.Playbook,
 			Timestamp:    orderTime,
 		}, true, "approved"
 	}
@@ -94,8 +140,16 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{}, false, blockReason
 	}
 	r.rollDay(orderTime)
-	if filledEntries := r.portfolio.EntriesToday(); filledEntries > r.approved {
+	if filledEntries := r.portfolio.EntriesTodayAt(orderTime); filledEntries > r.approved {
 		r.approved = filledEntries
+	}
+	if domain.IsShort(signal.PositionSide) {
+		if !r.config.EnableShorts {
+			return domain.OrderRequest{}, false, "shorts-disabled"
+		}
+		if r.shortable != nil && !r.shortable.IsShortable(signal.Symbol) {
+			return domain.OrderRequest{}, false, "symbol-not-shortable"
+		}
 	}
 	if signal.StopPrice <= 0 || signal.RiskPerShare <= 0 {
 		return domain.OrderRequest{}, false, "missing-stop"
@@ -106,18 +160,30 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	if r.portfolio.OpenPositionCount() >= r.config.MaxOpenPositions {
 		return domain.OrderRequest{}, false, "max-open-positions"
 	}
+	if domain.IsShort(signal.PositionSide) && r.portfolio.PositionCountBySide(domain.DirectionShort) >= r.config.MaxShortOpenPositions {
+		return domain.OrderRequest{}, false, "max-short-open-positions"
+	}
 	effectiveCapital := r.portfolio.EffectiveCapital()
 	if r.portfolio.DayPnL() <= -(effectiveCapital * r.config.DailyLossLimitPct) {
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 	maxExposure := effectiveCapital * r.config.MaxExposurePct
 	availableExposure := maxExposure - r.portfolio.Exposure()
+	if domain.IsShort(signal.PositionSide) {
+		maxExposure = effectiveCapital * r.config.MaxShortExposurePct
+		availableExposure = maxExposure - r.portfolio.ShortExposure()
+	}
 	if availableExposure <= 0 {
+		return domain.OrderRequest{}, false, "max-exposure"
+	}
+	availableCash := r.portfolio.AvailableCash()
+	if availableCash <= 0 {
 		return domain.OrderRequest{}, false, "max-exposure"
 	}
 	limitPrice := r.limitPrice(signal.Price, signal.Side)
 	quantity := signal.Quantity
-	maxQuantityByExposure := int64(availableExposure / limitPrice)
+	availableNotional := math.Min(availableExposure, availableCash)
+	maxQuantityByExposure := int64(availableNotional / limitPrice)
 	if maxQuantityByExposure < quantity {
 		quantity = maxQuantityByExposure
 	}
@@ -134,6 +200,8 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	request := domain.OrderRequest{
 		Symbol:       signal.Symbol,
 		Side:         signal.Side,
+		Intent:       signal.Intent,
+		PositionSide: signal.PositionSide,
 		Price:        limitPrice,
 		Quantity:     quantity,
 		StopPrice:    signal.StopPrice,
@@ -141,6 +209,9 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		EntryATR:     signal.EntryATR,
 		SetupType:    signal.SetupType,
 		Reason:       signal.Reason,
+		MarketRegime: signal.MarketRegime,
+		RegimeConfidence: signal.RegimeConfidence,
+		Playbook:     signal.Playbook,
 		Timestamp:    orderTime,
 	}
 	r.approved++

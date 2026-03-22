@@ -11,12 +11,11 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwincloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwincloud/momentum-trading-bot/internal/volumeprofile"
 )
-
-var nyLocation = mustLoadLocation("America/New_York")
 
 type symbolState struct {
 	previousClose float64
@@ -48,6 +47,7 @@ type Engine struct {
 	config            config.TradingConfig
 	portfolio         *portfolio.Manager
 	runtime           *runtime.State
+	eligibleSymbols   map[string]struct{}
 	state             map[string]*symbolState
 	seenBars          map[string]bool
 	seenTypes         map[string]bool
@@ -64,6 +64,7 @@ func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager
 		config:            cfg,
 		portfolio:         portfolioManager,
 		runtime:           runtimeState,
+		eligibleSymbols:   make(map[string]struct{}),
 		state:             make(map[string]*symbolState),
 		seenBars:          make(map[string]bool),
 		seenTypes:         make(map[string]bool),
@@ -75,8 +76,19 @@ func NewEngine(client *alpaca.Client, cfg config.TradingConfig, portfolioManager
 
 // Start consumes Alpaca market data until the context is canceled.
 func (e *Engine) Start(ctx context.Context, out chan<- domain.Tick) error {
+	symbols, err := e.client.ListEquitySymbols(ctx, false)
+	if err != nil {
+		return fmt.Errorf("load NYSE/NASDAQ universe: %w", err)
+	}
+	if len(symbols) == 0 {
+		return fmt.Errorf("load NYSE/NASDAQ universe: no eligible symbols returned")
+	}
+	for _, symbol := range symbols {
+		e.eligibleSymbols[symbol] = struct{}{}
+	}
 	e.runtime.SetDependencyStatus("market_data_stream", false, "waiting for alpaca stream")
 	e.runtime.RecordLog("info", "market", "connecting to alpaca market data stream")
+	e.runtime.RecordLog("info", "market", fmt.Sprintf("limiting live market intake to %d NYSE/NASDAQ symbols", len(symbols)))
 	e.runtime.RecordLog("info", "market", fmt.Sprintf("hydration rate limit set to %d requests/min", e.config.HydrationRequestsPerMin))
 	go e.runHydrationWorker(ctx)
 	return e.client.StreamMarketData(ctx, func(message alpaca.StreamMessage) error {
@@ -121,6 +133,9 @@ func (e *Engine) Start(ctx context.Context, out chan<- domain.Tick) error {
 }
 
 func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) domain.Tick {
+	if _, ok := e.eligibleSymbols[message.Symbol]; !ok {
+		return domain.Tick{}
+	}
 	e.getState(message.Symbol)
 	e.scheduleHydration(message.Symbol, message.Close, message.Timestamp)
 
@@ -133,7 +148,7 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 		return domain.Tick{}
 	}
 
-	minuteKey := message.Timestamp.UTC().Unix() / 60
+	minuteKey := message.Timestamp.Unix() / 60
 	previousMinuteVolume := state.barVolumes[minuteKey]
 	deltaVolume := message.Volume - previousMinuteVolume
 	if deltaVolume < 0 {
@@ -168,8 +183,8 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 	}
 
 	gapPercent := 0.0
-	if state.previousClose > 0 {
-		gapPercent = ((message.Close - state.previousClose) / state.previousClose) * 100
+	if state.previousClose > 0 && state.open > 0 {
+		gapPercent = ((state.open - state.previousClose) / state.previousClose) * 100
 	}
 	relativeVolume := calculateRelativeVolume(state, message.Timestamp)
 	volumeSpike := isVolumeSpike(state, deltaVolume, relativeVolume)
@@ -189,7 +204,7 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 		VolumeSpike:     volumeSpike,
 		Catalyst:        state.catalyst,
 		CatalystURL:     state.catalystURL,
-		Timestamp:       message.Timestamp.UTC(),
+		Timestamp:       message.Timestamp,
 	}
 }
 
@@ -197,7 +212,7 @@ func (e *Engine) scheduleHydration(symbol string, price float64, timestamp time.
 	if price < e.config.MinPrice {
 		return
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	e.mu.Lock()
 	state := e.state[symbol]
 	if state == nil || state.hydrated || state.hydrating || (!state.nextHydration.IsZero() && now.Before(state.nextHydration)) {
@@ -356,7 +371,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 	byDay := make(map[string][]string)
 	dayTimestamp := make(map[string]time.Time)
 	for _, request := range batch {
-		dayKey := request.timestamp.In(nyLocation).Format("2006-01-02")
+		dayKey := request.timestamp.In(markethours.Location()).Format("2006-01-02")
 		byDay[dayKey] = append(byDay[dayKey], request.symbol)
 		dayTimestamp[dayKey] = request.timestamp
 	}
@@ -373,7 +388,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 		}
 	}
 
-	now := time.Now().UTC()
+	now := time.Now()
 	for _, symbol := range symbols {
 		request := requestBySymbol[symbol]
 		snapshot, ok := snapshots[symbol]
@@ -424,7 +439,7 @@ func (e *Engine) hydrateBatch(ctx context.Context, batch []hydrationRequest) {
 }
 
 func (e *Engine) deferHydrationBatch(symbols []string, delay time.Duration) {
-	next := time.Now().UTC().Add(delay)
+	next := time.Now().Add(delay)
 	for _, symbol := range symbols {
 		e.finishHydration(symbol, func(state *symbolState) {
 			state.hydrating = false
@@ -539,21 +554,13 @@ func isVolumeSpike(state *symbolState, deltaVolume int64, relativeVolume float64
 }
 
 func isPremarket(timestamp time.Time) bool {
-	est := timestamp.In(nyLocation)
+	est := timestamp.In(markethours.Location())
 	minutes := est.Hour()*60 + est.Minute()
 	return minutes >= 4*60 && minutes < 9*60+30
 }
 
 func round2(value float64) float64 {
 	return math.Round(value*100) / 100
-}
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(err)
-	}
-	return location
 }
 
 func maxInt(a, b int) int {

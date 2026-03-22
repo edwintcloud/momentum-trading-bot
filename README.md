@@ -12,7 +12,7 @@ Implemented backend flow:
 
 - market data stream
 - scanner filters for low-float momentum names
-- feature-enriched breakout entries with linear-model timing gate
+- feature-enriched breakout entries
 - stop-loss and trailing-stop exits
 - risk checks before execution
 - Alpaca order submission and fill polling
@@ -36,6 +36,7 @@ Create a local `.env` file from `.env.example` and fill in at least:
 - `ALPACA_API_KEY`
 - `ALPACA_API_SECRET`
 - `DATABASE_URL`
+- `CONTROL_PLANE_AUTH_TOKEN`
 - `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` if you are using `docker compose`
 
 Mode selection:
@@ -48,8 +49,13 @@ The live-trading arm flag is intentional. The service refuses to start in live m
 Optional overrides:
 
 - `ALPACA_SYMBOLS=AAPL,TSLA` limits the stream to a watchlist; leaving it empty subscribes broadly
-- `ENTRY_MODEL_PATH=/path/to/model.json` loads a trained JSON entry model instead of the seeded default
-- `HTTP_ADDR=:8080` changes the bind address
+
+Control-plane access:
+
+- The dashboard, `/api/*`, and `/ws` require HTTP Basic auth
+- Username is always `operator`
+- Password is the value of `CONTROL_PLANE_AUTH_TOKEN`
+- `GET /healthz` and `GET /readyz` stay public for probes
 
 Everything else is now inferred automatically. On startup the bot probes Alpaca, detects the market-data plan/feed, reads broker equity, and tunes risk/scanner settings toward conservative momentum trading defaults.
 
@@ -84,8 +90,8 @@ Default behavior:
 - Alpaca is the default historical data source
 - `-start` is the only required argument
 - `-end` defaults to the current time
-- the entry model trains on the immediately preceding window of equal length before the backtest start
-- the symbol universe defaults to Alpaca's active tradable US equities, which approximates the live wildcard scanner
+- there is no separate training or model-fitting step; the backtest replays the requested window directly
+- the symbol universe includes active and inactive tradable US equities, which approximates the live wildcard scanner while allowing inactive symbols
 - historical Alpaca fetches are cached automatically under `.cache/backtest/historical-bars` so repeat and overlapping runs reuse previously downloaded bar batches
 
 Example:
@@ -122,12 +128,68 @@ Optional CSV columns:
 - `catalyst`
 - `catalyst_url`
 
+## Run The Optimizer
+
+The weekly optimizer is manual. It does not run automatically, and it does not auto-promote a strategy into live trading.
+
+Use it to generate a ranked research report and a versioned candidate trading profile:
+
+```sh
+go run . optimize -as-of 2026-03-20
+```
+
+Optional flags:
+
+- `-data /absolute/path/to/bars.csv` uses CSV bars instead of fetching Alpaca history
+- `-out /absolute/path/to/output-dir` changes the artifact directory; default is `.cache/optimizer`
+
+What the optimizer does:
+
+- builds the most recent 20 completed trading weeks ending at the prior Friday close
+- splits them into `12 weeks search`, `4 weeks validation`, and `4 weeks holdout`
+- searches the supported strategy families and bounded config ranges
+- writes a versioned JSON report and a recommended trading profile artifact
+
+Artifacts written by default:
+
+- `.cache/optimizer/latest-report.json`
+- `.cache/optimizer/latest-candidate-profile.json`
+- `.cache/optimizer/reports/...`
+- `.cache/optimizer/profiles/...`
+
+Promotion behavior:
+
+- the optimizer always writes the top-ranked recommendation
+- the recommendation includes a promotion status such as `pending-paper-validation` or `blocked-research-gates`
+- the repo ships with a bundled default profile at `profiles/default.json`
+- live startup and backtests load that bundled profile automatically unless `TRADING_PROFILE_PATH` explicitly points somewhere else
+- Docker Compose pins `TRADING_PROFILE_PATH` to `/app/profiles/default.json` inside the container image
+
+To start the bot with a selected profile:
+
+```sh
+TRADING_PROFILE_PATH=/absolute/path/to/.cache/optimizer/profiles/<version>.json go run .
+```
+
+Recommended operator workflow:
+
+1. Run `go run . optimize -as-of YYYY-MM-DD`
+2. Review `.cache/optimizer/latest-report.json`
+3. If the candidate is acceptable, deploy the generated profile in paper mode first
+4. Replace the bundled repo profile or point `TRADING_PROFILE_PATH` at the selected profile and restart the bot
+
+Dashboard visibility:
+
+- the operator dashboard shows the active profile/version
+- it also shows the latest pending candidate profile, last optimizer run time, and paper-validation status
+
 ## Run With Docker Compose
 
 Create a local `.env` file first. At minimum it must include:
 
 - `ALPACA_API_KEY`
 - `ALPACA_API_SECRET`
+- `CONTROL_PLANE_AUTH_TOKEN`
 
 The compose stack provisions PostgreSQL automatically and injects a container-safe `DATABASE_URL` for the app service.
 

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,6 +17,8 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
+	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwincloud/momentum-trading-bot/internal/storage"
 )
 
 var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -26,11 +30,13 @@ func runBacktest(args []string) error {
 	dataPath := flags.String("data", "", "Optional CSV fallback with timestamp,symbol,open,high,low,close,volume columns")
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
 	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
+	reportOut := flags.String("report-out", ".cache/backtest/latest-report.json", "Optional JSON report artifact path; set empty string to disable")
+	debugSymbols := flags.String("debug", "", "Comma-separated symbols to trace per-bar through scanner/strategy")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 
-	start, startDateOnly, err := parseCLIBacktestTime(*startRaw)
+	start, _, err := parseCLIBacktestTime(*startRaw)
 	if err != nil {
 		return err
 	}
@@ -38,26 +44,43 @@ func runBacktest(args []string) error {
 	if err != nil {
 		return err
 	}
-	start, end, trainStart, trainEnd, err := inferBacktestWindows(start, end, startDateOnly, endDateOnly, *dataPath == "")
+	if end.After(time.Now().Add(24 * time.Hour)) {
+		return fmt.Errorf("this a backtest not a time machine, end time cannot be in the far future: %s", end.Format(time.RFC3339))
+	}
+	start, end, err = inferBacktestWindows(start, end, endDateOnly, *dataPath == "")
 	if err != nil {
 		return err
 	}
-	log.Printf(
-		"Backtest window start=%s end=%s train_start=%s train_end=%s",
-		formatLogTime(start),
-		formatLogTime(end),
-		formatLogTime(trainStart),
-		formatLogTime(trainEnd),
-	)
+	log.Printf("Backtest window start=%s end=%s", formatLogTime(start), formatLogTime(end))
 
 	cfg := config.DefaultTradingConfig()
+	profilePath := config.ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH"))
+
+	logDir := os.Getenv("BACKTEST_LOG_DIR")
+	if logDir == "" {
+		logDir = filepath.Join(".", "logs")
+	}
+	fsRecorder, fsErr := storage.NewFilesystemRecorder(context.Background(), logDir)
+	if fsErr != nil {
+		log.Printf("Backtest filesystem recorder disabled: %v", fsErr)
+		fsRecorder = nil
+	} else {
+		log.Printf("Backtest logs writing to %s", logDir)
+	}
+
 	runCfg := backtest.RunConfig{
-		DataPath:           *dataPath,
-		Start:              start,
-		End:                end,
-		TrainStart:         trainStart,
-		TrainEnd:           trainEnd,
-		LabelLookaheadBars: 8,
+		DataPath: *dataPath,
+		Start:    start,
+		End:      end,
+		Recorder: fsRecorder,
+	}
+	if *debugSymbols != "" {
+		for _, sym := range strings.Split(*debugSymbols, ",") {
+			sym = strings.TrimSpace(sym)
+			if sym != "" {
+				runCfg.DebugSymbols = append(runCfg.DebugSymbols, sym)
+			}
+		}
 	}
 
 	if *dataPath == "" {
@@ -73,86 +96,73 @@ func runBacktest(args []string) error {
 		historicalRateLimit := 0
 		if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
 			historicalRateLimit = capabilities.HistoricalRateLimitPerMin
-			if alpacaCfg.AutoSelectDataFeed {
-				client.SetDataFeed(capabilities.DetectedFeed)
-			}
 			log.Printf("Backtest using Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
 		} else {
 			log.Printf("Backtest capability detection failed, using defaults: %v", capErr)
 		}
 		if account, accountErr := client.GetAccount(setupCtx); accountErr == nil {
-			if equity, _, ok := brokerAccountValues(account); ok {
+			if cash, ok := brokerCashValue(account); ok {
+				cfg = config.TuneTradingConfig(cfg, cash, historicalRateLimit)
+			} else if equity, _, ok := brokerAccountValues(account); ok {
 				cfg = config.TuneTradingConfig(cfg, equity, historicalRateLimit)
 			}
 		} else {
 			log.Printf("Backtest account tuning skipped: %v", accountErr)
 		}
-		logBacktestConfig(cfg)
-
 		symbols, err := resolveBacktestSymbols(setupCtx, client)
 		if err != nil {
 			return err
 		}
-		fetchStart, fetchEnd := backtestFetchWindow(start, end, trainStart, trainEnd)
-		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), fetchStart, fetchEnd, historicalRateLimit)
+		prevDayStart := start.AddDate(0, 0, -1)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
-		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(fetchStart), formatLogTime(fetchEnd))
+		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(prevDayStart), formatLogTime(end))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		inputBars, err := fetchBarsFromAlpaca(fetchCtx, client, symbols, fetchStart, fetchEnd, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
-		runCfg.Bars = inputBars
-		log.Printf("Loaded %d historical bars from Alpaca across %d symbols", len(inputBars), uniqueInputSymbols(inputBars))
+		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
+		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 	}
+	profileLabel := ""
+	if profilePath != "" {
+		cfg, profileLabel, err = applyConfiguredTradingProfile(cfg, profilePath)
+		if err != nil {
+			return err
+		}
+		if profileLabel != "" {
+			log.Printf("Backtest loaded trading profile %s", profileLabel)
+		}
+	} else {
+		log.Printf("Backtest using broker-tuned baseline config (no bundled trading profile found)")
+	}
+	logBacktestConfig(cfg)
 
 	result, err := backtest.Run(context.Background(), cfg, runCfg)
 	if err != nil {
 		return err
 	}
-	if result.ModelTrainingWarning != "" {
-		log.Printf("Backtest entry-model training skipped: %s. Using model=%s", result.ModelTrainingWarning, result.ModelName)
-	}
 	logBacktestDiagnostics(result.Diagnostics)
-
-	log.Printf(
-		"Backtest complete trades=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f avg_win_pnl=%.2f avg_loss_pnl=%.2f avg_win_r=%.2f avg_loss_r=%.2f avg_mfe_r=%.2f avg_mae_r=%.2f trailing_exit_pct=%.2f%% avg_time_to_stop_min=%.2f realized_pnl=%.2f unrealized_pnl=%.2f net_pnl=%.2f ending_equity=%.2f open_positions=%d max_drawdown=%.2f%% model=%s",
-		result.Trades,
-		result.Wins,
-		result.Losses,
-		result.WinRate,
-		result.ProfitFactor,
-		result.AvgWinPnL,
-		result.AvgLossPnL,
-		result.AvgWinR,
-		result.AvgLossR,
-		result.AvgMFER,
-		result.AvgMAER,
-		result.TrailingStopExitPct,
-		result.AvgTimeToStopMin,
-		result.RealizedPnL,
-		result.UnrealizedPnL,
-		result.NetPnL,
-		result.EndingEquity,
-		result.OpenPositionsAtEnd,
-		result.MaxDrawdownPct,
-		result.ModelName,
-	)
+	logBacktestSummary(start, end, result)
 	logClosedTradeSamples(result.ClosedTrades)
+	if err := writeBacktestReport(*reportOut, result); err != nil {
+		return err
+	}
 	return nil
 }
 
-func inferBacktestWindows(start, end time.Time, startDateOnly, endDateOnly, requireStart bool) (time.Time, time.Time, time.Time, time.Time, error) {
-	now := time.Now().UTC()
+func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) (time.Time, time.Time, error) {
+	now := time.Now().In(markethours.Location())
 	if end.IsZero() {
 		end = now
 	}
 	if requireStart && start.IsZero() {
-		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("start time is required when loading historical data from Alpaca")
+		return time.Time{}, time.Time{}, fmt.Errorf("start time is required when loading historical data from Alpaca")
 	}
 	if start.IsZero() {
-		return time.Time{}, end, time.Time{}, time.Time{}, nil
+		return time.Time{}, end, nil
 	}
 	if endDateOnly {
 		if sameMarketDay(end, now) {
@@ -162,67 +172,17 @@ func inferBacktestWindows(start, end time.Time, startDateOnly, endDateOnly, requ
 		}
 	}
 	if !end.After(start) {
-		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("end time must be after start time")
+		return time.Time{}, time.Time{}, fmt.Errorf("end time must be after start time")
 	}
-	duration := end.Sub(start)
-	minTrainingDuration := 5 * 24 * time.Hour
-	if duration < minTrainingDuration {
-		duration = minTrainingDuration
-	}
-	trainEnd := start.Add(-time.Minute)
-	trainStart := trainEnd.Add(-duration)
-	return start, end, trainStart, trainEnd, nil
+	return start, end, nil
 }
 
 func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]string, error) {
-	symbols, err := client.ListActiveEquitySymbols(ctx)
+	symbols, err := client.ListEquitySymbols(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 	return symbols, nil
-}
-
-func backtestFetchWindow(start, end, trainStart, trainEnd time.Time) (time.Time, time.Time) {
-	fetchStart := earliestNonZero(start, trainStart)
-	fetchEnd := latestNonZero(end, trainEnd)
-	if !fetchStart.IsZero() {
-		fetchStart = fetchStart.Add(-24 * time.Hour)
-	}
-	return fetchStart, fetchEnd
-}
-
-func earliestNonZero(values ...time.Time) time.Time {
-	var earliest time.Time
-	for _, value := range values {
-		if value.IsZero() {
-			continue
-		}
-		if earliest.IsZero() || value.Before(earliest) {
-			earliest = value
-		}
-	}
-	return earliest
-}
-
-func latestNonZero(values ...time.Time) time.Time {
-	var latest time.Time
-	for _, value := range values {
-		if value.IsZero() {
-			continue
-		}
-		if latest.IsZero() || value.After(latest) {
-			latest = value
-		}
-	}
-	return latest
-}
-
-func uniqueInputSymbols(input []backtest.InputBar) int {
-	seen := make(map[string]struct{}, len(input))
-	for _, item := range input {
-		seen[strings.ToUpper(item.Symbol)] = struct{}{}
-	}
-	return len(seen)
 }
 
 func parseCLIBacktestTime(value string) (time.Time, bool, error) {
@@ -230,11 +190,11 @@ func parseCLIBacktestTime(value string) (time.Time, bool, error) {
 		return time.Time{}, false, nil
 	}
 	if dateOnlyPattern.MatchString(strings.TrimSpace(value)) {
-		parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), marketTimeLocation())
+		parsed, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), markethours.Location())
 		if err != nil {
 			return time.Time{}, true, fmt.Errorf("unsupported date format %q", value)
 		}
-		return parsed.UTC(), true, nil
+		return parsed, true, nil
 	}
 	layouts := []string{
 		time.RFC3339,
@@ -242,35 +202,22 @@ func parseCLIBacktestTime(value string) (time.Time, bool, error) {
 		"2006-01-02 15:04",
 	}
 	for _, layout := range layouts {
-		parsed, err := time.ParseInLocation(layout, value, marketTimeLocation())
+		parsed, err := time.ParseInLocation(layout, value, markethours.Location())
 		if err == nil {
-			return parsed.UTC(), false, nil
+			return parsed, false, nil
 		}
 	}
 	return time.Time{}, false, fmt.Errorf("unsupported date format %q", value)
 }
 
-func marketTimeLocation() *time.Location {
-	location, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return time.UTC
-	}
-	return location
-}
-
-func startOfMarketDay(value time.Time) time.Time {
-	local := value.In(marketTimeLocation())
-	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, marketTimeLocation()).UTC()
-}
-
 func endOfMarketDay(value time.Time) time.Time {
-	local := value.In(marketTimeLocation())
-	return time.Date(local.Year(), local.Month(), local.Day(), 23, 59, 59, 0, marketTimeLocation()).UTC()
+	local := value.In(markethours.Location())
+	return time.Date(local.Year(), local.Month(), local.Day(), 20, 0, 0, 0, markethours.Location())
 }
 
 func sameMarketDay(a, b time.Time) bool {
-	al := a.In(marketTimeLocation())
-	bl := b.In(marketTimeLocation())
+	al := a.In(markethours.Location())
+	bl := b.In(markethours.Location())
 	return al.Year() == bl.Year() && al.Month() == bl.Month() && al.Day() == bl.Day()
 }
 
@@ -278,12 +225,16 @@ func formatLogTime(value time.Time) string {
 	if value.IsZero() {
 		return "n/a"
 	}
-	return value.In(marketTimeLocation()).Format(time.RFC3339)
+	return value.In(markethours.Location()).Format(time.RFC3339)
 }
 
 func logBacktestConfig(cfg config.TradingConfig) {
 	log.Printf(
-		"Backtest config min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f max_vs_open=%.2f model_threshold=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trailing_stop=%.2f trailing_activation=%.2f",
+		"Backtest config shorts_enabled=%t max_short_open=%d max_short_exposure=%.2f short_min_score=%.2f min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f max_vs_open=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f stop_loss=%.2f trail_activation_r=%.2f trail_atr_mult=%.2f tight_trail_trigger_r=%.2f tight_trail_atr_mult=%.2f profit_target_r=%.2f",
+		cfg.EnableShorts,
+		cfg.MaxShortOpenPositions,
+		cfg.MaxShortExposurePct,
+		cfg.ShortMinEntryScore,
 		cfg.MinPrice,
 		cfg.MinGapPercent,
 		cfg.MinRelativeVolume,
@@ -293,28 +244,28 @@ func logBacktestConfig(cfg config.TradingConfig) {
 		cfg.MinThreeMinuteReturnPct,
 		cfg.MinVolumeRate,
 		cfg.MaxPriceVsOpenPct,
-		cfg.EntryModelMinPredictedReturnPct,
 		cfg.RiskPerTradePct,
 		cfg.MaxTradesPerDay,
 		cfg.MaxOpenPositions,
 		cfg.MaxExposurePct,
 		cfg.StopLossPct,
-		cfg.TrailingStopPct,
-		cfg.TrailingStopActivationPct,
+		cfg.TrailActivationR,
+		cfg.TrailATRMultiplier,
+		cfg.TightTrailTriggerR,
+		cfg.TightTrailATRMultiplier,
+		cfg.ProfitTargetR,
 	)
 }
 
 func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	log.Printf(
-		"Backtest funnel bars_loaded=%d bars_in_window=%d train_runs=%d train_candidates=%d train_samples=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
+		"Backtest funnel bars_loaded=%d bars_in_window=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d fill_expiries=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
 		diag.BarsLoaded,
 		diag.BarsInWindow,
-		diag.TrainingRuns,
-		diag.TrainingCandidates,
-		diag.TrainingSamples,
 		diag.EntryCandidates,
 		diag.EntrySignals,
 		diag.EntryRiskApproved,
+		diag.FillExpiries,
 		diag.ExitChecks,
 		diag.ExitSignals,
 		diag.ExitRiskApproved,
@@ -326,6 +277,95 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	logReasonCounts("risk exit rejects", diag.ExitRiskRejects, diag.ExitSignals)
 	logEntrySamples(diag.EntrySignalSamples)
 	logEntryRejectSamples(diag)
+	logRiskRejectSamples(diag.RiskRejectSamples)
+	logFillExpirySamples(diag.FillExpirySamples)
+}
+
+func logBacktestSummary(start, end time.Time, result backtest.Result) {
+	for _, line := range backtestSummaryLines(start, end, result) {
+		log.Print(line)
+	}
+}
+
+func backtestSummaryLines(start, end time.Time, result backtest.Result) []string {
+	lines := []string{
+		"Backtest Summary",
+		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
+		fmt.Sprintf("  PnL          roi=%.0f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
+			result.NetPnL / result.StartingCapital * 100,
+			formatMoney(result.NetPnL),
+			formatMoney(result.RealizedPnL),
+			formatMoney(result.UnrealizedPnL),
+			formatMoney(result.EndingEquity),
+			result.MaxDrawdownPct,
+		),
+		fmt.Sprintf("  Trades       total=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f open_positions=%d",
+			result.Trades,
+			result.Wins,
+			result.Losses,
+			result.WinRate,
+			result.ProfitFactor,
+			result.OpenPositionsAtEnd,
+		),
+		fmt.Sprintf("  Avg PnL/R    avg_win=%s avg_loss=%s avg_win_r=%.2f avg_loss_r=%.2f",
+			formatMoney(result.AvgWinPnL),
+			formatMoney(result.AvgLossPnL),
+			result.AvgWinR,
+			result.AvgLossR,
+		),
+		fmt.Sprintf("  Exit Stats   avg_mfe_r=%.2f avg_mae_r=%.2f trailing_exit_pct=%.2f%% avg_time_to_stop_min=%.2f",
+			result.AvgMFER,
+			result.AvgMAER,
+			result.TrailingStopExitPct,
+			result.AvgTimeToStopMin,
+		),
+	}
+	lines = append(lines, formatBreakdownLines("  Regimes", result.Diagnostics.ByRegime)...)
+	lines = append(lines, formatBreakdownLines("  Setups", result.Diagnostics.BySetup)...)
+	lines = append(lines, formatBreakdownLines("  Sides", result.Diagnostics.BySide)...)
+	return lines
+}
+
+func formatBreakdownLines(title string, breakdowns map[string]backtest.TradeBreakdown) []string {
+	if len(breakdowns) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(breakdowns))
+	for key := range breakdowns {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := []string{title}
+	for _, key := range keys {
+		summary := breakdowns[key]
+		lines = append(lines, fmt.Sprintf("    %s trades=%d wins=%d losses=%d pnl=%s",
+			key,
+			summary.Trades,
+			summary.Wins,
+			summary.Losses,
+			formatMoney(summary.NetPnL),
+		))
+	}
+	return lines
+}
+
+func writeBacktestReport(path string, result backtest.Result) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	payload, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		return err
+	}
+	log.Printf("Backtest report written to %s", path)
+	return nil
 }
 
 func logReasonCounts(label string, counts map[string]int, total int) {
@@ -347,8 +387,8 @@ func logReasonCounts(label string, counts map[string]int, total int) {
 		return reasons[i].count > reasons[j].count
 	})
 	limit := len(reasons)
-	if limit > 5 {
-		limit = 5
+	if limit > 15 {
+		limit = 15
 	}
 	parts := make([]string, 0, limit)
 	for _, item := range reasons[:limit] {
@@ -368,13 +408,11 @@ func logEntrySamples(samples []backtest.EntrySample) {
 	parts := make([]string, 0, len(samples))
 	for _, sample := range samples {
 		parts = append(parts, fmt.Sprintf(
-			"%s@%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f",
+			"%s@%s price=%.2f score=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f",
 			sample.Symbol,
-			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
 			sample.Price,
 			sample.Score,
-			sample.PredictedReturnPct,
-			sample.RequiredPredictedRetPct,
 			sample.DistanceFromHighPct,
 			sample.AllowedDistanceHighPct,
 			sample.RelativeVolume,
@@ -411,8 +449,8 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 		return reasons[i].count > reasons[j].count
 	})
 	limit := len(reasons)
-	if limit > 3 {
-		limit = 3
+	if limit > 15 {
+		limit = 15
 	}
 	for _, item := range reasons[:limit] {
 		sample, ok := diag.EntryRejectSamples[item.reason]
@@ -420,14 +458,12 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 			continue
 		}
 		log.Printf(
-			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f pred=%.2f req=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
+			"Backtest reject sample reason=%s symbol=%s at=%s price=%.2f score=%.2f dist_high=%.2f/%.2f rvol=%.2f leader=%.4f rank=%d atr_pct=%.2f vwap_pct=%.2f breakout=%.2f setup=%s 1m=%.2f 3m=%.2f vr=%.2f squeeze=%t",
 			item.reason,
 			sample.Symbol,
-			sample.Timestamp.In(marketTimeLocation()).Format("2006-01-02 15:04"),
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
 			sample.Price,
 			sample.Score,
-			sample.PredictedReturnPct,
-			sample.RequiredPredictedRetPct,
 			sample.DistanceFromHighPct,
 			sample.AllowedDistanceHighPct,
 			sample.RelativeVolume,
@@ -447,25 +483,70 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 
 func logClosedTradeSamples(trades []domain.ClosedTrade) {
 	if len(trades) == 0 {
+		log.Print("Closed trades: none")
 		return
 	}
-	limit := len(trades)
-	if limit > 5 {
-		limit = 5
-	}
-	parts := make([]string, 0, limit)
-	for _, trade := range trades[:limit] {
-		parts = append(parts, fmt.Sprintf(
-			"%s qty=%d entry=%.2f exit=%.2f pnl=%.2f reason=%s opened=%s closed=%s",
+	log.Printf("Closed trades (%d):", len(trades))
+	for _, trade := range trades {
+		side := trade.Side
+		if side == "" {
+			side = domain.DirectionLong
+		}
+		log.Printf("  %s side=%s qty=%d entry=%s exit=%s pnl=%s reason=%s opened=%s closed=%s",
 			trade.Symbol,
+			side,
 			trade.Quantity,
-			trade.EntryPrice,
-			trade.ExitPrice,
-			trade.PnL,
+			formatMoney(trade.EntryPrice),
+			formatMoney(trade.ExitPrice),
+			formatMoney(trade.PnL),
 			trade.ExitReason,
-			trade.OpenedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
-			trade.ClosedAt.In(marketTimeLocation()).Format("2006-01-02 15:04"),
-		))
+			trade.OpenedAt.In(markethours.Location()).Format("2006-01-02 15:04"),
+			trade.ClosedAt.In(markethours.Location()).Format("2006-01-02 15:04"),
+		)
 	}
-	log.Printf("Backtest closed trades %s", strings.Join(parts, " | "))
+}
+
+func logRiskRejectSamples(samples []backtest.RiskRejectSample) {
+	if len(samples) == 0 {
+		return
+	}
+	log.Printf("Risk-rejected signals (%d):", len(samples))
+	for _, s := range samples {
+		log.Printf("  %s@%s side=%s price=%.2f qty=%d score=%.2f setup=%s reason=%s",
+			s.Symbol,
+			s.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
+			s.Side,
+			s.Price,
+			s.Quantity,
+			s.Score,
+			s.SetupType,
+			s.Reason,
+		)
+	}
+}
+
+func logFillExpirySamples(samples []backtest.FillExpirySample) {
+	if len(samples) == 0 {
+		return
+	}
+	log.Printf("Fill expirations (%d):", len(samples))
+	for _, s := range samples {
+		log.Printf("  %s side=%s limit=%.2f qty=%d setup=%s ordered=%s expired=%s",
+			s.Symbol,
+			s.Side,
+			s.LimitPrice,
+			s.Quantity,
+			s.SetupType,
+			s.OrderTime.In(markethours.Location()).Format("2006-01-02 15:04"),
+			s.ExpiryTime.In(markethours.Location()).Format("2006-01-02 15:04"),
+		)
+	}
+}
+
+func formatMoney(value float64) string {
+	sign := ""
+	if value > 0 {
+		sign = "+"
+	}
+	return fmt.Sprintf("%s%.2f", sign, value)
 }
