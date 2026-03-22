@@ -203,64 +203,125 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 	}
 
 	for _, profile := range profiles {
-		var variations []config.TradingConfig
-		var paramSets [][]float64
-		if baseCfg.OptimizerUseLHS {
-			variations, paramSets = o.generateLHSVariations(profile, variationsPerProfile, paramRanges)
+		if baseCfg.BayesianOptEnabled {
+			// Bayesian optimization: iterative suggest-evaluate loop
+			bayesOpt := NewBayesianOptimizer(paramRanges, baseCfg.BayesianExploration, 42+int64(len(profile)))
+			for iter := 0; iter < variationsPerProfile; iter++ {
+				combo++
+				paramVals := bayesOpt.SuggestNext()
+				cfg := o.applyParamsToConfig(profile, paramVals, paramRanges)
+
+				searchResult, err := backtest.Run(context.Background(), cfg, searchCfg)
+				if err != nil {
+					elapsed := time.Since(searchStart)
+					log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (search): %v | elapsed: %s",
+						combo, totalCombinations,
+						float64(combo)/float64(totalCombinations)*100,
+						profile, err, formatDuration(elapsed))
+					bayesOpt.AddEvaluation(paramVals, -1)
+					continue
+				}
+
+				validResult, err := backtest.Run(context.Background(), cfg, validCfg)
+				if err != nil {
+					elapsed := time.Since(searchStart)
+					log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (validation): %v | elapsed: %s",
+						combo, totalCombinations,
+						float64(combo)/float64(totalCombinations)*100,
+						profile, err, formatDuration(elapsed))
+					bayesOpt.AddEvaluation(paramVals, -1)
+					continue
+				}
+
+				score := o.scoreResult(searchResult, validResult)
+				bayesOpt.AddEvaluation(paramVals, score)
+
+				elapsed := time.Since(searchStart)
+				avgPerCombo := elapsed / time.Duration(combo)
+				remaining := time.Duration(totalCombinations-combo) * avgPerCombo
+
+				newBest := ""
+				if score > bestScore {
+					bestScore = score
+					newBest = " (new best)"
+				}
+
+				log.Printf("[%d/%d] (%.1f%%) profile=%-16s score=%.4f%s | elapsed: %s | eta: ~%s",
+					combo, totalCombinations,
+					float64(combo)/float64(totalCombinations)*100,
+					profile, score, newBest,
+					formatDuration(elapsed), formatDuration(remaining))
+
+				searchResults = append(searchResults, searchCandidate{
+					profile:     string(profile),
+					cfg:         cfg,
+					score:       score,
+					search:      searchResult,
+					valid:       validResult,
+					paramValues: paramVals,
+				})
+			}
 		} else {
-			variations = o.generateVariations(profile, variationsPerProfile)
-			paramSets = make([][]float64, len(variations))
-		}
+			// LHS or random sampling
+			var variations []config.TradingConfig
+			var paramSets [][]float64
+			if baseCfg.OptimizerUseLHS {
+				variations, paramSets = o.generateLHSVariations(profile, variationsPerProfile, paramRanges)
+			} else {
+				variations = o.generateVariations(profile, variationsPerProfile)
+				paramSets = make([][]float64, len(variations))
+			}
 
-		for vi, cfg := range variations {
-			combo++
+			for vi, cfg := range variations {
+				combo++
 
-			searchResult, err := backtest.Run(context.Background(), cfg, searchCfg)
-			if err != nil {
+				searchResult, err := backtest.Run(context.Background(), cfg, searchCfg)
+				if err != nil {
+					elapsed := time.Since(searchStart)
+					log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (search): %v | elapsed: %s",
+						combo, totalCombinations,
+						float64(combo)/float64(totalCombinations)*100,
+						profile, err, formatDuration(elapsed))
+					continue
+				}
+
+				validResult, err := backtest.Run(context.Background(), cfg, validCfg)
+				if err != nil {
+					elapsed := time.Since(searchStart)
+					log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (validation): %v | elapsed: %s",
+						combo, totalCombinations,
+						float64(combo)/float64(totalCombinations)*100,
+						profile, err, formatDuration(elapsed))
+					continue
+				}
+
+				score := o.scoreResult(searchResult, validResult)
+
 				elapsed := time.Since(searchStart)
-				log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (search): %v | elapsed: %s",
+				avgPerCombo := elapsed / time.Duration(combo)
+				remaining := time.Duration(totalCombinations-combo) * avgPerCombo
+
+				newBest := ""
+				if score > bestScore {
+					bestScore = score
+					newBest = " (new best)"
+				}
+
+				log.Printf("[%d/%d] (%.1f%%) profile=%-16s score=%.4f%s | elapsed: %s | eta: ~%s",
 					combo, totalCombinations,
 					float64(combo)/float64(totalCombinations)*100,
-					profile, err, formatDuration(elapsed))
-				continue
+					profile, score, newBest,
+					formatDuration(elapsed), formatDuration(remaining))
+
+				searchResults = append(searchResults, searchCandidate{
+					profile:     string(profile),
+					cfg:         cfg,
+					score:       score,
+					search:      searchResult,
+					valid:       validResult,
+					paramValues: paramSets[vi],
+				})
 			}
-
-			validResult, err := backtest.Run(context.Background(), cfg, validCfg)
-			if err != nil {
-				elapsed := time.Since(searchStart)
-				log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (validation): %v | elapsed: %s",
-					combo, totalCombinations,
-					float64(combo)/float64(totalCombinations)*100,
-					profile, err, formatDuration(elapsed))
-				continue
-			}
-
-			score := o.scoreResult(searchResult, validResult)
-
-			elapsed := time.Since(searchStart)
-			avgPerCombo := elapsed / time.Duration(combo)
-			remaining := time.Duration(totalCombinations-combo) * avgPerCombo
-
-			newBest := ""
-			if score > bestScore {
-				bestScore = score
-				newBest = " (new best)"
-			}
-
-			log.Printf("[%d/%d] (%.1f%%) profile=%-16s score=%.4f%s | elapsed: %s | eta: ~%s",
-				combo, totalCombinations,
-				float64(combo)/float64(totalCombinations)*100,
-				profile, score, newBest,
-				formatDuration(elapsed), formatDuration(remaining))
-
-			searchResults = append(searchResults, searchCandidate{
-				profile:     string(profile),
-				cfg:         cfg,
-				score:       score,
-				search:      searchResult,
-				valid:       validResult,
-				paramValues: paramSets[vi],
-			})
 		}
 	}
 
@@ -341,6 +402,38 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].Score > candidates[j].Score
 	})
+
+	// === Walk-Forward Validation ===
+	if baseCfg.WalkForwardEnabled && len(o.bars) > 0 && len(candidates) > 0 {
+		log.Printf("=== Walk-Forward Validation ===")
+		wfCfg := backtest.WalkForwardConfig{
+			ISWindowDays:  baseCfg.WFISWindowDays,
+			OOSWindowDays: baseCfg.WFOOSWindowDays,
+			PurgeGapDays:  baseCfg.WFPurgeGapDays,
+			StepDays:      baseCfg.WFStepDays,
+		}
+		wfResult := backtest.RunWalkForward(o.bars, wfCfg, candidates[0].Config)
+		if len(wfResult.Windows) > 0 {
+			candidates[0].SearchResult.WalkForward = &wfResult
+			log.Printf("Walk-forward: windows=%d oos_sharpe=%.4f efficiency=%.4f",
+				len(wfResult.Windows), wfResult.OOSSharpe, wfResult.Efficiency)
+		} else {
+			log.Printf("Walk-forward: insufficient data for windows")
+		}
+	}
+
+	// === CPCV Validation ===
+	if baseCfg.CPCVEnabled && len(o.bars) > 0 && len(candidates) > 0 {
+		log.Printf("=== CPCV Validation ===")
+		cpcvResult := backtest.RunCPCV(o.bars, baseCfg.CPCVGroups, baseCfg.CPCVPurgeGap, candidates[0].Config)
+		if cpcvResult.NumPaths > 0 {
+			candidates[0].SearchResult.CPCV = &cpcvResult
+			log.Printf("CPCV: paths=%d median_sharpe=%.4f p10=%.4f",
+				cpcvResult.NumPaths, cpcvResult.MedianSharpe, cpcvResult.Percentile10)
+		} else {
+			log.Printf("CPCV: no valid paths generated")
+		}
+	}
 
 	// === Deflated Sharpe Ratio (Change 6) ===
 	dsr := 0.0
@@ -436,6 +529,33 @@ func LatinHypercubeSample(params []ParameterRange, numSamples int, rng *rand.Ran
 		}
 	}
 	return samples
+}
+
+// applyParamsToConfig creates a TradingConfig from parameter values (used by Bayesian optimizer).
+func (o *Optimizer) applyParamsToConfig(profile config.StrategyProfile, params []float64, paramRanges []ParameterRange) config.TradingConfig {
+	cfg := config.DefaultTradingConfig()
+	cfg.StrategyProfileName = string(profile)
+	if len(params) >= 8 {
+		cfg.MinEntryScore = params[0]
+		cfg.ShortMinEntryScore = params[1]
+		cfg.RiskPerTradePct = params[2]
+		cfg.TrailActivationR = params[3]
+		cfg.TrailATRMultiplier = params[4]
+		cfg.ProfitTargetR = params[5]
+		cfg.MinGapPercent = params[6]
+		cfg.MinRelativeVolume = params[7]
+	}
+	switch profile {
+	case config.StrategyProfileHighConviction:
+		cfg.MinEntryScore = math.Max(cfg.MinEntryScore, 3.0)
+		cfg.MaxOpenPositions = 3
+		cfg.RiskPerTradePct = math.Max(cfg.RiskPerTradePct, 0.008)
+	case config.StrategyProfileContinuation:
+		cfg.MinEntryScore = math.Min(cfg.MinEntryScore, 3.0)
+		cfg.TrailActivationR = math.Min(cfg.TrailActivationR, 1.0)
+	}
+	cfg.StrategyProfileVersion = fmt.Sprintf("opt-%s-bayes-%d", o.asOf.Format("20060102"), len(params))
+	return cfg
 }
 
 func (o *Optimizer) generateLHSVariations(profile config.StrategyProfile, count int, paramRanges []ParameterRange) ([]config.TradingConfig, [][]float64) {

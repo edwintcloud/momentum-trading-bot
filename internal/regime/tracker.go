@@ -25,9 +25,10 @@ type barPoint struct {
 
 // Tracker maintains a benchmark-driven market regime snapshot.
 type Tracker struct {
-	config     config.TradingConfig
-	runtime    *runtime.State
-	benchmarks map[string]*benchmarkState
+	config      config.TradingConfig
+	runtime     *runtime.State
+	benchmarks  map[string]*benchmarkState
+	hmmDetector *HMMRegimeDetector
 }
 
 // NewTracker creates a regime tracker.
@@ -40,11 +41,15 @@ func NewTracker(cfg config.TradingConfig, runtimeState *runtime.State) *Tracker 
 		}
 		benchmarks[normalized] = &benchmarkState{}
 	}
-	return &Tracker{
+	t := &Tracker{
 		config:     cfg,
 		runtime:    runtimeState,
 		benchmarks: benchmarks,
 	}
+	if cfg.HMMRegimeEnabled {
+		t.hmmDetector = NewHMMRegimeDetector()
+	}
+	return t
 }
 
 // IsBenchmark returns true if the symbol is a regime benchmark.
@@ -107,6 +112,15 @@ func (t *Tracker) UpdateTick(tick domain.Tick) {
 	}
 	state.bars = trimmed
 
+	// Feed HMM detector with benchmark returns
+	if t.hmmDetector != nil && len(state.bars) >= 2 {
+		prev := state.bars[len(state.bars)-2].close
+		if prev > 0 {
+			ret := (tick.Price - prev) / prev
+			t.hmmDetector.Update(ret)
+		}
+	}
+
 	// Recompute regime
 	t.recompute()
 }
@@ -160,6 +174,16 @@ func (t *Tracker) recompute() {
 	}
 
 	regimeLabel, confidence := domain.ClassifyRegime(bullish, bearish, total)
+
+	// Override with HMM regime when enabled and confident
+	if t.hmmDetector != nil {
+		hmmRegime, hmmConf := t.hmmDetector.CurrentRegime()
+		if hmmConf >= t.config.HMMConfidenceMin {
+			regimeLabel = hmmRegime
+			confidence = hmmConf
+		}
+	}
+
 	t.runtime.SetMarketRegime(domain.MarketRegimeSnapshot{
 		Regime:     regimeLabel,
 		Confidence: confidence,
