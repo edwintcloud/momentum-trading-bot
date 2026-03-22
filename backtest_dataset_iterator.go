@@ -293,3 +293,20 @@ func (h *historicalBarHeap) Pop() any {
 	*h = old[:last]
 	return item
 }
+
+func drainHistoricalDataset(dataset historicalDataset) ([]backtest.InputBar, error) {
+	iter := newHistoricalDatasetIterator(dataset)
+	defer iter.Close()
+	var bars []backtest.InputBar
+	for {
+		bar, ok, err := iter.Next()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		bars = append(bars, bar)
+	}
+	return bars, nil
+}

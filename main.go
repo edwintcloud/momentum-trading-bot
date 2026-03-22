@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
@@ -40,7 +40,9 @@ func main() {
 			}
 			return
 		case "optimize":
-			runOptimize(os.Args[2:])
+			if err := runOptimize(os.Args[2:]); err != nil {
+				log.Fatalf("optimize: %v", err)
+			}
 			return
 		}
 	}
@@ -276,40 +278,91 @@ func runLive() {
 	cancel()
 }
 
-func runOptimize(args []string) {
-	fs := flag.NewFlagSet("optimize", flag.ExitOnError)
+func runOptimize(args []string) error {
+	fs := flag.NewFlagSet("optimize", flag.ContinueOnError)
 	asOfStr := fs.String("as-of", "", "as-of date (YYYY-MM-DD)")
-	dataPath := fs.String("data", "", "path to CSV data file")
+	startStr := fs.String("start", "", "explicit lookback start date (YYYY-MM-DD); defaults to as-of minus 6 months")
+	dataPath := fs.String("data", "", "path to CSV data file (optional; fetches from Alpaca when omitted)")
 	outDir := fs.String("out", ".cache/optimizer", "output directory")
-	fs.Parse(args)
-
-	if *asOfStr == "" {
-		log.Fatal("optimize: -as-of is required")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	asOf, err := time.Parse("2006-01-02", *asOfStr)
+	if *asOfStr == "" {
+		return fmt.Errorf("-as-of is required")
+	}
+
+	asOf, err := time.ParseInLocation("2006-01-02", *asOfStr, markethours.Location())
 	if err != nil {
-		log.Fatalf("optimize: invalid as-of date: %v", err)
+		return fmt.Errorf("invalid as-of date: %v", err)
 	}
 
 	lookbackStart := asOf.AddDate(0, -6, 0)
-
-	if *dataPath == "" {
-		log.Fatal("optimize: -data is required")
+	if *startStr != "" {
+		lookbackStart, err = time.ParseInLocation("2006-01-02", *startStr, markethours.Location())
+		if err != nil {
+			return fmt.Errorf("invalid start date: %v", err)
+		}
 	}
-	bars, err := backtest.LoadInputBars(*dataPath, lookbackStart, asOf)
-	if err != nil {
-		log.Fatalf("optimize: load csv: %v", err)
+
+	var bars []backtest.InputBar
+
+	if *dataPath != "" {
+		bars, err = backtest.LoadInputBars(*dataPath, lookbackStart, asOf)
+		if err != nil {
+			return fmt.Errorf("load csv: %v", err)
+		}
+	} else {
+		setupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		alpacaCfg, err := config.LoadBacktestAlpacaConfig(nil)
+		if err != nil {
+			return err
+		}
+		client := alpaca.NewClient(alpacaCfg)
+
+		historicalRateLimit := 0
+		if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
+			historicalRateLimit = capabilities.HistoricalRateLimitPerMin
+			log.Printf("Optimize using Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
+		} else {
+			log.Printf("Optimize capability detection failed, using defaults: %v", capErr)
+		}
+
+		symbols, err := resolveBacktestSymbols(setupCtx, client)
+		if err != nil {
+			return err
+		}
+
+		prevDayStart := lookbackStart.AddDate(0, 0, -1)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, asOf, historicalRateLimit)
+		log.Printf("Optimize historical fetch timeout=%s coverage start=%s end=%s", fetchTimeout, formatLogTime(prevDayStart), formatLogTime(asOf))
+
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer fetchCancel()
+
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, asOf, historicalRateLimit)
+		if err != nil {
+			return err
+		}
+
+		bars, err = drainHistoricalDataset(dataset)
+		if err != nil {
+			return fmt.Errorf("drain historical dataset: %v", err)
+		}
+		log.Printf("Optimize historical dataset ready bars=%d symbols=%d", len(bars), len(symbols))
 	}
 
 	opt := optimizer.NewOptimizer(bars, asOf, *outDir)
 	report, err := opt.Run()
 	if err != nil {
-		log.Fatalf("optimize: %v", err)
+		return err
 	}
 
 	output, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(output))
+	return nil
 }
 
 func brokerCashValue(acct alpaca.Account) (float64, bool) {
@@ -326,10 +379,3 @@ func brokerAccountValues(acct alpaca.Account) (float64, float64, bool) {
 	return 0, 0, false
 }
 
-// Ensure imports are used.
-var (
-	_ = context.Background
-	_ = flag.NewFlagSet
-	_ = strings.TrimSpace
-	_ = backtest.LoadInputBars
-)
