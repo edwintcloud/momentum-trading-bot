@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -277,7 +278,11 @@ func runBacktest(args []string) {
 	fs := flag.NewFlagSet("backtest", flag.ExitOnError)
 	startStr := fs.String("start", "", "start date (YYYY-MM-DD)")
 	endStr := fs.String("end", "", "end date (YYYY-MM-DD)")
-	dataPath := fs.String("data", "", "path to CSV data file")
+	dataPath := fs.String("data", "", "path to CSV data file (optional — fetches from Alpaca if omitted)")
+	symbolsStr := fs.String("symbols", "", "comma-separated symbols to fetch from Alpaca (e.g. AAPL,TSLA,SPY)")
+	timeframe := fs.String("timeframe", "1Day", "bar timeframe: 1Min, 5Min, 15Min, 1Hour, 1Day")
+	cacheDir := fs.String("cache", ".cache/bars", "directory for cached bar data")
+	clearCache := fs.Bool("clear-cache", false, "clear cached bar data before fetching")
 	fs.Parse(args)
 
 	if *startStr == "" {
@@ -297,16 +302,47 @@ func runBacktest(args []string) {
 		}
 	}
 
+	if *clearCache {
+		if err := backtest.ClearCache(*cacheDir); err != nil {
+			log.Printf("backtest: clear cache warning: %v", err)
+		} else {
+			log.Println("backtest: cache cleared")
+		}
+	}
+
 	tradingCfg := config.DefaultTradingConfig()
 
 	var bars []domain.Tick
 	if *dataPath != "" {
+		// Load from local CSV
 		bars, err = backtest.LoadCSV(*dataPath, start, end)
 		if err != nil {
 			log.Fatalf("backtest: load csv: %v", err)
 		}
 	} else {
-		log.Fatal("backtest: -data path to CSV is required (Alpaca historical fetch not yet wired)")
+		// Fetch from Alpaca (with caching)
+		symbols := parseSymbols(*symbolsStr)
+		if len(symbols) == 0 {
+			log.Fatal("backtest: either -data or -symbols is required")
+		}
+
+		appCfg, err := config.LoadAppConfig()
+		if err != nil {
+			log.Fatalf("backtest: %v (set ALPACA_API_KEY and ALPACA_API_SECRET)", err)
+		}
+		client := alpaca.NewClient(appCfg)
+		fetcher := backtest.NewFetcher(client)
+
+		bars, err = fetcher.Fetch(context.Background(), backtest.FetchRequest{
+			Symbols:   symbols,
+			Start:     start,
+			End:       end,
+			Timeframe: *timeframe,
+			CacheDir:  *cacheDir,
+		})
+		if err != nil {
+			log.Fatalf("backtest: fetch: %v", err)
+		}
 	}
 
 	engine := backtest.NewEngine(tradingCfg)
@@ -319,7 +355,10 @@ func runBacktest(args []string) {
 func runOptimize(args []string) {
 	fs := flag.NewFlagSet("optimize", flag.ExitOnError)
 	asOfStr := fs.String("as-of", "", "as-of date (YYYY-MM-DD)")
-	dataPath := fs.String("data", "", "path to CSV data file")
+	dataPath := fs.String("data", "", "path to CSV data file (optional — fetches from Alpaca if omitted)")
+	symbolsStr := fs.String("symbols", "", "comma-separated symbols to fetch from Alpaca")
+	timeframe := fs.String("timeframe", "1Day", "bar timeframe: 1Min, 5Min, 15Min, 1Hour, 1Day")
+	cacheDir := fs.String("cache", ".cache/bars", "directory for cached bar data")
 	outDir := fs.String("out", ".cache/optimizer", "output directory")
 	fs.Parse(args)
 
@@ -332,14 +371,38 @@ func runOptimize(args []string) {
 		log.Fatalf("optimize: invalid as-of date: %v", err)
 	}
 
+	lookbackStart := asOf.AddDate(0, -6, 0)
+
 	var bars []domain.Tick
 	if *dataPath != "" {
-		bars, err = backtest.LoadCSV(*dataPath, asOf.AddDate(0, -6, 0), asOf)
+		bars, err = backtest.LoadCSV(*dataPath, lookbackStart, asOf)
 		if err != nil {
 			log.Fatalf("optimize: load csv: %v", err)
 		}
 	} else {
-		log.Fatal("optimize: -data path to CSV is required")
+		// Fetch from Alpaca (with caching)
+		symbols := parseSymbols(*symbolsStr)
+		if len(symbols) == 0 {
+			log.Fatal("optimize: either -data or -symbols is required")
+		}
+
+		appCfg, err := config.LoadAppConfig()
+		if err != nil {
+			log.Fatalf("optimize: %v (set ALPACA_API_KEY and ALPACA_API_SECRET)", err)
+		}
+		client := alpaca.NewClient(appCfg)
+		fetcher := backtest.NewFetcher(client)
+
+		bars, err = fetcher.Fetch(context.Background(), backtest.FetchRequest{
+			Symbols:   symbols,
+			Start:     lookbackStart,
+			End:       asOf,
+			Timeframe: *timeframe,
+			CacheDir:  *cacheDir,
+		})
+		if err != nil {
+			log.Fatalf("optimize: fetch: %v", err)
+		}
 	}
 
 	opt := optimizer.NewOptimizer(bars, asOf, *outDir)
@@ -350,4 +413,19 @@ func runOptimize(args []string) {
 
 	output, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(output))
+}
+
+// parseSymbols splits a comma-separated symbol string into a clean slice.
+func parseSymbols(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var symbols []string
+	for _, sym := range strings.Split(s, ",") {
+		sym = strings.TrimSpace(strings.ToUpper(sym))
+		if sym != "" {
+			symbols = append(symbols, sym)
+		}
+	}
+	return symbols
 }

@@ -30,5 +30,7 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 
-# Data
+# Data & Cache
 *.log
+.cache/
+.data/

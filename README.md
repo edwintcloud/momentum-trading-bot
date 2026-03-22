@@ -101,14 +101,30 @@ cd ..
 # Live trading mode
 go run . live
 
-# Backtest mode
+# Backtest — fetch bars from Alpaca (auto-cached to .cache/bars/)
+go run . backtest -start 2025-01-01 -end 2025-06-01 -symbols AAPL,TSLA,NVDA,META,SPY
+
+# Backtest — with 5-minute bars
+go run . backtest -start 2025-01-01 -end 2025-06-01 -symbols AAPL -timeframe 5Min
+
+# Backtest — from local CSV (legacy)
 go run . backtest -start 2025-01-01 -end 2025-06-01 -data path/to/bars.csv
 
-# Walk-forward optimization
+# Walk-forward optimization — fetch from Alpaca
+go run . optimize -as-of 2025-06-01 -symbols AAPL,TSLA,NVDA,META,SPY
+
+# Walk-forward optimization — from local CSV
 go run . optimize -as-of 2025-06-01 -data path/to/bars.csv
+
+# Clear the bar cache
+go run . backtest -start 2025-01-01 -symbols AAPL -clear-cache
 ```
 
 The dashboard will be available at `http://localhost:8080`.
+
+### Historical Data Caching
+
+When fetching bars from Alpaca, the system automatically caches results to `.cache/bars/` as CSV files. Subsequent runs with the same symbol, timeframe, and date range load instantly from cache without hitting the API. Use `-clear-cache` to force a fresh fetch, or `-cache /path/to/dir` to use a custom cache directory.
 
 ### Docker
 

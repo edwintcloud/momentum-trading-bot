@@ -174,20 +174,41 @@ type HistoricalBar struct {
 	Low       float64   `json:"l"`
 	Close     float64   `json:"c"`
 	Volume    int64     `json:"v"`
+	TradeCount int64    `json:"n"`
+	VWAP      float64   `json:"vw"`
 }
 
-// GetHistoricalBars fetches historical bars for a symbol.
+// GetHistoricalBars fetches historical bars for a single symbol with automatic pagination.
 func (c *Client) GetHistoricalBars(ctx context.Context, symbol string, start, end time.Time, timeframe string) ([]HistoricalBar, error) {
-	url := fmt.Sprintf("%s/v2/stocks/%s/bars?start=%s&end=%s&timeframe=%s&limit=10000",
-		c.dataURL, symbol,
-		start.Format(time.RFC3339), end.Format(time.RFC3339),
-		timeframe)
+	var allBars []HistoricalBar
+	pageToken := ""
 
-	var result struct {
-		Bars []HistoricalBar `json:"bars"`
+	for {
+		url := fmt.Sprintf("%s/v2/stocks/%s/bars?start=%s&end=%s&timeframe=%s&limit=10000&sort=asc&adjustment=split",
+			c.dataURL, symbol,
+			start.Format(time.RFC3339), end.Format(time.RFC3339),
+			timeframe)
+		if pageToken != "" {
+			url += "&page_token=" + pageToken
+		}
+
+		var result struct {
+			Bars          []HistoricalBar `json:"bars"`
+			NextPageToken string          `json:"next_page_token"`
+		}
+		if err := c.get(ctx, url, &result); err != nil {
+			return allBars, fmt.Errorf("fetch bars for %s: %w", symbol, err)
+		}
+
+		allBars = append(allBars, result.Bars...)
+
+		if result.NextPageToken == "" {
+			break
+		}
+		pageToken = result.NextPageToken
 	}
-	err := c.get(ctx, url, &result)
-	return result.Bars, err
+
+	return allBars, nil
 }
 
 func (c *Client) get(ctx context.Context, url string, dest interface{}) error {
