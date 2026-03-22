@@ -30,6 +30,9 @@ type Engine struct {
 	lastMinuteKey      string
 	minuteApproved     int
 	CorrelationTracker *CorrelationTracker
+	VaRCalc            *VaRCalculator
+	GARCHForecaster    *GARCHForecaster
+	RiskBudget         *RiskBudgetManager
 }
 
 // NewEngine creates a new risk engine.
@@ -38,7 +41,7 @@ func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, ru
 	if len(shortable) > 0 {
 		checker = shortable[0]
 	}
-	return &Engine{
+	e := &Engine{
 		config:             cfg,
 		portfolio:          portfolioManager,
 		runtime:            runtimeState,
@@ -46,6 +49,16 @@ func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, ru
 		dayKey:             "",
 		CorrelationTracker: NewCorrelationTracker(cfg.CorrelationWindowSize),
 	}
+	if cfg.VaREnabled {
+		e.VaRCalc = NewVaRCalculator(cfg.VaRConfidenceLevel, cfg.VaRMethod, 390)
+	}
+	if cfg.GARCHEnabled {
+		e.GARCHForecaster = NewGARCHForecaster(cfg.GARCHAlpha, cfg.GARCHBeta, cfg.GARCHLongRunVar)
+	}
+	if cfg.DynamicRiskBudgetEnabled {
+		e.RiskBudget = NewRiskBudgetManager(cfg.TargetVolAnnualized, cfg.DailyRiskBudgetPct)
+	}
+	return e
 }
 
 // Start processes trade signals and emits approved order requests.
@@ -165,6 +178,14 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 
+	// VaR limit check: halt new entries if intraday VaR exceeds daily budget
+	if e.config.VaREnabled && e.VaRCalc != nil {
+		if e.VaRCalc.ExceedsDailyLimit(currentEquity, e.config.VaRDailyLimitPct) {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: intraday VaR exceeds daily limit (%.2f%%)", signal.Symbol, e.config.VaRDailyLimitPct*100))
+			return domain.OrderRequest{}, false, "var-limit-exceeded"
+		}
+	}
+
 	// Phase 2 Change 1: Portfolio heat gate
 	if e.config.PortfolioHeatEnabled {
 		currentHeat := e.portfolio.PortfolioHeat()
@@ -238,6 +259,18 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			return domain.OrderRequest{}, false, "position-size-cap"
 		}
 		signal.Quantity = newQty
+	}
+
+	// Dynamic risk budget position cap
+	if e.config.DynamicRiskBudgetEnabled && e.RiskBudget != nil && signal.Price > 0 {
+		intradayVol := e.RiskBudget.IntradayRealizedVol(30)
+		if intradayVol > 0 {
+			remainingBars := markethours.RemainingMinutes(signal.Timestamp)
+			maxQty := e.RiskBudget.MaxPositionFromBudget(currentEquity, remainingBars, 390, intradayVol, signal.Price)
+			if maxQty > 0 && maxQty < signal.Quantity {
+				signal.Quantity = maxQty
+			}
+		}
 	}
 
 	e.approved++
