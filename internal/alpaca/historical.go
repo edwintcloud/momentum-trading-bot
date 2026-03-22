@@ -37,14 +37,22 @@ func (c *Client) ListEquitySymbols(ctx context.Context, activeOnly bool) ([]stri
 		Status   string `json:"status"`
 		Exchange string `json:"exchange"`
 		Class    string `json:"class"`
+		Tradable bool   `json:"tradable"`
 	}
-	url := c.baseURL + "/v2/assets?status=active&asset_class=us_equity"
+	status := "all"
+	if activeOnly {
+		status = "active"
+	}
+	url := fmt.Sprintf("%s/v2/assets?status=%s&asset_class=us_equity", c.baseURL, status)
 	if err := c.get(ctx, url, &assets); err != nil {
 		return nil, fmt.Errorf("list equity symbols: %w", err)
 	}
 
 	symbols := make([]string, 0, len(assets))
 	for _, a := range assets {
+		if !a.Tradable {
+			continue
+		}
 		exchange := strings.ToUpper(a.Exchange)
 		if exchange == "NASDAQ" || exchange == "NYSE" {
 			symbols = append(symbols, strings.ToUpper(a.Symbol))
@@ -86,16 +94,10 @@ func (c *Client) GetHistoricalBarsPage(ctx context.Context, symbols []string, st
 
 // DetectMarketDataCapabilities probes the data plan for rate limit info.
 func (c *Client) DetectMarketDataCapabilities(ctx context.Context) (MarketDataCapabilities, error) {
-	if c.paper {
-		return MarketDataCapabilities{HistoricalRateLimitPerMin: 200}, nil
-	}
-	return MarketDataCapabilities{HistoricalRateLimitPerMin: 600}, nil
+	return MarketDataCapabilities{HistoricalRateLimitPerMin: 1000}, nil
 }
 
 // DataFeed returns the data feed name based on the account type.
 func (c *Client) DataFeed() string {
-	if c.paper {
-		return "iex"
-	}
 	return "sip"
 }

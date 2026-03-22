@@ -178,7 +178,7 @@ func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) 
 }
 
 func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]string, error) {
-	symbols, err := client.ListEquitySymbols(ctx, true)
+	symbols, err := client.ListEquitySymbols(ctx, false)
 	if err != nil {
 		return nil, err
 	}

@@ -54,7 +54,7 @@ func prepareHistoricalDataset(ctx context.Context, client *alpaca.Client, symbol
 	defer limiter.Stop()
 	feed := client.DataFeed()
 	if strings.TrimSpace(feed) == "" {
-		feed = "iex"
+		feed = "sip"
 	}
 	log.Printf("Historical fetch starting jobs=%d symbols=%d workers=%d window=%s..%s", len(jobs), len(symbols), workerCount, start.Format(time.RFC3339), end.Format(time.RFC3339))
 
