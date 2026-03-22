@@ -97,6 +97,26 @@ func (c *Client) DetectMarketDataCapabilities(ctx context.Context) (MarketDataCa
 	return MarketDataCapabilities{HistoricalRateLimitPerMin: 1000}, nil
 }
 
+// ListMostActiveSymbols returns the top N symbols by volume from Alpaca's screener.
+// Returns nil, nil if the endpoint is unavailable.
+func (c *Client) ListMostActiveSymbols(ctx context.Context, top int) ([]string, error) {
+	url := fmt.Sprintf("%s/v1beta1/screener/stocks/most-actives?by=volume&top=%d", c.dataURL, top)
+	var result struct {
+		MostActives []struct {
+			Symbol string `json:"symbol"`
+			Volume int64  `json:"volume"`
+		} `json:"most_actives"`
+	}
+	if err := c.get(ctx, url, &result); err != nil {
+		return nil, err
+	}
+	symbols := make([]string, len(result.MostActives))
+	for i, a := range result.MostActives {
+		symbols[i] = strings.ToUpper(a.Symbol)
+	}
+	return symbols, nil
+}
+
 // DataFeed returns the data feed name based on the account type.
 func (c *Client) DataFeed() string {
 	return "sip"

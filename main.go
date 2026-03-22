@@ -364,9 +364,10 @@ func resolveStreamSymbols(ctx context.Context, client *alpaca.Client, cfg config
 func runOptimize(args []string) error {
 	fs := flag.NewFlagSet("optimize", flag.ContinueOnError)
 	asOfStr := fs.String("as-of", "", "as-of date (YYYY-MM-DD)")
-	startStr := fs.String("start", "", "explicit lookback start date (YYYY-MM-DD); defaults to as-of minus 6 months")
+	startStr := fs.String("start", "", "explicit lookback start date (YYYY-MM-DD); defaults to as-of minus 3 months")
 	dataPath := fs.String("data", "", "path to CSV data file (optional; fetches from Alpaca when omitted)")
 	outDir := fs.String("out", ".cache/optimizer", "output directory")
+	maxSymbols := fs.Int("max-symbols", 500, "maximum symbols for optimization (0=unlimited)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -380,13 +381,14 @@ func runOptimize(args []string) error {
 		return fmt.Errorf("invalid as-of date: %v", err)
 	}
 
-	lookbackStart := asOf.AddDate(0, -6, 0)
+	lookbackStart := asOf.AddDate(0, -3, 0)
 	if *startStr != "" {
 		lookbackStart, err = time.ParseInLocation("2006-01-02", *startStr, markethours.Location())
 		if err != nil {
 			return fmt.Errorf("invalid start date: %v", err)
 		}
 	}
+	log.Printf("Optimize lookback: %s to %s", lookbackStart.Format("2006-01-02"), asOf.Format("2006-01-02"))
 
 	var bars []backtest.InputBar
 
@@ -418,6 +420,21 @@ func runOptimize(args []string) error {
 			return err
 		}
 
+		if *maxSymbols > 0 && len(symbols) > *maxSymbols {
+			screened, screenErr := client.ListMostActiveSymbols(setupCtx, *maxSymbols)
+			if screenErr == nil && len(screened) > 0 {
+				log.Printf("Optimize using top %d symbols (screener=true, was %d)", len(screened), len(symbols))
+				symbols = screened
+			} else {
+				if screenErr != nil {
+					log.Printf("Optimize screener unavailable: %v; truncating to %d symbols", screenErr, *maxSymbols)
+				} else {
+					log.Printf("Optimize screener returned empty; truncating to %d symbols", *maxSymbols)
+				}
+				symbols = symbols[:*maxSymbols]
+			}
+		}
+
 		prevDayStart := lookbackStart.AddDate(0, 0, -1)
 		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, asOf, historicalRateLimit)
 		log.Printf("Optimize historical fetch timeout=%s coverage start=%s end=%s", fetchTimeout, formatLogTime(prevDayStart), formatLogTime(asOf))
@@ -430,11 +447,16 @@ func runOptimize(args []string) error {
 			return err
 		}
 
-		bars, err = drainHistoricalDataset(dataset)
+		log.Printf("Optimize historical dataset ready shards=%d symbols=%d (streaming mode)", len(dataset.jobs), len(symbols))
+		iterFactory := newDatasetIteratorFactory(dataset)
+		opt := optimizer.NewStreamingOptimizer(iterFactory, lookbackStart, asOf, *outDir)
+		report, err := opt.Run()
 		if err != nil {
-			return fmt.Errorf("drain historical dataset: %v", err)
+			return err
 		}
-		log.Printf("Optimize historical dataset ready bars=%d symbols=%d", len(bars), len(symbols))
+		output, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(output))
+		return nil
 	}
 
 	opt := optimizer.NewOptimizer(bars, asOf, *outDir)

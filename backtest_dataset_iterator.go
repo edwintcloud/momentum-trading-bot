@@ -294,6 +294,41 @@ func (h *historicalBarHeap) Pop() any {
 	return item
 }
 
+// newDatasetIteratorFactory returns a function that creates time-bounded
+// streaming iterators from the dataset's on-disk gzip cache files.
+// Each call opens fresh file handles, so multiple iterators can be created
+// for different time ranges without loading the full dataset into RAM.
+func newDatasetIteratorFactory(dataset historicalDataset) func(start, end time.Time) (backtest.InputBarIterator, error) {
+	return func(start, end time.Time) (backtest.InputBarIterator, error) {
+		filtered := filterJobsByTimeRange(dataset.jobs, start, end)
+		if len(filtered) == 0 {
+			return &emptyIterator{}, nil
+		}
+		return newHistoricalDatasetIterator(historicalDataset{
+			feed: dataset.feed,
+			jobs: filtered,
+		}), nil
+	}
+}
+
+// filterJobsByTimeRange returns jobs whose time range overlaps [start, end).
+func filterJobsByTimeRange(jobs []historicalFetchJob, start, end time.Time) []historicalFetchJob {
+	out := make([]historicalFetchJob, 0, len(jobs))
+	for _, job := range jobs {
+		if job.end.Before(start) || job.start.After(end) {
+			continue
+		}
+		out = append(out, job)
+	}
+	return out
+}
+
+// emptyIterator is an InputBarIterator that returns no bars.
+type emptyIterator struct{}
+
+func (e *emptyIterator) Next() (backtest.InputBar, bool, error) { return backtest.InputBar{}, false, nil }
+func (e *emptyIterator) Close() error                           { return nil }
+
 func drainHistoricalDataset(dataset historicalDataset) ([]backtest.InputBar, error) {
 	iter := newHistoricalDatasetIterator(dataset)
 	defer iter.Close()

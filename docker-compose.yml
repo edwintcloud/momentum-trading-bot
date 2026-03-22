@@ -31,6 +31,8 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-momentum}:${POSTGRES_PASSWORD:-momentum}@postgres:5432/${POSTGRES_DB:-momentum}?sslmode=disable
       PORT: 8080
+    volumes:
+      - ./.cache:/app/.cache
 
 volumes:
   pgdata:
