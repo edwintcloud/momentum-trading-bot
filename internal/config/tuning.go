@@ -561,6 +561,61 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.AdaptiveLimitMaxSlippageBps = 20.0
 	}
 
+	// Portfolio construction: MVO defaults (disabled by default)
+	if cfg.MVORiskAversion == 0 {
+		cfg.MVORiskAversion = 1.0
+	}
+	if cfg.MVOMaxPositionPct == 0 {
+		cfg.MVOMaxPositionPct = 0.05
+	}
+	if cfg.MVOMaxSectorPct == 0 {
+		cfg.MVOMaxSectorPct = 0.25
+	}
+	if cfg.LedoitWolfShrinkage == 0 {
+		cfg.LedoitWolfShrinkage = 0.5
+	}
+
+	// Portfolio construction: Risk parity defaults (disabled by default)
+	if cfg.RiskParityEWMALambda == 0 {
+		cfg.RiskParityEWMALambda = 0.94
+	}
+	if cfg.RiskParityRebalanceMinutes == 0 {
+		cfg.RiskParityRebalanceMinutes = 30
+	}
+	if cfg.RiskParityDeviationThreshold == 0 {
+		cfg.RiskParityDeviationThreshold = 0.20
+	}
+
+	// Portfolio construction: Factor-neutral defaults (disabled by default)
+	if cfg.FactorBetaWindow == 0 {
+		cfg.FactorBetaWindow = 60
+	}
+	if cfg.MaxNetBeta == 0 {
+		cfg.MaxNetBeta = 0.30
+	}
+
+	// Portfolio construction: HHI defaults (disabled by default)
+	if cfg.HHIMaxTarget == 0 {
+		cfg.HHIMaxTarget = 0.10
+	}
+	if cfg.HHIAlertThreshold == 0 {
+		cfg.HHIAlertThreshold = 0.15
+	}
+
+	// Portfolio construction: Long-short balancing defaults (disabled by default)
+	if cfg.DollarNeutralTolerance == 0 {
+		cfg.DollarNeutralTolerance = 0.05
+	}
+	if cfg.BetaNeutralThreshold == 0 {
+		cfg.BetaNeutralThreshold = 0.30
+	}
+	if cfg.MaxGrossLeverage == 0 {
+		cfg.MaxGrossLeverage = 2.0
+	}
+	if cfg.SectorNeutralTolerance == 0 {
+		cfg.SectorNeutralTolerance = 0.10
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 
