@@ -105,6 +105,36 @@ type TradingConfig struct {
 	// Phase 2: Drawdown-based risk reduction (Change 7)
 	DrawdownRiskEnabled   bool
 	MaxAcceptableDrawdown float64
+
+	// Phase 3: RSI overbought/oversold filter (Change 1)
+	RSIFilterEnabled       bool
+	RSIOverboughtThreshold float64
+	RSIOversoldThreshold   float64
+
+	// Phase 3: Time-of-day adaptive parameters (Change 3)
+	TimeOfDayEnabled bool
+
+	// Phase 3: Partial exit framework (Change 4)
+	PartialExitsEnabled  bool
+	PartialTrigger1R     float64
+	PartialTrigger1Pct   float64
+	PartialTrigger2R     float64
+	PartialTrigger2Pct   float64
+	MoveStopAfterPartial bool
+
+	// Phase 3: Adaptive trailing stops (Change 5)
+	AdaptiveTrailEnabled bool
+
+	// Phase 3: Mean-reversion overlay (Change 6)
+	MeanReversionEnabled bool
+	MeanReversionMaxADX  float64
+	BollingerPeriod      int
+	BollingerK           float64
+
+	// Phase 3: Percentage-based slippage (Change 7)
+	SlippageLiquidBps   float64
+	SlippageMidBps      float64
+	SlippageIlliquidBps float64
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

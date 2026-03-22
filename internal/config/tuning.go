@@ -267,6 +267,72 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.MaxAcceptableDrawdown = 0.15
 	}
 
+	// Phase 3: RSI filter defaults
+	if !cfg.RSIFilterEnabled && cfg.RSIOverboughtThreshold == 0 {
+		cfg.RSIFilterEnabled = true
+	}
+	if cfg.RSIOverboughtThreshold == 0 {
+		cfg.RSIOverboughtThreshold = 80.0
+	}
+	if cfg.RSIOversoldThreshold == 0 {
+		cfg.RSIOversoldThreshold = 20.0
+	}
+
+	// Phase 3: Time-of-day defaults
+	if !cfg.TimeOfDayEnabled && cfg.PartialTrigger1R == 0 {
+		cfg.TimeOfDayEnabled = true
+	}
+
+	// Phase 3: Partial exit defaults
+	if !cfg.PartialExitsEnabled && cfg.PartialTrigger1R == 0 {
+		cfg.PartialExitsEnabled = true
+	}
+	if cfg.PartialTrigger1R == 0 {
+		cfg.PartialTrigger1R = 1.0
+	}
+	if cfg.PartialTrigger1Pct == 0 {
+		cfg.PartialTrigger1Pct = 0.50
+	}
+	if cfg.PartialTrigger2R == 0 {
+		cfg.PartialTrigger2R = 2.0
+	}
+	if cfg.PartialTrigger2Pct == 0 {
+		cfg.PartialTrigger2Pct = 0.50
+	}
+	if !cfg.MoveStopAfterPartial {
+		cfg.MoveStopAfterPartial = true
+	}
+
+	// Phase 3: Adaptive trailing stop defaults
+	if !cfg.AdaptiveTrailEnabled && cfg.MeanReversionMaxADX == 0 {
+		cfg.AdaptiveTrailEnabled = true
+	}
+
+	// Phase 3: Mean-reversion overlay defaults
+	if !cfg.MeanReversionEnabled && cfg.MeanReversionMaxADX == 0 {
+		cfg.MeanReversionEnabled = true
+	}
+	if cfg.MeanReversionMaxADX == 0 {
+		cfg.MeanReversionMaxADX = 20.0
+	}
+	if cfg.BollingerPeriod == 0 {
+		cfg.BollingerPeriod = 20
+	}
+	if cfg.BollingerK == 0 {
+		cfg.BollingerK = 2.0
+	}
+
+	// Phase 3: Percentage-based slippage defaults
+	if cfg.SlippageLiquidBps == 0 {
+		cfg.SlippageLiquidBps = 5.0
+	}
+	if cfg.SlippageMidBps == 0 {
+		cfg.SlippageMidBps = 10.0
+	}
+	if cfg.SlippageIlliquidBps == 0 {
+		cfg.SlippageIlliquidBps = 20.0
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

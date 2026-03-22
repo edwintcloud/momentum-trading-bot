@@ -69,6 +69,7 @@ type Candidate struct {
 	CloseOffHighPct       float64   `json:"closeOffHighPct"`
 	SetupHigh             float64   `json:"setupHigh"`
 	SetupLow              float64   `json:"setupLow"`
+	RSI                   float64   `json:"rsi"`
 	RSIMASlope            float64   `json:"rsiMASlope"`
 	FiveMinRange          float64   `json:"fiveMinRange"`
 	PriceVsEMA9Pct        float64   `json:"priceVsEma9Pct"`
@@ -124,6 +125,7 @@ type OrderRequest struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	AvgDailyVolume   float64   `json:"avgDailyVolume"`
 	Timestamp        time.Time `json:"timestamp"`
 }
 
@@ -154,6 +156,8 @@ type Position struct {
 	Symbol           string    `json:"symbol"`
 	Side             string    `json:"side"`
 	Quantity         int64     `json:"quantity"`
+	OriginalQuantity int64     `json:"originalQuantity"`
+	PartialsExecuted int       `json:"partialsExecuted"`
 	AvgPrice         float64   `json:"avgPrice"`
 	StopPrice        float64   `json:"stopPrice"`
 	InitialStopPrice float64   `json:"initialStopPrice"`

@@ -11,6 +11,7 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
 )
 
 const (
@@ -97,10 +98,16 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 	}
 	if orderType == "limit" {
 		limitPrice := order.Price
+		// Phase 3 Change 7: Percentage-based slippage by liquidity tier
+		slippage := scanner.ComputeSlippage(order.Price, order.AvgDailyVolume,
+			5.0, 10.0, 20.0) // liquid, mid, illiquid bps
+		if slippage < 0.01 {
+			slippage = 0.05 // minimum slippage floor
+		}
 		if order.Side == domain.SideBuy {
-			limitPrice += 0.05 // slippage buffer
+			limitPrice += slippage
 		} else {
-			limitPrice -= 0.05
+			limitPrice -= slippage
 		}
 		body["limit_price"] = fmt.Sprintf("%.2f", limitPrice)
 	}

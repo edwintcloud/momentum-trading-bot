@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -171,18 +172,48 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		direction = domain.DirectionShort
 	}
 
+	// Phase 3 Change 1: RSI overbought/oversold filter
+	if cfg.RSIFilterEnabled {
+		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold {
+			return domain.Candidate{}, false
+		}
+		if direction == domain.DirectionShort && metrics.rsi < cfg.RSIOversoldThreshold {
+			return domain.Candidate{}, false
+		}
+	}
+
 	// Score the candidate
 	score := s.scoreCandidate(tick, metrics, direction)
 	minScore := cfg.MinEntryScore
 	if direction == domain.DirectionShort {
 		minScore = cfg.ShortMinEntryScore
 	}
-	if score < minScore {
-		return domain.Candidate{}, false
-	}
 
 	// Get market regime
 	regime := s.runtime.MarketRegime()
+
+	setupType := metrics.setupType
+
+	// Phase 3 Change 6: Mean-reversion overlay
+	if cfg.MeanReversionEnabled {
+		if regime.Regime == domain.RegimeMixed || regime.Regime == domain.RegimeNeutral {
+			if metrics.adx < cfg.MeanReversionMaxADX && metrics.bbMiddle > 0 {
+				if tick.Price <= metrics.bbLower {
+					setupType = "mean_reversion_long"
+					direction = domain.DirectionLong
+					score += 2.0
+				} else if tick.Price >= metrics.bbUpper {
+					setupType = "mean_reversion_short"
+					direction = domain.DirectionShort
+					score += 2.0
+				}
+			}
+		}
+	}
+
+	if score < minScore {
+		return domain.Candidate{}, false
+	}
 
 	candidate := domain.Candidate{
 		Symbol:                tick.Symbol,
@@ -210,12 +241,13 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		CloseOffHighPct:       metrics.closeOffHighPct,
 		SetupHigh:             metrics.setupHigh,
 		SetupLow:              metrics.setupLow,
+		RSI:                   metrics.rsi,
 		RSIMASlope:            metrics.rsiMASlope,
 		FiveMinRange:          metrics.fiveMinRange,
 		PriceVsEMA9Pct:        safePct(tick.Price-metrics.ema9, metrics.ema9) * 100,
 		EMAFast:               metrics.emaFast,
 		EMASlow:               metrics.emaSlow,
-		SetupType:             metrics.setupType,
+		SetupType:             setupType,
 		Score:                 score,
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
@@ -272,11 +304,16 @@ type scanMetrics struct {
 	setupHigh             float64
 	setupLow              float64
 	setupType             string
+	rsi                   float64
 	rsiMASlope            float64
 	fiveMinRange          float64
 	ema9                  float64
 	emaFast               float64
 	emaSlow               float64
+	adx                   float64
+	bbUpper               float64
+	bbMiddle              float64
+	bbLower               float64
 }
 
 func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetrics {
@@ -314,6 +351,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	m.emaSlow = computeEMA(bars, s.config.MarketRegimeEMASlowPeriod)
 
 	// RSI and RSI MA Slope (14-period Wilder RSI)
+	m.rsi = computeRSI(bars, 14)
 	if n >= 15 {
 		rsiValues := make([]float64, 0, 10)
 		start := n - 10
@@ -328,6 +366,20 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 			m.rsiMASlope = (rsiValues[len(rsiValues)-1] - rsiValues[0]) / float64(len(rsiValues))
 		}
 	}
+
+	// ADX for mean-reversion detection
+	m.adx = computeADX(bars, 14)
+
+	// Bollinger Bands
+	bbPeriod := s.config.BollingerPeriod
+	if bbPeriod == 0 {
+		bbPeriod = 20
+	}
+	bbK := s.config.BollingerK
+	if bbK == 0 {
+		bbK = 2.0
+	}
+	m.bbUpper, m.bbMiddle, m.bbLower = computeBollingerBands(bars, bbPeriod, bbK)
 
 	// Setup detection
 	if n >= 5 {
@@ -534,6 +586,187 @@ func computeRSI(bars []symbolBar, period int) float64 {
 	}
 	rs := avgGain / avgLoss
 	return 100.0 - (100.0 / (1.0 + rs))
+}
+
+// RankCandidates applies cross-sectional volume leader ranking to a batch of candidates.
+func RankCandidates(candidates []domain.Candidate) {
+	if len(candidates) == 0 {
+		return
+	}
+
+	type ranked struct {
+		idx       int
+		composite float64
+	}
+	rankings := make([]ranked, len(candidates))
+	for i, c := range candidates {
+		rankings[i] = ranked{idx: i, composite: c.RelativeVolume * math.Abs(c.GapPercent)}
+	}
+
+	sort.Slice(rankings, func(i, j int) bool {
+		return rankings[i].composite > rankings[j].composite
+	})
+
+	topComposite := rankings[0].composite
+	for rank, r := range rankings {
+		candidates[r.idx].LeaderRank = rank + 1
+		if topComposite > 0 {
+			candidates[r.idx].VolumeLeaderPct = (r.composite / topComposite) * 100
+		}
+		// Top 3 leaders get a scoring bonus
+		if rank < 3 {
+			leaderBonus := 1.0 + float64(3-rank)*0.05 // rank 0(=1st): +15%, rank 1(=2nd): +10%, rank 2(=3rd): +5%
+			candidates[r.idx].Score *= leaderBonus
+		}
+	}
+}
+
+// computeBollingerBands computes upper, middle, and lower Bollinger Bands.
+func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, middle, lower float64) {
+	if len(bars) < period {
+		return 0, 0, 0
+	}
+
+	recent := bars[len(bars)-period:]
+
+	var sum float64
+	for _, b := range recent {
+		sum += b.close
+	}
+	middle = sum / float64(period)
+
+	var sumSq float64
+	for _, b := range recent {
+		diff := b.close - middle
+		sumSq += diff * diff
+	}
+	stddev := math.Sqrt(sumSq / float64(period))
+
+	upper = middle + k*stddev
+	lower = middle - k*stddev
+	return
+}
+
+// ComputeBollingerBandsFromPrices computes Bollinger Bands from a slice of prices (exported for strategy use).
+func ComputeBollingerBandsFromPrices(prices []float64, period int, k float64) (upper, middle, lower float64) {
+	if len(prices) < period {
+		return 0, 0, 0
+	}
+
+	recent := prices[len(prices)-period:]
+
+	var sum float64
+	for _, p := range recent {
+		sum += p
+	}
+	middle = sum / float64(period)
+
+	var sumSq float64
+	for _, p := range recent {
+		diff := p - middle
+		sumSq += diff * diff
+	}
+	stddev := math.Sqrt(sumSq / float64(period))
+
+	upper = middle + k*stddev
+	lower = middle - k*stddev
+	return
+}
+
+// computeADX computes the Average Directional Index.
+func computeADX(bars []symbolBar, period int) float64 {
+	n := len(bars)
+	if n < period*2+1 {
+		return 50 // default to trending if insufficient data
+	}
+
+	// Compute True Range, +DM, -DM
+	trValues := make([]float64, n-1)
+	plusDM := make([]float64, n-1)
+	minusDM := make([]float64, n-1)
+
+	for i := 1; i < n; i++ {
+		high := bars[i].high
+		low := bars[i].low
+		prevHigh := bars[i-1].high
+		prevLow := bars[i-1].low
+		prevClose := bars[i-1].close
+
+		tr := math.Max(high-low, math.Max(math.Abs(high-prevClose), math.Abs(low-prevClose)))
+		trValues[i-1] = tr
+
+		upMove := high - prevHigh
+		downMove := prevLow - low
+
+		if upMove > downMove && upMove > 0 {
+			plusDM[i-1] = upMove
+		}
+		if downMove > upMove && downMove > 0 {
+			minusDM[i-1] = downMove
+		}
+	}
+
+	// Wilder's smoothing for first period
+	var smoothTR, smoothPlusDM, smoothMinusDM float64
+	for i := 0; i < period; i++ {
+		smoothTR += trValues[i]
+		smoothPlusDM += plusDM[i]
+		smoothMinusDM += minusDM[i]
+	}
+
+	// Compute DX values
+	dxValues := make([]float64, 0, n-period)
+	for i := period; i < len(trValues); i++ {
+		if i > period {
+			smoothTR = smoothTR - smoothTR/float64(period) + trValues[i]
+			smoothPlusDM = smoothPlusDM - smoothPlusDM/float64(period) + plusDM[i]
+			smoothMinusDM = smoothMinusDM - smoothMinusDM/float64(period) + minusDM[i]
+		}
+
+		var plusDI, minusDI float64
+		if smoothTR > 0 {
+			plusDI = (smoothPlusDM / smoothTR) * 100
+			minusDI = (smoothMinusDM / smoothTR) * 100
+		}
+
+		diSum := plusDI + minusDI
+		if diSum > 0 {
+			dx := (math.Abs(plusDI-minusDI) / diSum) * 100
+			dxValues = append(dxValues, dx)
+		}
+	}
+
+	if len(dxValues) < period {
+		return 50
+	}
+
+	// First ADX is SMA of first period DX values
+	var adxSum float64
+	for i := 0; i < period; i++ {
+		adxSum += dxValues[i]
+	}
+	adx := adxSum / float64(period)
+
+	// Smooth remaining
+	for i := period; i < len(dxValues); i++ {
+		adx = (adx*float64(period-1) + dxValues[i]) / float64(period)
+	}
+
+	return adx
+}
+
+// ComputeSlippage computes percentage-based slippage by liquidity tier.
+func ComputeSlippage(price float64, avgDailyVolume float64, liquidBps, midBps, illiquidBps float64) float64 {
+	var spreadPct float64
+	switch {
+	case avgDailyVolume > 5_000_000:
+		spreadPct = liquidBps / 10000.0
+	case avgDailyVolume > 500_000:
+		spreadPct = midBps / 10000.0
+	default:
+		spreadPct = illiquidBps / 10000.0
+	}
+	return price * spreadPct
 }
 
 func safePct(numerator, denominator float64) float64 {
