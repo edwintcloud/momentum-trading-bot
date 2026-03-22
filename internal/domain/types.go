@@ -117,6 +117,7 @@ type OrderRequest struct {
 	EntryATR         float64   `json:"entryAtr"`
 	SetupType        string    `json:"setupType"`
 	Reason           string    `json:"reason"`
+	OrderType        string    `json:"orderType"` // "limit" (default) or "market"
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`

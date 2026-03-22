@@ -13,6 +13,7 @@ import (
 type BrokerClient interface {
 	SubmitOrder(ctx context.Context, order domain.OrderRequest) (string, error)
 	PollOrderStatus(ctx context.Context, orderID string) (string, float64, error)
+	CancelOrder(ctx context.Context, orderID string) error
 	IsShortable(symbol string) bool
 }
 
@@ -70,7 +71,13 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 		select {
 		case <-pollCtx.Done():
 			e.runtime.RecordLog("warn", "execution",
-				fmt.Sprintf("order timeout %s %s orderID=%s", order.Symbol, order.Side, orderID))
+				fmt.Sprintf("order timeout %s %s orderID=%s — cancelling", order.Symbol, order.Side, orderID))
+			cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := e.broker.CancelOrder(cancelCtx, orderID); err != nil {
+				e.runtime.RecordLog("error", "execution",
+					fmt.Sprintf("cancel failed %s orderID=%s: %v", order.Symbol, orderID, err))
+			}
+			cancelFn()
 			return
 		case <-ticker.C:
 			status, fillPrice, err := e.broker.PollOrderStatus(pollCtx, orderID)

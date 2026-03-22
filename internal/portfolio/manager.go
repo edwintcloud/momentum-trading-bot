@@ -374,6 +374,19 @@ func (m *Manager) resetDayIfNeededLocked() {
 	}
 }
 
+// UpdateStopPrice updates the stop price for a position (trailing stop).
+func (m *Manager) UpdateStopPrice(symbol string, newStop float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pos, ok := m.positions[symbol]
+	if !ok {
+		return
+	}
+	pos.StopPrice = newStop
+	pos.UpdatedAt = time.Now()
+	m.positions[symbol] = pos
+}
+
 // ApplyExecution processes an execution report, opening or closing positions as appropriate.
 func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	if domain.IsOpeningIntent(report.Intent) {

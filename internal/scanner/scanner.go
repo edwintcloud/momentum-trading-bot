@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	"math"
-	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +47,13 @@ func NewScanner(cfg config.TradingConfig, runtimeState *runtime.State) *Scanner 
 		state:         make(map[string]*symbolState),
 		leaderMetrics: make(map[string]float64),
 	}
+}
+
+// UpdateConfig replaces the scanner's trading config.
+func (s *Scanner) UpdateConfig(cfg config.TradingConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config = cfg
 }
 
 // Start evaluates ticks concurrently and emits candidates.
@@ -463,6 +469,3 @@ func safePct(numerator, denominator float64) float64 {
 	return numerator / denominator
 }
 
-func init() {
-	_ = strings.ToUpper // keep import
-}

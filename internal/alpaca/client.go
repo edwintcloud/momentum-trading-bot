@@ -84,11 +84,8 @@ func (c *Client) GetPositions(ctx context.Context) ([]AlpacaPosition, error) {
 // SubmitOrder submits an order to Alpaca.
 func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (string, error) {
 	orderType := "limit"
-	limitPrice := order.Price
-	if order.Side == domain.SideBuy {
-		limitPrice += 0.05 // slippage buffer
-	} else {
-		limitPrice -= 0.05
+	if order.OrderType == "market" {
+		orderType = "market"
 	}
 
 	body := map[string]interface{}{
@@ -97,7 +94,15 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 		"side":          order.Side,
 		"type":          orderType,
 		"time_in_force": "day",
-		"limit_price":   fmt.Sprintf("%.2f", limitPrice),
+	}
+	if orderType == "limit" {
+		limitPrice := order.Price
+		if order.Side == domain.SideBuy {
+			limitPrice += 0.05 // slippage buffer
+		} else {
+			limitPrice -= 0.05
+		}
+		body["limit_price"] = fmt.Sprintf("%.2f", limitPrice)
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -164,6 +169,44 @@ func (c *Client) IsShortable(symbol string) bool {
 		return false
 	}
 	return result.Shortable
+}
+
+// CancelOrder cancels a pending order by ID.
+func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.baseURL+"/v2/orders/"+orderID, nil)
+	if err != nil {
+		return fmt.Errorf("create cancel request: %w", err)
+	}
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("cancel order: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("cancel failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// ClosePosition closes a position directly via the Alpaca API.
+func (c *Client) ClosePosition(ctx context.Context, symbol string) error {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.baseURL+"/v2/positions/"+symbol, nil)
+	if err != nil {
+		return fmt.Errorf("create close position request: %w", err)
+	}
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("close position: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("close position failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // HistoricalBar is a single bar from Alpaca.

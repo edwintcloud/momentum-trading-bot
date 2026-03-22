@@ -186,9 +186,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	defer iter.Close()
 
 	runtimeState := runtime.NewState()
-	// if runCfg.Recorder != nil {
-	// 	runtimeState.SetRecorder(runCfg.Recorder)
-	// }
 	diagnostics := Diagnostics{
 		ScannerRejects:     make(map[string]int),
 		EntryRejects:       make(map[string]int),
