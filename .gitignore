@@ -1,0 +1,34 @@
+# Binaries
+momentum-bot
+momentum-trading-bot
+*.exe
+
+# Go
+/vendor/
+
+# Node
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Data
+*.log

@@ -1,0 +1,217 @@
+package alpaca
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/edwintcloud/momentum-trading-bot/internal/config"
+	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+)
+
+const (
+	paperBaseURL = "https://paper-api.alpaca.markets"
+	liveBaseURL  = "https://api.alpaca.markets"
+	dataBaseURL  = "https://data.alpaca.markets"
+)
+
+// Client wraps Alpaca REST and WebSocket interactions.
+type Client struct {
+	apiKey    string
+	apiSecret string
+	baseURL   string
+	dataURL   string
+	http      *http.Client
+	paper     bool
+}
+
+// NewClient creates an Alpaca API client.
+func NewClient(cfg config.AppConfig) *Client {
+	base := paperBaseURL
+	if !cfg.AlpacaPaper {
+		base = liveBaseURL
+	}
+	return &Client{
+		apiKey:    cfg.AlpacaAPIKey,
+		apiSecret: cfg.AlpacaAPISecret,
+		baseURL:   base,
+		dataURL:   dataBaseURL,
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		paper: cfg.AlpacaPaper,
+	}
+}
+
+// Account represents an Alpaca account.
+type Account struct {
+	Equity       float64 `json:"equity,string"`
+	BuyingPower  float64 `json:"buying_power,string"`
+	Cash         float64 `json:"cash,string"`
+	DayPnL       float64 `json:"unrealized_intraday_pl,string"`
+	Status       string  `json:"status"`
+}
+
+// GetAccount fetches the trading account information.
+func (c *Client) GetAccount(ctx context.Context) (Account, error) {
+	var acct Account
+	err := c.get(ctx, c.baseURL+"/v2/account", &acct)
+	return acct, err
+}
+
+// AlpacaPosition represents a broker position.
+type AlpacaPosition struct {
+	Symbol       string  `json:"symbol"`
+	Qty          string  `json:"qty"`
+	Side         string  `json:"side"`
+	AvgEntryPrice string `json:"avg_entry_price"`
+	CurrentPrice string  `json:"current_price"`
+	MarketValue  string  `json:"market_value"`
+	UnrealizedPL string  `json:"unrealized_pl"`
+}
+
+// GetPositions fetches current broker positions.
+func (c *Client) GetPositions(ctx context.Context) ([]AlpacaPosition, error) {
+	var positions []AlpacaPosition
+	err := c.get(ctx, c.baseURL+"/v2/positions", &positions)
+	return positions, err
+}
+
+// SubmitOrder submits an order to Alpaca.
+func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (string, error) {
+	orderType := "limit"
+	limitPrice := order.Price
+	if order.Side == domain.SideBuy {
+		limitPrice += 0.05 // slippage buffer
+	} else {
+		limitPrice -= 0.05
+	}
+
+	body := map[string]interface{}{
+		"symbol":        order.Symbol,
+		"qty":           fmt.Sprintf("%d", order.Quantity),
+		"side":          order.Side,
+		"type":          orderType,
+		"time_in_force": "day",
+		"limit_price":   fmt.Sprintf("%.2f", limitPrice),
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("marshal order: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v2/orders", strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return "", fmt.Errorf("create order request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("submit order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("order rejected: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode order response: %w", err)
+	}
+
+	return result.ID, nil
+}
+
+// PollOrderStatus checks the status of an order.
+func (c *Client) PollOrderStatus(ctx context.Context, orderID string) (string, float64, error) {
+	var result struct {
+		Status    string  `json:"status"`
+		FilledAvg *string `json:"filled_avg_price"`
+	}
+	err := c.get(ctx, c.baseURL+"/v2/orders/"+orderID, &result)
+	if err != nil {
+		return "", 0, err
+	}
+
+	fillPrice := 0.0
+	if result.FilledAvg != nil {
+		fmt.Sscanf(*result.FilledAvg, "%f", &fillPrice)
+	}
+
+	return result.Status, fillPrice, nil
+}
+
+// IsShortable checks if a symbol can be shorted.
+func (c *Client) IsShortable(symbol string) bool {
+	var result struct {
+		Shortable bool `json:"shortable"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := c.get(ctx, c.baseURL+"/v2/assets/"+symbol, &result)
+	if err != nil {
+		return false
+	}
+	return result.Shortable
+}
+
+// HistoricalBar is a single bar from Alpaca.
+type HistoricalBar struct {
+	Timestamp time.Time `json:"t"`
+	Open      float64   `json:"o"`
+	High      float64   `json:"h"`
+	Low       float64   `json:"l"`
+	Close     float64   `json:"c"`
+	Volume    int64     `json:"v"`
+}
+
+// GetHistoricalBars fetches historical bars for a symbol.
+func (c *Client) GetHistoricalBars(ctx context.Context, symbol string, start, end time.Time, timeframe string) ([]HistoricalBar, error) {
+	url := fmt.Sprintf("%s/v2/stocks/%s/bars?start=%s&end=%s&timeframe=%s&limit=10000",
+		c.dataURL, symbol,
+		start.Format(time.RFC3339), end.Format(time.RFC3339),
+		timeframe)
+
+	var result struct {
+		Bars []HistoricalBar `json:"bars"`
+	}
+	err := c.get(ctx, url, &result)
+	return result.Bars, err
+}
+
+func (c *Client) get(ctx context.Context, url string, dest interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("api error: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	return json.NewDecoder(resp.Body).Decode(dest)
+}
+
+func (c *Client) setAuth(req *http.Request) {
+	req.Header.Set("APCA-API-KEY-ID", c.apiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", c.apiSecret)
+}

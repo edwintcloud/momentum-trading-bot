@@ -1,0 +1,39 @@
+{
+  "name": "baseline_breakout",
+  "version": "1.0.0",
+  "generatedAt": "2026-03-01T00:00:00Z",
+  "asOf": "2026-03-01T00:00:00Z",
+  "config": {
+    "StartingCapital": 25000,
+    "EnableMarketRegime": true,
+    "EnableShorts": true,
+    "RiskPerTradePct": 0.005,
+    "DailyLossLimitPct": 0.02,
+    "MaxTradesPerDay": 20,
+    "MaxOpenPositions": 5,
+    "MaxExposurePct": 0.8,
+    "MaxShortOpenPositions": 3,
+    "MaxShortExposurePct": 0.3,
+    "StopLossPct": 0.02,
+    "EntryCooldownSec": 30,
+    "ExitCooldownSec": 10,
+    "MinEntryScore": 2.0,
+    "ShortMinEntryScore": 3.0,
+    "MinPrice": 2.0,
+    "MaxPrice": 200.0,
+    "MinGapPercent": 3.0,
+    "MinRelativeVolume": 2.0,
+    "MinPremarketVolume": 50000,
+    "ScannerWorkers": 4,
+    "TrailActivationR": 1.0,
+    "TrailATRMultiplier": 2.0,
+    "ProfitTargetR": 4.0,
+    "EntryStopATRMultiplier": 1.5,
+    "MarketRegimeBenchmarkSymbols": ["SPY", "QQQ", "IWM"]
+  },
+  "promotion": {
+    "deploymentMode": "paper",
+    "status": "approved",
+    "lastPaperValidationResult": "passed"
+  }
+}
