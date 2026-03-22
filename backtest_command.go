@@ -31,6 +31,7 @@ func runBacktest(args []string) error {
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
 	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
 	reportOut := flags.String("report-out", ".cache/backtest/latest-report.json", "Optional JSON report artifact path; set empty string to disable")
+	debugSymbols := flags.String("debug", "", "Comma-separated symbols to trace per-bar through scanner/strategy")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -72,6 +73,14 @@ func runBacktest(args []string) error {
 		Start:    start,
 		End:      end,
 		Recorder: fsRecorder,
+	}
+	if *debugSymbols != "" {
+		for _, sym := range strings.Split(*debugSymbols, ",") {
+			sym = strings.TrimSpace(sym)
+			if sym != "" {
+				runCfg.DebugSymbols = append(runCfg.DebugSymbols, sym)
+			}
+		}
 	}
 
 	if *dataPath == "" {
@@ -250,12 +259,13 @@ func logBacktestConfig(cfg config.TradingConfig) {
 
 func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	log.Printf(
-		"Backtest funnel bars_loaded=%d bars_in_window=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
+		"Backtest funnel bars_loaded=%d bars_in_window=%d entry_candidates=%d entry_signals=%d entry_risk_approved=%d fill_expiries=%d exit_checks=%d exit_signals=%d exit_risk_approved=%d",
 		diag.BarsLoaded,
 		diag.BarsInWindow,
 		diag.EntryCandidates,
 		diag.EntrySignals,
 		diag.EntryRiskApproved,
+		diag.FillExpiries,
 		diag.ExitChecks,
 		diag.ExitSignals,
 		diag.ExitRiskApproved,
@@ -267,6 +277,8 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	logReasonCounts("risk exit rejects", diag.ExitRiskRejects, diag.ExitSignals)
 	logEntrySamples(diag.EntrySignalSamples)
 	logEntryRejectSamples(diag)
+	logRiskRejectSamples(diag.RiskRejectSamples)
+	logFillExpirySamples(diag.FillExpirySamples)
 }
 
 func logBacktestSummary(start, end time.Time, result backtest.Result) {
@@ -375,8 +387,8 @@ func logReasonCounts(label string, counts map[string]int, total int) {
 		return reasons[i].count > reasons[j].count
 	})
 	limit := len(reasons)
-	if limit > 5 {
-		limit = 5
+	if limit > 15 {
+		limit = 15
 	}
 	parts := make([]string, 0, limit)
 	for _, item := range reasons[:limit] {
@@ -437,8 +449,8 @@ func logEntryRejectSamples(diag backtest.Diagnostics) {
 		return reasons[i].count > reasons[j].count
 	})
 	limit := len(reasons)
-	if limit > 3 {
-		limit = 3
+	if limit > 15 {
+		limit = 15
 	}
 	for _, item := range reasons[:limit] {
 		sample, ok := diag.EntryRejectSamples[item.reason]
@@ -490,6 +502,43 @@ func logClosedTradeSamples(trades []domain.ClosedTrade) {
 			trade.ExitReason,
 			trade.OpenedAt.In(markethours.Location()).Format("2006-01-02 15:04"),
 			trade.ClosedAt.In(markethours.Location()).Format("2006-01-02 15:04"),
+		)
+	}
+}
+
+func logRiskRejectSamples(samples []backtest.RiskRejectSample) {
+	if len(samples) == 0 {
+		return
+	}
+	log.Printf("Risk-rejected signals (%d):", len(samples))
+	for _, s := range samples {
+		log.Printf("  %s@%s side=%s price=%.2f qty=%d score=%.2f setup=%s reason=%s",
+			s.Symbol,
+			s.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
+			s.Side,
+			s.Price,
+			s.Quantity,
+			s.Score,
+			s.SetupType,
+			s.Reason,
+		)
+	}
+}
+
+func logFillExpirySamples(samples []backtest.FillExpirySample) {
+	if len(samples) == 0 {
+		return
+	}
+	log.Printf("Fill expirations (%d):", len(samples))
+	for _, s := range samples {
+		log.Printf("  %s side=%s limit=%.2f qty=%d setup=%s ordered=%s expired=%s",
+			s.Symbol,
+			s.Side,
+			s.LimitPrice,
+			s.Quantity,
+			s.SetupType,
+			s.OrderTime.In(markethours.Location()).Format("2006-01-02 15:04"),
+			s.ExpiryTime.In(markethours.Location()).Format("2006-01-02 15:04"),
 		)
 	}
 }

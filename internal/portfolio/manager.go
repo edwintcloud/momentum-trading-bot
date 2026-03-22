@@ -641,6 +641,15 @@ func (m *Manager) EntriesToday() int {
 	return m.entriesToday
 }
 
+// EntriesTodayAt returns the count of new entries for the trading day
+// containing the given timestamp, rolling the day boundary if needed.
+func (m *Manager) EntriesTodayAt(at time.Time) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rollTradingDayLocked(at)
+	return m.entriesToday
+}
+
 // PendingCloseAll returns exit orders for all open positions.
 func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 	m.mu.RLock()

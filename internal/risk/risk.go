@@ -140,7 +140,7 @@ func (r *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{}, false, blockReason
 	}
 	r.rollDay(orderTime)
-	if filledEntries := r.portfolio.EntriesToday(); filledEntries > r.approved {
+	if filledEntries := r.portfolio.EntriesTodayAt(orderTime); filledEntries > r.approved {
 		r.approved = filledEntries
 	}
 	if domain.IsShort(signal.PositionSide) {

@@ -255,7 +255,7 @@ func (s *Scanner) longMomentumScore(tick domain.Tick, priceVsOpenPct, distanceFr
 }
 
 func (s *Scanner) qualifiesMomentumProfile(tick domain.Tick, priceVsOpenPct float64, metrics scanMetrics) bool {
-	if tick.GapPercent >= s.config.MinGapPercent && tick.PreMarketVolume >= s.config.MinPremarketVolume {
+	if (tick.GapPercent >= s.config.MinGapPercent || priceVsOpenPct >= s.config.MinGapPercent) && tick.PreMarketVolume >= s.config.MinPremarketVolume {
 		return true
 	}
 	if metrics.setupType == "" {

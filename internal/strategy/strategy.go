@@ -677,8 +677,13 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.PriceVsVWAPPct < 0 {
 		return false, "below-vwap"
 	}
-	// Must be above 9 EMA (momentum is intact)
-	if candidate.PriceVsEMA9Pct < -0.5 {
+	// Must be near or above 9 EMA (momentum is intact); allow slight dips
+	// during pullback setups since Cameron buys pullbacks to the 9 EMA.
+	ema9Floor := -0.5
+	if candidate.SetupType == "higher-low-reclaim" || candidate.SetupType == "vwap-reclaim" {
+		ema9Floor = -1.5
+	}
+	if candidate.PriceVsEMA9Pct < ema9Floor {
 		return false, "below-ema9"
 	}
 	// Not chasing — price should be near 9 EMA, not extended far above it
@@ -688,12 +693,26 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.PriceVsEMA9Pct > 6.0 {
 		return false, "extended-above-ema9"
 	}
-	// Must have real activity in the last 5 bars
-	if candidate.FiveMinRange < 0.5 {
+	// Consolidation-breakout requires meaningful EMA crossover — EMAFast must be
+	// well above EMASlow to confirm trend direction. Barely-crossed EMAs indicate
+	// a flat/choppy structure that often fails.
+	if candidate.SetupType == "consolidation-breakout" && candidate.EMASlow > 0 {
+		emaCrossoverPct := (candidate.EMAFast - candidate.EMASlow) / candidate.EMASlow * 100
+		if emaCrossoverPct < 1.0 {
+			return false, "weak-ema-crossover"
+		}
+	}
+	if candidate.RSIMASlope < -0.5 {
+		return false, "rsi-momentum-negative" //-1.37 ARTL 2024-05-01 10:15:00
+	}
+	// Must have real activity in the last 5 bars, unless a consolidation
+	// setup is detected — tight range IS the consolidation pattern.
+	if candidate.FiveMinRange < 0.5 && candidate.SetupType != "consolidation-breakout" && candidate.SetupType != "opening-range-breakout" {
 		return false, "range-too-narrow"
 	}
-	// Cameron: stock must be meaningfully up on the day — don't buy weak gappers
-	if candidate.PriceVsOpenPct < 3.0 {
+	// Cameron: stock must be moving in our direction. For gap-and-go setups
+	// the gap itself provides the directional signal.
+	if candidate.PriceVsOpenPct < 2.0 {
 		return false, "weak-intraday-move"
 	}
 	if candidate.Price < s.config.MinPrice {
@@ -701,7 +720,7 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	}
 	volumeLeaderPct := s.volumeLeaderPct(candidate)
 	minLeaderPct := 0.12
-	maxLeaderRank := 5
+	maxLeaderRank := 6
 	if s.isPremarket(candidate.Timestamp) || s.isOpeningSession(candidate.Timestamp) {
 		minLeaderPct = 0.18
 		maxLeaderRank = 3
@@ -710,8 +729,8 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 		minLeaderPct -= 0.03
 		maxLeaderRank += 1
 	}
-	if minLeaderPct < 0.08 {
-		minLeaderPct = 0.08
+	if minLeaderPct < 0.12 {
+		minLeaderPct = 0.12
 	}
 	if candidate.Score < s.config.MinEntryScore && !(strongSqueeze && candidate.Score >= s.config.MinEntryScore-1.5) {
 		return false, "low-score"
@@ -720,7 +739,11 @@ func (s *Strategy) passesEntryQuality(candidate domain.Candidate) (bool, string)
 	if candidate.Score < s.config.MinEntryScore+1 && !strongSqueeze {
 		return false, "long-needs-conviction"
 	}
-	if !s.isPremarket(candidate.Timestamp) && sessionMinutesSinceOpen(candidate.Timestamp) > 90 && !strongSqueeze {
+	chopLimit := 30.0
+	if candidate.SetupType != "" {
+		chopLimit = 60.0
+	}
+	if !s.isPremarket(candidate.Timestamp) && sessionMinutesSinceOpen(candidate.Timestamp) > chopLimit && !strongSqueeze {
 		return false, "post-open-chop"
 	}
 	if s.isOpeningSession(candidate.Timestamp) &&
@@ -871,6 +894,14 @@ func (s *Strategy) passesShortEntryQuality(candidate domain.Candidate) (bool, st
 	if candidate.ATRPct < 3.0 {
 		return false, "short-needs-volatility"
 	}
+	// Shorts should not fight a bullish EMA alignment — EMAFast must be
+	// below EMASlow to confirm the trend has turned down.
+	if candidate.EMASlow > 0 {
+		emaCrossoverPct := (candidate.EMAFast - candidate.EMASlow) / candidate.EMASlow * 100
+		if emaCrossoverPct > -0.5 {
+			return false, "short-ema-still-bullish"
+		}
+	}
 	if candidate.Open <= 0 || candidate.HighOfDay <= 0 {
 		return false, "missing-peak-extension"
 	}
@@ -904,8 +935,8 @@ func (s *Strategy) isStrongSqueeze(candidate domain.Candidate) bool {
 	scoreThreshold := s.config.MinEntryScore + 5
 	relativeVolumeThreshold := s.config.MinRelativeVolume + 1.5
 	threeMinuteThreshold := s.config.MinThreeMinuteReturnPct + 0.40
-	volumeRateThreshold := s.config.MinVolumeRate + 0.15
-	volumeLeaderThreshold := 0.18
+	volumeRateThreshold := s.config.MinVolumeRate + 0.05
+	volumeLeaderThreshold := 0.15
 	maxLeaderRank := 3
 
 	if s.isPremarket(candidate.Timestamp) {
@@ -949,7 +980,7 @@ func (s *Strategy) hasTimingConfirmation(candidate domain.Candidate, strongSquee
 
 	switch candidate.SetupType {
 	case "consolidation-breakout", "opening-range-breakout":
-		if candidate.VolumeRate < maxFloat(minVolumeRate, 1.15) {
+		if candidate.VolumeRate < maxFloat(minVolumeRate-0.10, 1.15) {
 			return false
 		}
 		if candidate.OneMinuteReturnPct < 0.10 && candidate.BreakoutPct < 0 {
@@ -1140,10 +1171,7 @@ func (s *Strategy) positionSizeMultiplier(candidate domain.Candidate) float64 {
 	if domain.IsShort(candidate.Direction) {
 		multiplier *= 0.55
 	}
-	// Longs get moderately reduced sizing until the strategy proves out
-	if domain.IsLong(candidate.Direction) {
-		multiplier *= 0.80
-	}
+
 	if multiplier < 0.55 {
 		multiplier = 0.55
 	}

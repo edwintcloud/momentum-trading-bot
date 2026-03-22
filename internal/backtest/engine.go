@@ -21,12 +21,13 @@ import (
 
 // RunConfig controls a historical simulation.
 type RunConfig struct {
-	DataPath string
-	Bars     []InputBar
-	Iterator InputBarIterator
-	Start    time.Time
-	End      time.Time
-	Recorder domain.EventRecorder
+	DataPath     string
+	Bars         []InputBar
+	Iterator     InputBarIterator
+	Start        time.Time
+	End          time.Time
+	Recorder     domain.EventRecorder
+	DebugSymbols []string // symbols to trace per-bar through scanner/strategy
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -83,6 +84,7 @@ type Diagnostics struct {
 	EntryCandidates    int
 	EntrySignals       int
 	EntryRiskApproved  int
+	FillExpiries       int
 	ExitChecks         int
 	ExitSignals        int
 	ExitRiskApproved   int
@@ -96,6 +98,8 @@ type Diagnostics struct {
 	BySide             map[string]TradeBreakdown
 	EntrySignalSamples []EntrySample
 	EntryRejectSamples map[string]EntrySample
+	RiskRejectSamples  []RiskRejectSample
+	FillExpirySamples  []FillExpirySample
 }
 
 // EntrySample captures a representative entry decision for diagnostics.
@@ -120,6 +124,29 @@ type EntrySample struct {
 	SetupType              string
 	Score                  float64
 	StrongSqueeze          bool
+}
+
+// RiskRejectSample captures when a strategy-approved signal is blocked by risk.
+type RiskRejectSample struct {
+	Symbol    string
+	Timestamp time.Time
+	Side      string
+	Price     float64
+	Quantity  int64
+	Reason    string
+	SetupType string
+	Score     float64
+}
+
+// FillExpirySample captures when a risk-approved order fails to fill within the bar window.
+type FillExpirySample struct {
+	Symbol     string
+	OrderTime  time.Time
+	ExpiryTime time.Time
+	Side       string
+	LimitPrice float64
+	Quantity   int64
+	SetupType  string
 }
 
 type bar = InputBar
@@ -159,9 +186,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	defer iter.Close()
 
 	runtimeState := runtime.NewState()
-	if runCfg.Recorder != nil {
-		runtimeState.SetRecorder(runCfg.Recorder)
-	}
+	// if runCfg.Recorder != nil {
+	// 	runtimeState.SetRecorder(runCfg.Recorder)
+	// }
 	diagnostics := Diagnostics{
 		ScannerRejects:     make(map[string]int),
 		EntryRejects:       make(map[string]int),
@@ -186,6 +213,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)
 	normalizerState := make(map[string]*symbolState)
+	debugSet := make(map[string]bool, len(runCfg.DebugSymbols))
+	for _, sym := range runCfg.DebugSymbols {
+		debugSet[strings.ToUpper(sym)] = true
+	}
 	peakEquity := cfg.StartingCapital
 	maxDrawdown := 0.0
 	for {
@@ -225,6 +256,18 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					maeR:         0,
 				}
 			} else if expired {
+				diagnostics.FillExpiries++
+				if len(diagnostics.FillExpirySamples) < 30 {
+					diagnostics.FillExpirySamples = append(diagnostics.FillExpirySamples, FillExpirySample{
+						Symbol:     pending.order.Symbol,
+						OrderTime:  pending.order.Timestamp,
+						ExpiryTime: currentBar.Timestamp,
+						Side:       pending.order.Side,
+						LimitPrice: pending.order.Price,
+						Quantity:   pending.order.Quantity,
+						SetupType:  pending.order.SetupType,
+					})
+				}
 				delete(pendingEntries, currentBar.Symbol)
 			} else {
 				pendingEntries[currentBar.Symbol] = updatedPending
@@ -273,9 +316,26 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		}
 
 		candidate, ok, scanReason := scan.EvaluateTickDetailed(tick)
+
+		if debugSet[tick.Symbol] {
+			et := tick.Timestamp.In(markethours.Location())
+			if ok {
+				decision := strat.EvaluateCandidateDecision(candidate)
+				fmt.Printf("DEBUG %s@%s price=%.2f rvol=%.2f vspike=%t scan=candidate strategy=%s score=%.2f setup=%s vwap_pct=%.2f 1m=%.2f 3m=%.2f vr=%.2f dist_high=%.2f ema9_pct=%.2f pvo=%.2f squeeze=%t leader=%.2f rank=%d ema_fast=%.4f ema_slow=%.4f\n",
+					tick.Symbol, et.Format("15:04"), tick.Price, tick.RelativeVolume, tick.VolumeSpike,
+					decision.Reason, candidate.Score, candidate.SetupType,
+					candidate.PriceVsVWAPPct, candidate.OneMinuteReturnPct, candidate.ThreeMinuteReturnPct,
+					candidate.VolumeRate, candidate.DistanceFromHighPct, candidate.PriceVsEMA9Pct,
+					candidate.PriceVsOpenPct, decision.StrongSqueeze, candidate.VolumeLeaderPct, candidate.LeaderRank,
+					candidate.EMAFast, candidate.EMASlow)
+			} else {
+				fmt.Printf("DEBUG %s@%s price=%.2f rvol=%.2f vspike=%t gap=%.2f premkt=%d scan=%s\n",
+					tick.Symbol, et.Format("15:04"), tick.Price, tick.RelativeVolume, tick.VolumeSpike, tick.GapPercent, tick.PreMarketVolume, scanReason)
+			}
+		}
 		
 		if ok {
-			runtimeState.RecordLog("info", "scanner", "candidate "+candidate.Symbol+" at "+candidate.Timestamp.Format(time.RFC3339))
+			// runtimeState.RecordLog("info", "scanner", "candidate "+candidate.Symbol+" at "+candidate.Timestamp.Format(time.RFC3339))
 			diagnostics.EntryCandidates++
 			decision := strat.EvaluateCandidateDecision(candidate)
 			if decision.Emit {
@@ -286,6 +346,18 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					pendingEntries[order.Symbol] = pendingEntry{order: order, barsRemaining: 2}
 				} else {
 					incrementReason(diagnostics.EntryRiskRejects, riskReason)
+					if len(diagnostics.RiskRejectSamples) < 30 {
+						diagnostics.RiskRejectSamples = append(diagnostics.RiskRejectSamples, RiskRejectSample{
+							Symbol:    decision.Signal.Symbol,
+							Timestamp: decision.Signal.Timestamp,
+							Side:      decision.Signal.Side,
+							Price:     decision.Signal.Price,
+							Quantity:  decision.Signal.Quantity,
+							Reason:    riskReason,
+							SetupType: decision.Signal.SetupType,
+							Score:     candidate.Score,
+						})
+					}
 					if riskReason == "daily-loss-limit" {
 						runtimeState.RecordLog("warn", "risk", "blocked buy "+decision.Signal.Symbol+": "+riskReason)
 						runtimeState.TriggerDailyLossStop(decision.Signal.Timestamp)
@@ -717,8 +789,8 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 	}
 
 	gapPercent := 0.0
-	if state.previousClose > 0 {
-		gapPercent = ((item.Close - state.previousClose) / state.previousClose) * 100
+	if state.previousClose > 0 && state.open > 0 {
+		gapPercent = ((state.open - state.previousClose) / state.previousClose) * 100
 	}
 	relativeVolume := calculateRelativeVolume(state, item.Timestamp)
 	volumeSpike := isVolumeSpike(state.recentVolumes, item.Volume, relativeVolume)

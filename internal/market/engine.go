@@ -183,8 +183,8 @@ func (e *Engine) handleBar(ctx context.Context, message alpaca.StreamMessage) do
 	}
 
 	gapPercent := 0.0
-	if state.previousClose > 0 {
-		gapPercent = ((message.Close - state.previousClose) / state.previousClose) * 100
+	if state.previousClose > 0 && state.open > 0 {
+		gapPercent = ((state.open - state.previousClose) / state.previousClose) * 100
 	}
 	relativeVolume := calculateRelativeVolume(state, message.Timestamp)
 	volumeSpike := isVolumeSpike(state, deltaVolume, relativeVolume)
