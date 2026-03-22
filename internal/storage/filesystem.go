@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -65,6 +67,15 @@ func (f *FilesystemStore) appendJSON(filename string, v interface{}) {
 	defer file.Close()
 	data = append(data, '\n')
 	_, _ = file.Write(data)
+}
+
+// NewFilesystemRecorder creates a FilesystemStore scoped to the given directory,
+// returned as a domain.EventRecorder interface.
+func NewFilesystemRecorder(ctx context.Context, dir string) (domain.EventRecorder, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("filesystem recorder: %w", err)
+	}
+	return NewFilesystemStore(dir), nil
 }
 
 func init() {

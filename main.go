@@ -35,7 +35,9 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "backtest":
-			runBacktest(os.Args[2:])
+			if err := runBacktest(os.Args[2:]); err != nil {
+				log.Fatalf("backtest: %v", err)
+			}
 			return
 		case "optimize":
 			runOptimize(os.Args[2:])
@@ -227,17 +229,17 @@ func runLive() {
 				order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price)
 			// In live mode: alpacaClient.SubmitOrder(ctx, order)
 			report := domain.ExecutionReport{
-				Symbol:       order.Symbol,
-				Side:         order.Side,
-				Intent:       order.Intent,
-				PositionSide: order.PositionSide,
-				Price:        order.Price,
-				Quantity:     order.Quantity,
-				StopPrice:    order.StopPrice,
-				RiskPerShare: order.RiskPerShare,
-				EntryATR:     order.EntryATR,
-				SetupType:    order.SetupType,
-				Reason:       order.Reason,
+				Symbol:        order.Symbol,
+				Side:          order.Side,
+				Intent:        order.Intent,
+				PositionSide:  order.PositionSide,
+				Price:         order.Price,
+				Quantity:      order.Quantity,
+				StopPrice:     order.StopPrice,
+				RiskPerShare:  order.RiskPerShare,
+				EntryATR:      order.EntryATR,
+				SetupType:     order.SetupType,
+				Reason:        order.Reason,
 				BrokerOrderID: "sim-" + fmt.Sprintf("%d", time.Now().UnixNano()),
 				BrokerStatus:  "filled",
 				FilledAt:      time.Now(),
@@ -274,91 +276,10 @@ func runLive() {
 	cancel()
 }
 
-func runBacktest(args []string) {
-	fs := flag.NewFlagSet("backtest", flag.ExitOnError)
-	startStr := fs.String("start", "", "start date (YYYY-MM-DD)")
-	endStr := fs.String("end", "", "end date (YYYY-MM-DD)")
-	dataPath := fs.String("data", "", "path to CSV data file (optional — fetches from Alpaca if omitted)")
-	symbolsStr := fs.String("symbols", "", "comma-separated symbols to fetch from Alpaca (e.g. AAPL,TSLA,SPY)")
-	timeframe := fs.String("timeframe", "1Day", "bar timeframe: 1Min, 5Min, 15Min, 1Hour, 1Day")
-	cacheDir := fs.String("cache", ".cache/bars", "directory for cached bar data")
-	clearCache := fs.Bool("clear-cache", false, "clear cached bar data before fetching")
-	fs.Parse(args)
-
-	if *startStr == "" {
-		log.Fatal("backtest: -start is required")
-	}
-
-	start, err := time.Parse("2006-01-02", *startStr)
-	if err != nil {
-		log.Fatalf("backtest: invalid start date: %v", err)
-	}
-
-	end := time.Now()
-	if *endStr != "" {
-		end, err = time.Parse("2006-01-02", *endStr)
-		if err != nil {
-			log.Fatalf("backtest: invalid end date: %v", err)
-		}
-	}
-
-	if *clearCache {
-		if err := backtest.ClearCache(*cacheDir); err != nil {
-			log.Printf("backtest: clear cache warning: %v", err)
-		} else {
-			log.Println("backtest: cache cleared")
-		}
-	}
-
-	tradingCfg := config.DefaultTradingConfig()
-
-	var bars []domain.Tick
-	if *dataPath != "" {
-		// Load from local CSV
-		bars, err = backtest.LoadCSV(*dataPath, start, end)
-		if err != nil {
-			log.Fatalf("backtest: load csv: %v", err)
-		}
-	} else {
-		// Fetch from Alpaca (with caching)
-		symbols := parseSymbols(*symbolsStr)
-		if len(symbols) == 0 {
-			log.Fatal("backtest: either -data or -symbols is required")
-		}
-
-		appCfg, err := config.LoadAppConfig()
-		if err != nil {
-			log.Fatalf("backtest: %v (set ALPACA_API_KEY and ALPACA_API_SECRET)", err)
-		}
-		client := alpaca.NewClient(appCfg)
-		fetcher := backtest.NewFetcher(client)
-
-		bars, err = fetcher.Fetch(context.Background(), backtest.FetchRequest{
-			Symbols:   symbols,
-			Start:     start,
-			End:       end,
-			Timeframe: *timeframe,
-			CacheDir:  *cacheDir,
-		})
-		if err != nil {
-			log.Fatalf("backtest: fetch: %v", err)
-		}
-	}
-
-	engine := backtest.NewEngine(tradingCfg)
-	result := engine.Run(bars)
-
-	output, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(output))
-}
-
 func runOptimize(args []string) {
 	fs := flag.NewFlagSet("optimize", flag.ExitOnError)
 	asOfStr := fs.String("as-of", "", "as-of date (YYYY-MM-DD)")
-	dataPath := fs.String("data", "", "path to CSV data file (optional — fetches from Alpaca if omitted)")
-	symbolsStr := fs.String("symbols", "", "comma-separated symbols to fetch from Alpaca")
-	timeframe := fs.String("timeframe", "1Day", "bar timeframe: 1Min, 5Min, 15Min, 1Hour, 1Day")
-	cacheDir := fs.String("cache", ".cache/bars", "directory for cached bar data")
+	dataPath := fs.String("data", "", "path to CSV data file")
 	outDir := fs.String("out", ".cache/optimizer", "output directory")
 	fs.Parse(args)
 
@@ -373,36 +294,12 @@ func runOptimize(args []string) {
 
 	lookbackStart := asOf.AddDate(0, -6, 0)
 
-	var bars []domain.Tick
-	if *dataPath != "" {
-		bars, err = backtest.LoadCSV(*dataPath, lookbackStart, asOf)
-		if err != nil {
-			log.Fatalf("optimize: load csv: %v", err)
-		}
-	} else {
-		// Fetch from Alpaca (with caching)
-		symbols := parseSymbols(*symbolsStr)
-		if len(symbols) == 0 {
-			log.Fatal("optimize: either -data or -symbols is required")
-		}
-
-		appCfg, err := config.LoadAppConfig()
-		if err != nil {
-			log.Fatalf("optimize: %v (set ALPACA_API_KEY and ALPACA_API_SECRET)", err)
-		}
-		client := alpaca.NewClient(appCfg)
-		fetcher := backtest.NewFetcher(client)
-
-		bars, err = fetcher.Fetch(context.Background(), backtest.FetchRequest{
-			Symbols:   symbols,
-			Start:     lookbackStart,
-			End:       asOf,
-			Timeframe: *timeframe,
-			CacheDir:  *cacheDir,
-		})
-		if err != nil {
-			log.Fatalf("optimize: fetch: %v", err)
-		}
+	if *dataPath == "" {
+		log.Fatal("optimize: -data is required")
+	}
+	bars, err := backtest.LoadInputBars(*dataPath, lookbackStart, asOf)
+	if err != nil {
+		log.Fatalf("optimize: load csv: %v", err)
 	}
 
 	opt := optimizer.NewOptimizer(bars, asOf, *outDir)
@@ -415,17 +312,24 @@ func runOptimize(args []string) {
 	fmt.Println(string(output))
 }
 
-// parseSymbols splits a comma-separated symbol string into a clean slice.
-func parseSymbols(s string) []string {
-	if s == "" {
-		return nil
+func brokerCashValue(acct alpaca.Account) (float64, bool) {
+	if acct.Cash > 0 {
+		return acct.Cash, true
 	}
-	var symbols []string
-	for _, sym := range strings.Split(s, ",") {
-		sym = strings.TrimSpace(strings.ToUpper(sym))
-		if sym != "" {
-			symbols = append(symbols, sym)
-		}
-	}
-	return symbols
+	return 0, false
 }
+
+func brokerAccountValues(acct alpaca.Account) (float64, float64, bool) {
+	if acct.Equity > 0 {
+		return acct.Equity, acct.BuyingPower, true
+	}
+	return 0, 0, false
+}
+
+// Ensure imports are used.
+var (
+	_ = context.Background
+	_ = flag.NewFlagSet
+	_ = strings.TrimSpace
+	_ = backtest.LoadInputBars
+)

@@ -102,6 +102,36 @@ func (s *Scanner) Evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	return s.evaluate(tick)
 }
 
+// EvaluateTickDetailed tests a tick against scanner filters and returns
+// the rejection reason when the tick is not a candidate.
+func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
+	candidate, ok := s.evaluate(tick)
+	if ok {
+		return candidate, true, ""
+	}
+	reason := classifyTickRejection(tick, s.config)
+	return candidate, false, reason
+}
+
+func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
+	if tick.Price <= 0 || tick.Volume <= 0 {
+		return "no-data"
+	}
+	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
+		return "price-filter"
+	}
+	if tick.GapPercent < cfg.MinGapPercent && tick.GapPercent > -cfg.MinGapPercent {
+		return "gap-filter"
+	}
+	if tick.RelativeVolume < cfg.MinRelativeVolume {
+		return "relative-volume"
+	}
+	if tick.PreMarketVolume < cfg.MinPremarketVolume {
+		return "premarket-volume"
+	}
+	return "other-filter"
+}
+
 func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	if tick.Price <= 0 || tick.Volume <= 0 {
 		return domain.Candidate{}, false

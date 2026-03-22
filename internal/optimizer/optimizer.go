@@ -1,6 +1,7 @@
 package optimizer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,39 +14,38 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
-	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 )
 
 // Optimizer runs walk-forward parameter optimization.
 type Optimizer struct {
-	bars    []domain.Tick
-	asOf    time.Time
-	outDir  string
+	bars   []backtest.InputBar
+	asOf   time.Time
+	outDir string
 }
 
 // Report records the optimizer's recommendations.
 type Report struct {
-	AsOf             time.Time                `json:"asOf"`
-	GeneratedAt      time.Time                `json:"generatedAt"`
-	SearchWeeks      int                      `json:"searchWeeks"`
-	ValidationWeeks  int                      `json:"validationWeeks"`
-	HoldoutWeeks     int                      `json:"holdoutWeeks"`
-	Candidates       []CandidateResult        `json:"candidates"`
-	Recommendation   *CandidateResult         `json:"recommendation"`
+	AsOf            time.Time         `json:"asOf"`
+	GeneratedAt     time.Time         `json:"generatedAt"`
+	SearchWeeks     int               `json:"searchWeeks"`
+	ValidationWeeks int               `json:"validationWeeks"`
+	HoldoutWeeks    int               `json:"holdoutWeeks"`
+	Candidates      []CandidateResult `json:"candidates"`
+	Recommendation  *CandidateResult  `json:"recommendation"`
 }
 
 // CandidateResult is one optimizer trial.
 type CandidateResult struct {
-	ProfileName      string                    `json:"profileName"`
-	SearchResult     backtest.Result           `json:"searchResult"`
-	ValidationResult backtest.Result           `json:"validationResult"`
-	HoldoutResult    *backtest.Result          `json:"holdoutResult,omitempty"`
-	Score            float64                   `json:"score"`
-	Config           config.TradingConfig      `json:"config"`
+	ProfileName      string               `json:"profileName"`
+	SearchResult     backtest.Result      `json:"searchResult"`
+	ValidationResult backtest.Result      `json:"validationResult"`
+	HoldoutResult    *backtest.Result     `json:"holdoutResult,omitempty"`
+	Score            float64              `json:"score"`
+	Config           config.TradingConfig `json:"config"`
 }
 
 // NewOptimizer creates an optimizer from bars.
-func NewOptimizer(bars []domain.Tick, asOf time.Time, outDir string) *Optimizer {
+func NewOptimizer(bars []backtest.InputBar, asOf time.Time, outDir string) *Optimizer {
 	return &Optimizer{bars: bars, asOf: asOf, outDir: outDir}
 }
 
@@ -73,9 +73,18 @@ func (o *Optimizer) Run() (Report, error) {
 			// Split data: 60% search, 20% validation, 20% holdout
 			searchBars, validBars, holdoutBars := o.splitBars(0.6, 0.2)
 
-			engine := backtest.NewEngine(cfg)
-			searchResult := engine.Run(searchBars)
-			validResult := engine.Run(validBars)
+			searchResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
+				Bars: searchBars,
+			})
+			if err != nil {
+				continue
+			}
+			validResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
+				Bars: validBars,
+			})
+			if err != nil {
+				continue
+			}
 
 			// Score combines search and validation
 			score := o.scoreResult(searchResult, validResult)
@@ -90,8 +99,12 @@ func (o *Optimizer) Run() (Report, error) {
 
 			// Run holdout for top candidates
 			if score > 0 && len(holdoutBars) > 0 {
-				holdoutResult := engine.Run(holdoutBars)
-				candidate.HoldoutResult = &holdoutResult
+				holdoutResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
+					Bars: holdoutBars,
+				})
+				if err == nil {
+					candidate.HoldoutResult = &holdoutResult
+				}
 			}
 
 			candidates = append(candidates, candidate)
@@ -160,7 +173,7 @@ func (o *Optimizer) generateVariations(profile config.StrategyProfile, count int
 	return variations
 }
 
-func (o *Optimizer) splitBars(searchPct, validPct float64) ([]domain.Tick, []domain.Tick, []domain.Tick) {
+func (o *Optimizer) splitBars(searchPct, validPct float64) ([]backtest.InputBar, []backtest.InputBar, []backtest.InputBar) {
 	n := len(o.bars)
 	searchEnd := int(float64(n) * searchPct)
 	validEnd := searchEnd + int(float64(n)*validPct)
@@ -171,13 +184,13 @@ func (o *Optimizer) splitBars(searchPct, validPct float64) ([]domain.Tick, []dom
 }
 
 func (o *Optimizer) scoreResult(search, validation backtest.Result) float64 {
-	if search.TotalTrades < 5 || validation.TotalTrades < 3 {
+	if search.Trades < 5 || validation.Trades < 3 {
 		return -1
 	}
 
 	// Weighted combination
-	searchScore := search.ProfitFactor*0.3 + search.WinRate*0.2 + search.SharpeRatio*0.3 - search.MaxDrawdown/search.NetPnL*0.2
-	validScore := validation.ProfitFactor*0.3 + validation.WinRate*0.2 + validation.SharpeRatio*0.3 - validation.MaxDrawdown/math.Max(validation.NetPnL, 1)*0.2
+	searchScore := search.ProfitFactor*0.3 + search.WinRate*0.2 - search.MaxDrawdownPct/math.Max(search.NetPnL, 1)*0.2
+	validScore := validation.ProfitFactor*0.3 + validation.WinRate*0.2 - validation.MaxDrawdownPct/math.Max(validation.NetPnL, 1)*0.2
 
 	// Penalize overfitting (large gap between search and validation)
 	overfit := math.Abs(searchScore-validScore) / math.Max(math.Abs(searchScore), 1)

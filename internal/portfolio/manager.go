@@ -25,7 +25,12 @@ type Manager struct {
 }
 
 // NewManager creates a portfolio manager.
-func NewManager(cfg config.TradingConfig, recorder domain.EventRecorder) *Manager {
+// The recorder parameter is optional; if omitted, no events are persisted.
+func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Manager {
+	var recorder domain.EventRecorder
+	if len(recorders) > 0 {
+		recorder = recorders[0]
+	}
 	return &Manager{
 		config:       cfg,
 		positions:    make(map[string]domain.Position),
@@ -367,4 +372,64 @@ func (m *Manager) resetDayIfNeededLocked() {
 		m.entriesToday = 0
 		m.closedTrades = m.closedTrades[:0]
 	}
+}
+
+// ApplyExecution processes an execution report, opening or closing positions as appropriate.
+func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
+	if domain.IsOpeningIntent(report.Intent) {
+		m.OpenPosition(report)
+	} else {
+		m.ClosePosition(report)
+	}
+}
+
+// HasPosition returns true if the manager holds a position in the given symbol.
+func (m *Manager) HasPosition(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.positions[symbol]
+	return ok
+}
+
+// MarkPriceAt updates the position's price tracking at a specific time.
+func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pos, ok := m.positions[symbol]
+	if !ok {
+		return
+	}
+	pos.LastPrice = price
+	pos.MarketValue = price * float64(pos.Quantity)
+	if price > pos.HighestPrice {
+		pos.HighestPrice = price
+	}
+	if price < pos.LowestPrice || pos.LowestPrice == 0 {
+		pos.LowestPrice = price
+	}
+	if domain.IsLong(pos.Side) {
+		pos.UnrealizedPnL = (price - pos.AvgPrice) * float64(pos.Quantity)
+	} else {
+		pos.UnrealizedPnL = (pos.AvgPrice - price) * float64(pos.Quantity)
+	}
+	pos.UpdatedAt = at
+	m.positions[symbol] = pos
+}
+
+// RealizedPnL returns the total realized PnL from closed trades.
+func (m *Manager) RealizedPnL() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var total float64
+	for _, t := range m.closedTrades {
+		total += t.PnL
+	}
+	return total
+}
+
+// OpenPositionCount returns the number of open positions.
+func (m *Manager) OpenPositionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.positions)
 }

@@ -23,13 +23,35 @@ type State struct {
 }
 
 // NewState creates a new runtime state.
-func NewState(recorder domain.EventRecorder) *State {
+// The recorder parameter is optional; if omitted, no events are persisted.
+func NewState(recorders ...domain.EventRecorder) *State {
+	var recorder domain.EventRecorder
+	if len(recorders) > 0 {
+		recorder = recorders[0]
+	}
 	return &State{
-		candidates:  make([]domain.Candidate, 0),
-		logs:        make([]domain.LogEntry, 0, maxLogs),
-		depStatuses: make(map[string]bool),
+		candidates:    make([]domain.Candidate, 0),
+		logs:          make([]domain.LogEntry, 0, maxLogs),
+		depStatuses:   make(map[string]bool),
 		eventRecorder: recorder,
 	}
+}
+
+// TriggerDailyLossStop records that the daily loss limit was hit.
+func (s *State) TriggerDailyLossStop(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = true
+}
+
+// OptimizerStatus tracks the optimizer lifecycle state.
+type OptimizerStatus struct {
+	ActiveProfileName           string
+	ActiveProfileVersion        string
+	PendingProfileName          string
+	PendingProfileVersion       string
+	LastOptimizerRun            time.Time
+	LastPaperValidationResult   string
 }
 
 // Pause stops new entries from being taken.

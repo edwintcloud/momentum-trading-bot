@@ -91,6 +91,43 @@ func (s *Strategy) EvaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	return s.evaluateExit(tick)
 }
 
+// EvaluateExitDetailed applies exit rules and returns the reason.
+func (s *Strategy) EvaluateExitDetailed(tick domain.Tick) (domain.TradeSignal, bool, string) {
+	signal, ok := s.evaluateExit(tick)
+	return signal, ok, signal.Reason
+}
+
+// CandidateDecision captures the full decision context for a candidate evaluation.
+type CandidateDecision struct {
+	Signal                 domain.TradeSignal
+	Emit                   bool
+	Reason                 string
+	PredictedReturnPct     float64
+	RequiredReturnPct      float64
+	AllowedDistanceHighPct float64
+	StrongSqueeze          bool
+}
+
+// EvaluateCandidateDecision returns a rich decision object for a candidate.
+func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) CandidateDecision {
+	signal, ok := s.evaluateCandidate(candidate)
+	reason := "no-signal"
+	if ok {
+		reason = signal.Reason
+	} else if candidate.Score < s.config.MinEntryScore {
+		reason = "low-score"
+	} else if s.runtime.IsPaused() || s.runtime.IsEmergencyStopped() {
+		reason = "system-paused"
+	} else if _, exists := s.portfolio.GetPosition(candidate.Symbol); exists {
+		reason = "existing-position"
+	}
+	return CandidateDecision{
+		Signal: signal,
+		Emit:   ok,
+		Reason: reason,
+	}
+}
+
 func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bool) {
 	now := c.Timestamp
 	if !markethours.IsMarketOpen(now) {
