@@ -200,15 +200,6 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.ShortPeakExtensionMinPct = overrides.ShortPeakExtensionMinPct
 	cfg.ShortVWAPBreakMinPct = overrides.ShortVWAPBreakMinPct
 	cfg.ShortStopATRMultiplier = overrides.ShortStopATRMultiplier
-	if overrides.MinFloat > 0 {
-		cfg.MinFloat = overrides.MinFloat
-	}
-	if overrides.ShortMinFloat > 0 {
-		cfg.ShortMinFloat = overrides.ShortMinFloat
-	}
-	if overrides.FloatRotationScoreWeight > 0 {
-		cfg.FloatRotationScoreWeight = overrides.FloatRotationScoreWeight
-	}
 	cfg.ScannerMinPriceVsOpenPctFloor = overrides.ScannerMinPriceVsOpenPctFloor
 	cfg.ScannerMinPriceVsOpenGapMultiplier = overrides.ScannerMinPriceVsOpenGapMultiplier
 	cfg.ScannerMinSetupVolumeRateOffset = overrides.ScannerMinSetupVolumeRateOffset

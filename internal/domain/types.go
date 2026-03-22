@@ -35,7 +35,6 @@ type Tick struct {
 	GapPercent      float64   `json:"gapPercent"`
 	PreMarketVolume int64     `json:"premarketVolume"`
 	VolumeSpike     bool      `json:"volumeSpike"`
-	Float           float64   `json:"float"`
 	Catalyst        string    `json:"catalyst"`
 	CatalystURL     string    `json:"catalystUrl"`
 	Timestamp       time.Time `json:"timestamp"`
@@ -76,7 +75,6 @@ type Candidate struct {
 	EMAFast               float64   `json:"emaFast"`
 	EMASlow               float64   `json:"emaSlow"`
 	SetupType             string    `json:"setupType"`
-	Float                 float64   `json:"float"`
 	Score                 float64   `json:"score"`
 	MarketRegime          string    `json:"marketRegime"`
 	RegimeConfidence      float64   `json:"regimeConfidence"`

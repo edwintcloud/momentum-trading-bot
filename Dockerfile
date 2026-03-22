@@ -24,8 +24,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=go-builder /out/momentum-bot /app/momentum-bot
 COPY --from=go-builder /build/web/dist /app/web/dist
 COPY --from=go-builder /build/profiles /app/profiles
-RUN mkdir -p /app/.cache/float \
-	&& chown -R app:app /app
+RUN chown -R app:app /app
 USER app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD wget -q -O - http://127.0.0.1:8080/healthz >/dev/null || exit 1

@@ -141,9 +141,6 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if s.config.MaxPrice > 0 && tick.Price > s.config.MaxPrice {
 		return domain.Candidate{}, false, "max-price"
 	}
-	if tick.Float > 0 && tick.Float < s.config.MinFloat {
-		return domain.Candidate{}, false, "min-float"
-	}
 	if tick.RelativeVolume <= s.config.MinRelativeVolume {
 		return domain.Candidate{}, false, "min-relative-volume"
 	}
@@ -202,7 +199,6 @@ func (s *Scanner) evaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 		EMAFast:               round2(scoreOrZero(metrics.emaFast)),
 		EMASlow:               round2(scoreOrZero(metrics.emaSlow)),
 		SetupType:             metrics.setupType,
-		Float:                 tick.Float,
 		Score:                 round2(scoreOrZero(score)),
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
@@ -255,14 +251,6 @@ func (s *Scanner) longMomentumScore(tick domain.Tick, priceVsOpenPct, distanceFr
 	case "opening-range-breakout":
 		score += 5
 	}
-
-	// Float rotation: cumulative volume / float. High rotation signals
-	// extreme conviction and supply exhaustion — strong continuation signal.
-	if tick.Float > 0 && tick.Volume > 0 {
-		floatRotation := float64(tick.Volume) / tick.Float
-		score += clampFloat(floatRotation, 0, 3) * s.config.FloatRotationScoreWeight
-	}
-
 	return score
 }
 
@@ -350,14 +338,6 @@ func (s *Scanner) shortMomentumScore(tick domain.Tick, priceVsOpenPct, distanceF
 	if metrics.setupType == "parabolic-failed-reclaim-short" {
 		score += 8.5
 	}
-
-	// Float rotation bonus for shorts: high turnover on a parabolic confirms
-	// that the available supply of willing buyers is being exhausted.
-	if tick.Float > 0 && tick.Volume > 0 {
-		floatRotation := float64(tick.Volume) / tick.Float
-		score += clampFloat(floatRotation, 0, 3) * s.config.FloatRotationScoreWeight
-	}
-
 	return score
 }
 

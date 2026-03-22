@@ -17,7 +17,6 @@ import (
 	"github.com/edwincloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwincloud/momentum-trading-bot/internal/config"
 	"github.com/edwincloud/momentum-trading-bot/internal/domain"
-	"github.com/edwincloud/momentum-trading-bot/internal/floatcache"
 	"github.com/edwincloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwincloud/momentum-trading-bot/internal/storage"
 )
@@ -68,14 +67,11 @@ func runBacktest(args []string) error {
 		log.Printf("Backtest logs writing to %s", logDir)
 	}
 
-	fc := floatcache.NewCache()
-
 	runCfg := backtest.RunConfig{
-		DataPath:    *dataPath,
-		Start:       start,
-		End:         end,
-		Recorder:    fsRecorder,
-		FloatLookup: fc.Get,
+		DataPath: *dataPath,
+		Start:    start,
+		End:      end,
+		Recorder: fsRecorder,
 	}
 
 	if *dataPath == "" {
@@ -120,10 +116,6 @@ func runBacktest(args []string) error {
 		}
 		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
 		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
-
-		floatCtx, floatCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		fc.EnsureFresh(floatCtx, symbols, 7*24*time.Hour)
-		floatCancel()
 	}
 	profileLabel := ""
 	if profilePath != "" {
