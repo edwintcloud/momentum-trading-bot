@@ -24,6 +24,7 @@ type RunConfig struct {
 	DataPath     string
 	Bars         []InputBar
 	Iterator     InputBarIterator
+	IteratorFn   IteratorFactory // factory for creating bounded iterators (streaming mode)
 	Start        time.Time
 	End          time.Time
 	Recorder     domain.EventRecorder

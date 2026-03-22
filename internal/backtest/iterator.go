@@ -17,6 +17,11 @@ type InputBarIterator interface {
 	Close() error
 }
 
+// IteratorFactory creates a fresh InputBarIterator on each call.
+// This allows the optimizer to stream bars from disk cache instead of
+// holding the entire dataset in RAM.
+type IteratorFactory func() (InputBarIterator, error)
+
 type sliceInputBarIterator struct {
 	bars []InputBar
 	next int
@@ -50,9 +55,14 @@ func (it *sliceInputBarIterator) Close() error {
 
 func resolveBarIterator(runCfg RunConfig) (InputBarIterator, error) {
 	switch {
+	case runCfg.IteratorFn != nil:
+		return runCfg.IteratorFn()
 	case runCfg.Iterator != nil:
 		return runCfg.Iterator, nil
 	case len(runCfg.Bars) > 0:
+		if runCfg.Start.IsZero() && runCfg.End.IsZero() {
+			return &sliceInputBarIterator{bars: runCfg.Bars}, nil
+		}
 		return newSliceInputBarIterator(runCfg.Bars, runCfg.Start, runCfg.End), nil
 	case runCfg.DataPath != "":
 		bars, err := loadInputBars(runCfg.DataPath, runCfg.Start, runCfg.End)

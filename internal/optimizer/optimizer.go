@@ -26,9 +26,11 @@ type ParameterRange struct {
 
 // Optimizer runs walk-forward parameter optimization.
 type Optimizer struct {
-	bars   []backtest.InputBar
-	asOf   time.Time
-	outDir string
+	bars          []backtest.InputBar
+	iterFactory   func(start, end time.Time) (backtest.InputBarIterator, error) // streaming factory
+	lookbackStart time.Time                                                     // used with iterFactory for time splits
+	asOf          time.Time
+	outDir        string
 }
 
 // Report records the optimizer's recommendations.
@@ -57,6 +59,12 @@ type CandidateResult struct {
 // NewOptimizer creates an optimizer from bars.
 func NewOptimizer(bars []backtest.InputBar, asOf time.Time, outDir string) *Optimizer {
 	return &Optimizer{bars: bars, asOf: asOf, outDir: outDir}
+}
+
+// NewStreamingOptimizer creates an optimizer that streams bars from disk cache
+// instead of loading them all into RAM.
+func NewStreamingOptimizer(iterFactory func(start, end time.Time) (backtest.InputBarIterator, error), lookbackStart, asOf time.Time, outDir string) *Optimizer {
+	return &Optimizer{iterFactory: iterFactory, lookbackStart: lookbackStart, asOf: asOf, outDir: outDir}
 }
 
 // formatDuration formats a duration as a human-readable string like "2m15s" or "1h3m".
@@ -88,16 +96,22 @@ func (o *Optimizer) Run() (Report, error) {
 
 // RunWithConfig executes the optimization with a given base configuration.
 func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) {
-	if len(o.bars) == 0 {
-		return Report{}, fmt.Errorf("no bars provided")
+	if len(o.bars) == 0 && o.iterFactory == nil {
+		return Report{}, fmt.Errorf("no bars or iterator factory provided")
 	}
+
+	streaming := o.iterFactory != nil
 
 	now := time.Now().In(markethours.Location())
 	optimizerStart := now
 
 	log.Printf("=== Optimizer Starting ===")
 	log.Printf("As-of date: %s", o.asOf.Format("2006-01-02"))
-	log.Printf("Input bars: %d", len(o.bars))
+	if streaming {
+		log.Printf("Mode: streaming from disk cache")
+	} else {
+		log.Printf("Input bars: %d", len(o.bars))
+	}
 	log.Printf("Start time: %s ET", now.Format("2006-01-02 15:04:05"))
 
 	// Define search space
@@ -118,15 +132,50 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 	}
 	totalCombinations := len(profiles) * variationsPerProfile
 
-	// Split data: 60% search, 20% validation, 20% holdout
-	var searchBars, validBars, holdoutBars []backtest.InputBar
-	if baseCfg.OptimizerTimeSplit {
-		searchBars, validBars, holdoutBars = o.splitBarsByTime(0.6, 0.2)
+	// Compute time split points for both streaming and bars paths
+	var searchCfg, validCfg, holdoutCfg backtest.RunConfig
+	if streaming {
+		totalDuration := o.asOf.Sub(o.lookbackStart)
+		searchEnd := o.lookbackStart.Add(time.Duration(float64(totalDuration) * 0.6))
+		validEnd := o.lookbackStart.Add(time.Duration(float64(totalDuration) * 0.8))
+
+		iterFactory := o.iterFactory // capture for closures
+		lbStart := o.lookbackStart
+		asOf := o.asOf
+
+		searchCfg = backtest.RunConfig{
+			IteratorFn: func() (backtest.InputBarIterator, error) {
+				return iterFactory(lbStart, searchEnd)
+			},
+		}
+		validCfg = backtest.RunConfig{
+			IteratorFn: func() (backtest.InputBarIterator, error) {
+				return iterFactory(searchEnd, validEnd)
+			},
+		}
+		holdoutCfg = backtest.RunConfig{
+			IteratorFn: func() (backtest.InputBarIterator, error) {
+				return iterFactory(validEnd, asOf)
+			},
+		}
+		log.Printf("Data split (streaming): search=%s..%s validation=%s..%s holdout=%s..%s",
+			lbStart.Format("2006-01-02"), searchEnd.Format("2006-01-02"),
+			searchEnd.Format("2006-01-02"), validEnd.Format("2006-01-02"),
+			validEnd.Format("2006-01-02"), asOf.Format("2006-01-02"))
 	} else {
-		searchBars, validBars, holdoutBars = o.splitBars(0.6, 0.2)
+		// Split data: 60% search, 20% validation, 20% holdout
+		var searchBars, validBars, holdoutBars []backtest.InputBar
+		if baseCfg.OptimizerTimeSplit {
+			searchBars, validBars, holdoutBars = o.splitBarsByTime(0.6, 0.2)
+		} else {
+			searchBars, validBars, holdoutBars = o.splitBars(0.6, 0.2)
+		}
+		log.Printf("Data split: search=%d bars, validation=%d bars, holdout=%d bars (time_split=%v)",
+			len(searchBars), len(validBars), len(holdoutBars), baseCfg.OptimizerTimeSplit)
+		searchCfg = backtest.RunConfig{Bars: searchBars}
+		validCfg = backtest.RunConfig{Bars: validBars}
+		holdoutCfg = backtest.RunConfig{Bars: holdoutBars}
 	}
-	log.Printf("Data split: search=%d bars, validation=%d bars, holdout=%d bars (time_split=%v)",
-		len(searchBars), len(validBars), len(holdoutBars), baseCfg.OptimizerTimeSplit)
 
 	// === Search Phase ===
 	log.Printf("=== Optimization Search Phase ===")
@@ -166,9 +215,7 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 		for vi, cfg := range variations {
 			combo++
 
-			searchResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
-				Bars: searchBars,
-			})
+			searchResult, err := backtest.Run(context.Background(), cfg, searchCfg)
 			if err != nil {
 				elapsed := time.Since(searchStart)
 				log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (search): %v | elapsed: %s",
@@ -178,9 +225,7 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 				continue
 			}
 
-			validResult, err := backtest.Run(context.Background(), cfg, backtest.RunConfig{
-				Bars: validBars,
-			})
+			validResult, err := backtest.Run(context.Background(), cfg, validCfg)
 			if err != nil {
 				elapsed := time.Since(searchStart)
 				log.Printf("[%d/%d] (%.1f%%) profile=%s ERROR (validation): %v | elapsed: %s",
@@ -199,7 +244,7 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 			newBest := ""
 			if score > bestScore {
 				bestScore = score
-				newBest = " (new best ★)"
+				newBest = " (new best)"
 			}
 
 			log.Printf("[%d/%d] (%.1f%%) profile=%-16s score=%.4f%s | elapsed: %s | eta: ~%s",
@@ -268,15 +313,14 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 	// === Holdout Phase ===
 	log.Printf("=== Holdout Phase ===")
 	bestHoldoutScore := math.Inf(-1)
-	if len(holdoutBars) > 0 {
+	holdoutHasBars := streaming || len(o.bars) > 0
+	if holdoutHasBars {
 		for i := range candidates {
 			if candidates[i].Score <= 0 {
 				log.Printf("  Candidate %d: skipped (non-positive score)", i+1)
 				continue
 			}
-			holdoutResult, err := backtest.Run(context.Background(), candidates[i].Config, backtest.RunConfig{
-				Bars: holdoutBars,
-			})
+			holdoutResult, err := backtest.Run(context.Background(), candidates[i].Config, holdoutCfg)
 			if err != nil {
 				log.Printf("  Candidate %d: holdout ERROR: %v", i+1, err)
 				continue
