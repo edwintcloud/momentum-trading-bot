@@ -388,6 +388,56 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.WFStepDays = 20
 	}
 
+	// Phase 5: HMM regime detection defaults
+	if !cfg.HMMRegimeEnabled && cfg.HMMConfidenceMin == 0 {
+		cfg.HMMRegimeEnabled = true
+	}
+	if cfg.HMMConfidenceMin == 0 {
+		cfg.HMMConfidenceMin = 0.70
+	}
+
+	// Phase 5: Bayesian optimization defaults
+	if !cfg.BayesianOptEnabled && cfg.BayesianExploration == 0 {
+		cfg.BayesianOptEnabled = true
+	}
+	if cfg.BayesianExploration == 0 {
+		cfg.BayesianExploration = 20
+	}
+
+	// Phase 5: Factor analysis defaults
+	if !cfg.FactorAnalysisEnabled && cfg.CPCVGroups == 0 {
+		cfg.FactorAnalysisEnabled = true
+	}
+
+	// Phase 5: Impact model defaults
+	if !cfg.ImpactModelEnabled && cfg.MaxAcceptableImpactPct == 0 {
+		cfg.ImpactModelEnabled = true
+	}
+	if cfg.MaxAcceptableImpactPct == 0 {
+		cfg.MaxAcceptableImpactPct = 0.005
+	}
+
+	// Phase 5: ML scoring defaults (disabled until model trained)
+	if cfg.MLScoreWeight == 0 {
+		cfg.MLScoreWeight = 0.50
+	}
+
+	// Phase 5: Meta-labeling defaults (disabled until model trained)
+	if cfg.MetaLabelMinProb == 0 {
+		cfg.MetaLabelMinProb = 0.40
+	}
+
+	// Phase 5: CPCV defaults
+	if !cfg.CPCVEnabled && cfg.CPCVGroups == 0 {
+		cfg.CPCVEnabled = true
+	}
+	if cfg.CPCVGroups == 0 {
+		cfg.CPCVGroups = 6
+	}
+	if cfg.CPCVPurgeGap == 0 {
+		cfg.CPCVPurgeGap = 60
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 
