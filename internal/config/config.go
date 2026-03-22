@@ -266,6 +266,36 @@ type TradingConfig struct {
 	AdaptiveLimitWidenStepBps     float64 // widening step per interval in bps
 	AdaptiveLimitWidenIntervalSec int     // seconds between widening steps
 	AdaptiveLimitMaxSlippageBps   float64 // max allowed slippage from arrival price in bps
+
+	// Portfolio construction: Mean-Variance Optimization (Section 3.1)
+	MVOEnabled           bool
+	MVORiskAversion      float64 // lambda in w* = λ⁻¹ · Σ⁻¹ · μ
+	MVOMaxPositionPct    float64 // max single position weight
+	MVOMaxSectorPct      float64 // max sector weight
+	LedoitWolfShrinkage  float64 // shrinkage intensity δ (0=sample, 1=target)
+
+	// Portfolio construction: Risk Parity (Section 3.2)
+	RiskParityEnabled            bool
+	RiskParityEWMALambda         float64 // EWMA decay factor for vol estimation
+	RiskParityRebalanceMinutes   int     // rebalance interval
+	RiskParityDeviationThreshold float64 // rebalance trigger: weight deviation
+
+	// Portfolio construction: Factor-Neutral (Section 3.3)
+	FactorNeutralEnabled bool
+	FactorBetaWindow     int     // rolling window for beta estimation
+	MaxNetBeta           float64 // max absolute net portfolio beta
+
+	// Portfolio construction: HHI Diversification (Section 3.4)
+	HHIEnabled        bool
+	HHIMaxTarget      float64 // log warning above this
+	HHIAlertThreshold float64 // block new entries above this
+
+	// Portfolio construction: Long-Short Balancing (Section 3.5)
+	LongShortBalancingEnabled bool
+	DollarNeutralTolerance    float64 // max imbalance ratio
+	BetaNeutralThreshold      float64 // max |beta_long - beta_short|
+	MaxGrossLeverage          float64 // (long + |short|) / equity cap
+	SectorNeutralTolerance    float64 // per-sector net exposure tolerance
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

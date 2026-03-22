@@ -271,7 +271,32 @@
     "AdaptiveLimitToleranceBps": 5.0,
     "AdaptiveLimitWidenStepBps": 0.5,
     "AdaptiveLimitWidenIntervalSec": 5,
-    "AdaptiveLimitMaxSlippageBps": 20.0
+    "AdaptiveLimitMaxSlippageBps": 20.0,
+
+    "MVOEnabled": false,
+    "MVORiskAversion": 1.0,
+    "MVOMaxPositionPct": 0.05,
+    "MVOMaxSectorPct": 0.25,
+    "LedoitWolfShrinkage": 0.5,
+
+    "RiskParityEnabled": false,
+    "RiskParityEWMALambda": 0.94,
+    "RiskParityRebalanceMinutes": 30,
+    "RiskParityDeviationThreshold": 0.20,
+
+    "FactorNeutralEnabled": false,
+    "FactorBetaWindow": 60,
+    "MaxNetBeta": 0.30,
+
+    "HHIEnabled": false,
+    "HHIMaxTarget": 0.10,
+    "HHIAlertThreshold": 0.15,
+
+    "LongShortBalancingEnabled": false,
+    "DollarNeutralTolerance": 0.05,
+    "BetaNeutralThreshold": 0.30,
+    "MaxGrossLeverage": 2.0,
+    "SectorNeutralTolerance": 0.10
   },
   "promotion": {
     "deploymentMode": "paper",
