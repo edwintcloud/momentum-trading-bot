@@ -327,6 +327,13 @@ type TradingConfig struct {
 	// ML Pipeline: Scoring Integration (Section 6.2)
 	MLScoringThreshold         float64 // minimum ML score to allow trade (default 0.5)
 	MLScoringWeightInEnsemble  float64 // ML signal weight in ensemble (default 1.0)
+
+	// Strategy quality filters
+	EntryDeadlineMinutesAfterOpen int     // 0 = disabled, 120 = block entries after 2 hours from open
+	MinRiskRewardRatio            float64 // 0 = disabled, 2.0 = require 2:1 R:R minimum
+	MaxDistanceFromHighPct        float64 // 0 = disabled, 5.0 = longs must be within 5% of HOD
+	VolumeOnPullbackEnabled       bool    // enable volume-on-pullback scoring
+	MidDayScoreMultiplier         float64 // 0 = use hardcoded 1.15, otherwise override midday threshold multiplier
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

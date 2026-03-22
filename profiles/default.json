@@ -299,7 +299,13 @@
     "DollarNeutralTolerance": 0.05,
     "BetaNeutralThreshold": 0.30,
     "MaxGrossLeverage": 2.0,
-    "SectorNeutralTolerance": 0.10
+    "SectorNeutralTolerance": 0.10,
+
+    "EntryDeadlineMinutesAfterOpen": 0,
+    "MinRiskRewardRatio": 0,
+    "MaxDistanceFromHighPct": 0,
+    "VolumeOnPullbackEnabled": false,
+    "MidDayScoreMultiplier": 0
   },
   "promotion": {
     "deploymentMode": "paper",

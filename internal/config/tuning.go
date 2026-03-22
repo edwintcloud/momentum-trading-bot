@@ -669,6 +669,13 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.MLScoringWeightInEnsemble = 1.0
 	}
 
+	// Strategy quality filters: defaults preserve existing behavior (all disabled)
+	// EntryDeadlineMinutesAfterOpen: 0 = disabled
+	// MinRiskRewardRatio: 0 = disabled
+	// MaxDistanceFromHighPct: 0 = disabled
+	// VolumeOnPullbackEnabled: false = disabled
+	// MidDayScoreMultiplier: 0 means use hardcoded default (1.15)
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

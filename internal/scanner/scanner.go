@@ -172,6 +172,16 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		direction = domain.DirectionShort
 	}
 
+	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day
+	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong {
+		if tick.HighOfDay > 0 && tick.Price > 0 {
+			distPct := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
+			if distPct > cfg.MaxDistanceFromHighPct {
+				return domain.Candidate{}, false
+			}
+		}
+	}
+
 	// Phase 3 Change 1: RSI overbought/oversold filter
 	if cfg.RSIFilterEnabled {
 		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold {
@@ -310,10 +320,11 @@ type scanMetrics struct {
 	ema9                  float64
 	emaFast               float64
 	emaSlow               float64
-	adx                   float64
-	bbUpper               float64
-	bbMiddle              float64
-	bbLower               float64
+	adx                        float64
+	bbUpper                    float64
+	bbMiddle                   float64
+	bbLower                    float64
+	volumeDecreasingOnPullback bool
 }
 
 func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetrics {
@@ -418,6 +429,26 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 		if high5 > 0 {
 			m.closeOffHighPct = (high5 - tick.Price) / high5 * 100
 		}
+
+		// Volume-on-pullback: check if recent bars have decreasing volume
+		if m.setupType == "pullback" && n >= 5 {
+			peakVolIdx := n - 5
+			for i := n - 4; i < n; i++ {
+				if bars[i].volume > bars[peakVolIdx].volume {
+					peakVolIdx = i
+				}
+			}
+			if peakVolIdx < n-1 {
+				volumeDecreasing := true
+				for i := peakVolIdx + 1; i < n; i++ {
+					if bars[i].volume > bars[i-1].volume*115/100 { // allow 15% tolerance
+						volumeDecreasing = false
+						break
+					}
+				}
+				m.volumeDecreasingOnPullback = volumeDecreasing
+			}
+		}
 	}
 
 	return m
@@ -498,6 +529,15 @@ func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction stri
 		score += 0.5 * continuousScore(m.rsiMASlope, 0, 2.0)
 	} else if direction == domain.DirectionShort && m.rsiMASlope < 0 {
 		score += 0.5 * continuousScore(-m.rsiMASlope, 0, 2.0)
+	}
+
+	// Volume pattern: decreasing volume on pullback is bullish (Cameron's key confirmation)
+	if cfg.VolumeOnPullbackEnabled && m.setupType == "pullback" {
+		if m.volumeDecreasingOnPullback {
+			score += 1.0 // significant bonus for healthy pullback pattern
+		} else {
+			score -= 0.5 // penalty for pullback on increasing volume (distribution)
+		}
 	}
 
 	return score
