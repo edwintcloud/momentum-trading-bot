@@ -215,6 +215,9 @@
     "MaxEntriesPerMinute": 3,
     "MinATRBars": 5,
 
+    "MHTCorrectionMethod": "none",
+    "MHTAlpha": 0.05,
+
     "VaREnabled": false,
     "VaRConfidenceLevel": 0.95,
     "VaRDailyLimitPct": 0.02,

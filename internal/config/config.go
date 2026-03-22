@@ -196,6 +196,10 @@ type TradingConfig struct {
 	CPCVGroups   int
 	CPCVPurgeGap int
 
+	// Statistical validation: Multiple Hypothesis Testing (Section 5.3)
+	MHTCorrectionMethod string  // "none", "bonferroni", or "benjamini-hochberg"
+	MHTAlpha            float64 // significance level for MHT corrections (default 0.05)
+
 	// Risk enhancements: VaR/CVaR (Section 2.2)
 	VaREnabled         bool
 	VaRConfidenceLevel float64 // e.g. 0.95

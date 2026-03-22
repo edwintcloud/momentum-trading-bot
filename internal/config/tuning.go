@@ -448,6 +448,14 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.CPCVPurgeGap = 60
 	}
 
+	// Statistical validation: MHT correction defaults (disabled by default)
+	if cfg.MHTCorrectionMethod == "" {
+		cfg.MHTCorrectionMethod = "none"
+	}
+	if cfg.MHTAlpha == 0 {
+		cfg.MHTAlpha = 0.05
+	}
+
 	// Risk enhancements: VaR/CVaR defaults (disabled by default)
 	if cfg.VaRConfidenceLevel == 0 {
 		cfg.VaRConfidenceLevel = 0.95
