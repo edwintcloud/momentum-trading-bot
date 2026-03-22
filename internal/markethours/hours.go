@@ -19,6 +19,17 @@ func NYLocation() *time.Location {
 	return nyLoc
 }
 
+// Location is an alias for NYLocation.
+func Location() *time.Location {
+	return nyLoc
+}
+
+// IsTradableSessionAt reports whether US equities can be traded at the given time
+// (includes premarket and regular hours).
+func IsTradableSessionAt(at time.Time) bool {
+	return IsMarketOpen(at) || IsPreMarket(at)
+}
+
 // MarketOpen returns 9:30 AM ET for the given date.
 func MarketOpen(t time.Time) time.Time {
 	ny := t.In(nyLoc)

@@ -226,10 +226,31 @@ func (c *Client) get(ctx context.Context, url string, dest interface{}) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("api error: status=%d body=%s", resp.StatusCode, string(body))
+		return &APIError{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
 	return json.NewDecoder(resp.Body).Decode(dest)
+}
+
+func (c *Client) getWithHeaders(ctx context.Context, url string, dest interface{}) (http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return resp.Header, &APIError{StatusCode: resp.StatusCode, Message: string(body)}
+	}
+
+	return resp.Header, json.NewDecoder(resp.Body).Decode(dest)
 }
 
 func (c *Client) setAuth(req *http.Request) {

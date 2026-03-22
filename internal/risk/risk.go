@@ -53,7 +53,7 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 			if !ok {
 				return fmt.Errorf("risk signal channel closed")
 			}
-			order, approved := e.Evaluate(signal)
+			order, approved, _ := e.Evaluate(signal)
 			if !approved {
 				continue
 			}
@@ -67,38 +67,39 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 }
 
 // Evaluate checks a trade signal against all risk gates.
-func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool) {
+// Returns the approved order, whether it was approved, and the rejection reason.
+func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool, string) {
 	// Infer intent
 	pos, posExists := e.portfolio.GetPosition(signal.Symbol)
 	signal = e.inferIntent(signal, pos, posExists)
 
 	// Closing trades always pass risk
 	if domain.IsClosingIntent(signal.Intent) {
-		return e.toOrderRequest(signal), true
+		return e.toOrderRequest(signal), true, ""
 	}
 
 	// Gate checks for opening trades
 	if e.runtime.IsPaused() || e.runtime.IsEmergencyStopped() {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s %s: system paused/stopped", signal.Side, signal.Symbol))
-		return domain.OrderRequest{}, false
+		return domain.OrderRequest{}, false, "system-paused"
 	}
 
 	if !markethours.IsMarketOpen(signal.Timestamp) {
-		return domain.OrderRequest{}, false
+		return domain.OrderRequest{}, false, "market-closed"
 	}
 
 	// Position limit
 	positions := e.portfolio.GetPositions()
 	if len(positions) >= e.config.MaxOpenPositions {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max positions reached (%d)", signal.Symbol, e.config.MaxOpenPositions))
-		return domain.OrderRequest{}, false
+		return domain.OrderRequest{}, false, "max-positions"
 	}
 
 	// Daily trade limit
 	e.resetDayIfNeeded()
 	if e.approved >= e.config.MaxTradesPerDay {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max daily trades reached (%d)", signal.Symbol, e.config.MaxTradesPerDay))
-		return domain.OrderRequest{}, false
+		return domain.OrderRequest{}, false, "max-daily-trades"
 	}
 
 	// Exposure limit
@@ -107,7 +108,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool)
 	maxExposure := e.config.StartingCapital * e.config.MaxExposurePct
 	if totalExposure+proposedValue > maxExposure {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: exposure limit (%.0f + %.0f > %.0f)", signal.Symbol, totalExposure, proposedValue, maxExposure))
-		return domain.OrderRequest{}, false
+		return domain.OrderRequest{}, false, "exposure-limit"
 	}
 
 	// Short-specific limits
@@ -120,16 +121,16 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool)
 		}
 		if shortCount >= e.config.MaxShortOpenPositions {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: max short positions reached", signal.Symbol))
-			return domain.OrderRequest{}, false
+			return domain.OrderRequest{}, false, "max-short-positions"
 		}
 		maxShortExposure := e.config.StartingCapital * e.config.MaxShortExposurePct
 		if shortExposure+proposedValue > maxShortExposure {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: short exposure limit", signal.Symbol))
-			return domain.OrderRequest{}, false
+			return domain.OrderRequest{}, false, "short-exposure-limit"
 		}
 		if e.shortable != nil && !e.shortable.IsShortable(signal.Symbol) {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: not shortable", signal.Symbol))
-			return domain.OrderRequest{}, false
+			return domain.OrderRequest{}, false, "not-shortable"
 		}
 	}
 
@@ -138,7 +139,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool)
 	dailyLossLimit := e.config.StartingCapital * e.config.DailyLossLimitPct
 	if math.Abs(snapshot.DayPnL) >= dailyLossLimit && snapshot.DayPnL < 0 {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: daily loss limit reached (%.2f)", signal.Symbol, snapshot.DayPnL))
-		return domain.OrderRequest{}, false
+		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 
 	// Position size cap
@@ -146,14 +147,14 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool)
 	if proposedValue > maxPositionValue {
 		newQty := int64(math.Floor(maxPositionValue / signal.Price))
 		if newQty <= 0 {
-			return domain.OrderRequest{}, false
+			return domain.OrderRequest{}, false, "position-size-cap"
 		}
 		signal.Quantity = newQty
 	}
 
 	e.approved++
 	_ = longExposure // used in exposure calc
-	return e.toOrderRequest(signal), true
+	return e.toOrderRequest(signal), true, ""
 }
 
 func (e *Engine) inferIntent(signal domain.TradeSignal, pos domain.Position, exists bool) domain.TradeSignal {
