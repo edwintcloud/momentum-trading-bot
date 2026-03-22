@@ -126,7 +126,7 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 - Latin Hypercube Sampling (LHS) grid search
 - Bayesian optimization with Gaussian Process surrogate + Expected Improvement
 - Sensitivity analysis
-- Three strategy profiles: `baseline_breakout`, `high_conviction_breakout`, `continuation_breakout`
+- Four strategy profiles: `baseline_breakout`, `high_conviction_breakout`, `continuation_breakout`, `momentum_cameron`
 - Optimizer artifact output with promotion workflow (paper → live)
 
 ### Auto-Optimizer
@@ -349,13 +349,14 @@ Control-plane access:
 
 ### Trading Profile
 
-The bot uses versioned JSON trading profiles stored in `profiles/`. Three strategy profiles are supported:
+The bot uses versioned JSON trading profiles stored in `profiles/`. Four strategy profiles are supported:
 
 | Profile | Description |
 |---|---|
 | `baseline_breakout` | Default balanced profile |
 | `high_conviction_breakout` | Higher conviction, fewer trades |
 | `continuation_breakout` | Continuation-focused entries |
+| `momentum_cameron` | Ross Cameron-inspired momentum day trading (long-only, strict filters) |
 
 - Profile loaded from `TRADING_PROFILE_PATH` env var or bundled `profiles/default.json`
 - `TuneTradingConfig()` fills any missing fields with sensible defaults based on broker equity and plan limits
@@ -374,6 +375,27 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Three strate
 **Optimization** — `OptimizerSamples`, `OptimizerUseLHS`, `BayesianOptEnabled`, `WalkForwardEnabled`, `CPCVEnabled`
 
 See `profiles/default.json` for the complete field reference.
+
+### Momentum Cameron Profile
+
+The `momentum_cameron` profile implements Ross Cameron's momentum day trading methodology combined with the bot's quant infrastructure. It is designed for small accounts ($25k) focused on high-probability intraday momentum trades.
+
+**Key differences from `baseline_breakout`:**
+- **Strict stock selection** — MaxPrice $20 (vs $200), MinRelativeVolume 5x (vs 2x), MinGapPercent 5% (vs 3%), float filter (500k–20M shares)
+- **Long-only** — shorts disabled; Cameron's edge is exclusively long-biased
+- **Morning-only** — entry deadline 120 minutes after open; midday score multiplier 2x
+- **Conservative risk** — 1% risk per trade, max 6 trades/day, max 3 open positions, 2:1 minimum R:R requirement
+- **Tighter exits** — Breakout target 2.5R (vs 4.0R), faster trailing stops, partial exits at 1R (50%) and 2R (25%)
+- **Momentum signals enabled** — OFI, VPIN, ORB, OBV divergence for order flow confirmation
+- **Portfolio construction disabled** — MVO, risk parity, factor-neutral off (not applicable for 1–3 position momentum)
+- **ML disabled** — until models are trained on momentum-specific data
+
+**Usage:**
+```bash
+TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
+```
+
+**Recommended for:** small accounts ($25k), momentum day trading, paper trading validation before live deployment.
 
 ## Project Structure
 
