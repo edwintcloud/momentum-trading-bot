@@ -228,7 +228,37 @@
 
     "DynamicRiskBudgetEnabled": false,
     "TargetVolAnnualized": 0.10,
-    "DailyRiskBudgetPct": 0.01
+    "DailyRiskBudgetPct": 0.01,
+    
+    "OFIEnabled": false,
+    "OFIWindowBars": 60,
+    "OFIThresholdSigma": 3.0,
+    "OFIPersistenceMin": 3,
+
+    "VPINEnabled": false,
+    "VPINBucketDivisor": 50,
+    "VPINLookbackBuckets": 50,
+    "VPINHighThreshold": 0.7,
+    "VPINLowThreshold": 0.3,
+
+    "OBVDivergenceEnabled": false,
+    "OBVLookbackBars": 20,
+
+    "DollarBarsEnabled": false,
+    "DollarBarThreshold": 500000,
+
+    "VolumeBarsEnabled": false,
+    "VolumeBarThreshold": 50000,
+
+    "ORBEnabled": false,
+    "ORBWindowMinutes": 15,
+    "ORBBufferPct": 0.001,
+    "ORBVolumeMultiplier": 1.5,
+    "ORBMaxGapPct": 0.02,
+    "ORBTargetMultiplier": 1.5,
+
+    "NewsSentimentEnabled": false,
+    "UOAEnabled": false
   },
   "promotion": {
     "deploymentMode": "paper",

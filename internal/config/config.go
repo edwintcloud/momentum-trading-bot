@@ -2,58 +2,58 @@ package config
 
 // TradingConfig centralizes strategy and risk parameters.
 type TradingConfig struct {
-	StartingCapital                      float64
-	StrategyProfileName                  string
-	StrategyProfileVersion               string
-	EnableMarketRegime                   bool
-	EnableShorts                         bool
-	RiskPerTradePct                      float64
-	DailyLossLimitPct                    float64
-	MaxTradesPerDay                      int
-	MaxOpenPositions                     int
-	MaxExposurePct                       float64
-	MaxShortOpenPositions                int
-	MaxShortExposurePct                  float64
-	EntryCooldownSec                     int
-	ExitCooldownSec                      int
-	MinEntryScore                        float64
-	ShortMinEntryScore                   float64
-	MinOneMinuteReturnPct                float64
-	MinThreeMinuteReturnPct              float64
-	MinVolumeRate                        float64
-	BreakoutFailureWindowMin             int
-	StagnationWindowMin                  int
-	ScannerWorkers                       int
-	MinPrice                             float64
-	MaxPrice                             float64
-	MinGapPercent                        float64
-	MinRelativeVolume                    float64
-	MinPremarketVolume                   int64
-	ScannerMinSetupVolumeRateOffset      float64
-	ScannerMinSetupRelativeVolumeExtra   float64
-	ScannerVWAPTolerancePct              float64
-	MarketRegimeBenchmarkSymbols         []string
-	MarketRegimeMinBenchmarks            int
-	MarketRegimeEMAFastPeriod            int
-	MarketRegimeEMASlowPeriod            int
-	MarketRegimeReturnLookbackMin        int
-	HydrationRequestsPerMin              int
-	HydrationRetrySec                    int
-	HydrationQueueSize                   int
-	LimitOrderSlippageDollars            float64
-	EntryATRPercentFallback              float64
-	EntryStopATRMultiplier               float64
-	MaxRiskATRMultiplier                 float64
-	BreakEvenMinR                        float64
-	TrailActivationR                     float64
-	TrailATRMultiplier                   float64
-	TightTrailTriggerR                   float64
-	TightTrailATRMultiplier              float64
-	ProfitTargetR                        float64
-	FailedBreakoutCutR                   float64
-	ShortPeakExtensionMinPct             float64
-	ShortVWAPBreakMinPct                 float64
-	ShortStopATRMultiplier               float64
+	StartingCapital                    float64
+	StrategyProfileName                string
+	StrategyProfileVersion             string
+	EnableMarketRegime                 bool
+	EnableShorts                       bool
+	RiskPerTradePct                    float64
+	DailyLossLimitPct                  float64
+	MaxTradesPerDay                    int
+	MaxOpenPositions                   int
+	MaxExposurePct                     float64
+	MaxShortOpenPositions              int
+	MaxShortExposurePct                float64
+	EntryCooldownSec                   int
+	ExitCooldownSec                    int
+	MinEntryScore                      float64
+	ShortMinEntryScore                 float64
+	MinOneMinuteReturnPct              float64
+	MinThreeMinuteReturnPct            float64
+	MinVolumeRate                      float64
+	BreakoutFailureWindowMin           int
+	StagnationWindowMin                int
+	ScannerWorkers                     int
+	MinPrice                           float64
+	MaxPrice                           float64
+	MinGapPercent                      float64
+	MinRelativeVolume                  float64
+	MinPremarketVolume                 int64
+	ScannerMinSetupVolumeRateOffset    float64
+	ScannerMinSetupRelativeVolumeExtra float64
+	ScannerVWAPTolerancePct            float64
+	MarketRegimeBenchmarkSymbols       []string
+	MarketRegimeMinBenchmarks          int
+	MarketRegimeEMAFastPeriod          int
+	MarketRegimeEMASlowPeriod          int
+	MarketRegimeReturnLookbackMin      int
+	HydrationRequestsPerMin            int
+	HydrationRetrySec                  int
+	HydrationQueueSize                 int
+	LimitOrderSlippageDollars          float64
+	EntryATRPercentFallback            float64
+	EntryStopATRMultiplier             float64
+	MaxRiskATRMultiplier               float64
+	BreakEvenMinR                      float64
+	TrailActivationR                   float64
+	TrailATRMultiplier                 float64
+	TightTrailTriggerR                 float64
+	TightTrailATRMultiplier            float64
+	ProfitTargetR                      float64
+	FailedBreakoutCutR                 float64
+	ShortPeakExtensionMinPct           float64
+	ShortVWAPBreakMinPct               float64
+	ShortStopATRMultiplier             float64
 
 	// Regime gating (Change 4)
 	RegimeGatingEnabled     bool
@@ -178,8 +178,8 @@ type TradingConfig struct {
 	MinATRBars          int `json:"min_atr_bars" yaml:"min_atr_bars"`
 
 	// Phase 5: Almgren-Chriss impact model (Change 4)
-	ImpactModelEnabled      bool
-	MaxAcceptableImpactPct  float64
+	ImpactModelEnabled     bool
+	MaxAcceptableImpactPct float64
 
 	// Phase 5: ML scoring (Change 5)
 	MLScoringEnabled bool
@@ -197,11 +197,11 @@ type TradingConfig struct {
 	CPCVPurgeGap int
 
 	// Risk enhancements: VaR/CVaR (Section 2.2)
-	VaREnabled          bool
-	VaRConfidenceLevel  float64 // e.g. 0.95
-	VaRDailyLimitPct    float64 // max daily VaR as pct of account
-	VaRMethod           string  // "parametric" or "historical"
-	CVaRPositionSizing  bool    // use CVaR for position sizing
+	VaREnabled         bool
+	VaRConfidenceLevel float64 // e.g. 0.95
+	VaRDailyLimitPct   float64 // max daily VaR as pct of account
+	VaRMethod          string  // "parametric" or "historical"
+	CVaRPositionSizing bool    // use CVaR for position sizing
 
 	// Risk enhancements: GARCH(1,1) volatility forecasting (Section 2.5)
 	GARCHEnabled    bool
@@ -213,6 +213,43 @@ type TradingConfig struct {
 	DynamicRiskBudgetEnabled bool
 	TargetVolAnnualized      float64 // target portfolio vol (annualized)
 	DailyRiskBudgetPct       float64 // daily risk budget as pct of account
+
+	// Alpha signals: Order Flow Imbalance (OFI)
+	OFIEnabled        bool
+	OFIWindowBars     int
+	OFIThresholdSigma float64
+	OFIPersistenceMin int
+
+	// Alpha signals: VPIN
+	VPINEnabled         bool
+	VPINBucketDivisor   int
+	VPINLookbackBuckets int
+	VPINHighThreshold   float64
+	VPINLowThreshold    float64
+
+	// Alpha signals: OBV Divergence
+	OBVDivergenceEnabled bool
+	OBVLookbackBars      int
+
+	// Alpha signals: Dollar Bars
+	DollarBarsEnabled  bool
+	DollarBarThreshold float64
+
+	// Alpha signals: Volume Bars
+	VolumeBarsEnabled  bool
+	VolumeBarThreshold int64
+
+	// Alpha signals: Opening Range Breakout (ORB)
+	ORBEnabled          bool
+	ORBWindowMinutes    int
+	ORBBufferPct        float64
+	ORBVolumeMultiplier float64
+	ORBMaxGapPct        float64
+	ORBTargetMultiplier float64
+
+	// Alpha signals: placeholders for future signals
+	NewsSentimentEnabled bool
+	UOAEnabled           bool
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

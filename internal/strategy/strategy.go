@@ -14,6 +14,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
 	"github.com/edwintcloud/momentum-trading-bot/internal/sector"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 )
 
 // TimeWindow classifies the current market session period.
@@ -74,6 +75,8 @@ type Strategy struct {
 	symbolStates        map[string]symbolTradeState
 	reallocationTargets map[string]bool
 	recentPrices        map[string][]float64 // for Bollinger Band exit on mean-reversion
+	signalAggregator    *signals.Aggregator
+	recentSignals       map[string][]signals.Signal // latest alpha signals per symbol
 }
 
 type symbolTradeState struct {
@@ -96,6 +99,7 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		symbolStates:        make(map[string]symbolTradeState),
 		reallocationTargets: make(map[string]bool),
 		recentPrices:        make(map[string][]float64),
+		recentSignals:       make(map[string][]signals.Signal),
 	}
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -103,9 +107,60 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 			s.riskEngine = v
 		case *risk.VolatilityEstimator:
 			s.volEstimator = v
+		case *signals.Aggregator:
+			s.signalAggregator = v
 		}
 	}
+	if s.signalAggregator == nil {
+		s.signalAggregator = BuildSignalAggregator(cfg)
+	}
 	return s
+}
+
+// BuildSignalAggregator creates a signal aggregator from config.
+func BuildSignalAggregator(cfg config.TradingConfig) *signals.Aggregator {
+	var sources []signals.SignalSource
+
+	sources = append(sources, signals.NewOFI(signals.OFIConfig{
+		Enabled:           cfg.OFIEnabled,
+		WindowBars:        cfg.OFIWindowBars,
+		ThresholdSigma:    cfg.OFIThresholdSigma,
+		PersistenceMinBar: cfg.OFIPersistenceMin,
+	}))
+
+	sources = append(sources, signals.NewVPIN(signals.VPINConfig{
+		Enabled:         cfg.VPINEnabled,
+		BucketDivisor:   cfg.VPINBucketDivisor,
+		LookbackBuckets: cfg.VPINLookbackBuckets,
+		HighThreshold:   cfg.VPINHighThreshold,
+		LowThreshold:    cfg.VPINLowThreshold,
+	}))
+
+	sources = append(sources, signals.NewOBVDivergence(signals.OBVConfig{
+		Enabled:      cfg.OBVDivergenceEnabled,
+		LookbackBars: cfg.OBVLookbackBars,
+	}))
+
+	sources = append(sources, signals.NewDollarBarBuilder(signals.DollarBarConfig{
+		Enabled:   cfg.DollarBarsEnabled,
+		Threshold: cfg.DollarBarThreshold,
+	}))
+
+	sources = append(sources, signals.NewVolumeBarBuilder(signals.VolumeBarConfig{
+		Enabled:   cfg.VolumeBarsEnabled,
+		Threshold: cfg.VolumeBarThreshold,
+	}))
+
+	sources = append(sources, signals.NewORB(signals.ORBConfig{
+		Enabled:          cfg.ORBEnabled,
+		WindowMinutes:    cfg.ORBWindowMinutes,
+		BufferPct:        cfg.ORBBufferPct,
+		VolumeMultiplier: cfg.ORBVolumeMultiplier,
+		MaxGapPct:        cfg.ORBMaxGapPct,
+		TargetMultiplier: cfg.ORBTargetMultiplier,
+	}))
+
+	return signals.NewAggregator(sources...)
 }
 
 // UpdateConfig replaces the strategy's trading config.
@@ -274,6 +329,30 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
+	// Alpha signals: feed candidate bar and compute signal agreement
+	alphaConfidenceBoost := 0.0
+	if s.signalAggregator != nil {
+		bar := signals.Bar{
+			Open:      c.Open,
+			High:      c.HighOfDay,
+			Low:       c.Price, // approximate low from current price
+			Close:     c.Price,
+			Volume:    c.Volume,
+			Timestamp: c.Timestamp,
+		}
+		sigs := s.signalAggregator.OnBar(c.Symbol, bar)
+		if len(sigs) > 0 {
+			s.recentSignals[c.Symbol] = sigs
+		}
+		// Check cached signals for directional agreement
+		for _, sig := range s.recentSignals[c.Symbol] {
+			if (sig.Direction == signals.DirectionLong && domain.IsLong(c.Direction)) ||
+				(sig.Direction == signals.DirectionShort && domain.IsShort(c.Direction)) {
+				alphaConfidenceBoost += sig.Strength * 0.1 // up to +0.1 per agreeing signal
+			}
+		}
+	}
+
 	// Compute position sizing
 	riskPerShare := s.computeRiskPerShare(c)
 	if riskPerShare <= 0 {
@@ -387,7 +466,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		EntryATR:         c.ATR,
 		SetupType:        c.SetupType,
 		Reason:           fmt.Sprintf("scanner score=%.1f setup=%s", c.Score, c.SetupType),
-		Confidence:       c.Score / 8.0,
+		Confidence:       math.Min(c.Score/8.0+alphaConfidenceBoost, 1.0),
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
 		Playbook:         c.Playbook,
@@ -419,6 +498,22 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	}
 
 	s.portfolio.UpdatePrice(tick.Symbol, tick.Price)
+
+	// Feed tick into signal aggregator for alpha signal computation
+	if s.signalAggregator != nil {
+		bar := signals.Bar{
+			Open:      tick.BarOpen,
+			High:      tick.BarHigh,
+			Low:       tick.BarLow,
+			Close:     tick.Price,
+			Volume:    tick.Volume,
+			Timestamp: tick.Timestamp,
+		}
+		sigs := s.signalAggregator.OnBar(tick.Symbol, bar)
+		if len(sigs) > 0 {
+			s.recentSignals[tick.Symbol] = sigs
+		}
+	}
 
 	// Track recent prices for mean-reversion BB exit
 	if s.config.MeanReversionEnabled {

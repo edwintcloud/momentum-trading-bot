@@ -479,6 +479,63 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.DailyRiskBudgetPct = 0.01
 	}
 
+	// Alpha signals: OFI defaults (disabled by default)
+	if cfg.OFIWindowBars == 0 {
+		cfg.OFIWindowBars = 60
+	}
+	if cfg.OFIThresholdSigma == 0 {
+		cfg.OFIThresholdSigma = 3.0
+	}
+	if cfg.OFIPersistenceMin == 0 {
+		cfg.OFIPersistenceMin = 3
+	}
+
+	// Alpha signals: VPIN defaults (disabled by default)
+	if cfg.VPINBucketDivisor == 0 {
+		cfg.VPINBucketDivisor = 50
+	}
+	if cfg.VPINLookbackBuckets == 0 {
+		cfg.VPINLookbackBuckets = 50
+	}
+	if cfg.VPINHighThreshold == 0 {
+		cfg.VPINHighThreshold = 0.7
+	}
+	if cfg.VPINLowThreshold == 0 {
+		cfg.VPINLowThreshold = 0.3
+	}
+
+	// Alpha signals: OBV Divergence defaults (disabled by default)
+	if cfg.OBVLookbackBars == 0 {
+		cfg.OBVLookbackBars = 20
+	}
+
+	// Alpha signals: Dollar Bars defaults (disabled by default)
+	if cfg.DollarBarThreshold == 0 {
+		cfg.DollarBarThreshold = 500000
+	}
+
+	// Alpha signals: Volume Bars defaults (disabled by default)
+	if cfg.VolumeBarThreshold == 0 {
+		cfg.VolumeBarThreshold = 50000
+	}
+
+	// Alpha signals: ORB defaults (disabled by default)
+	if cfg.ORBWindowMinutes == 0 {
+		cfg.ORBWindowMinutes = 15
+	}
+	if cfg.ORBBufferPct == 0 {
+		cfg.ORBBufferPct = 0.001
+	}
+	if cfg.ORBVolumeMultiplier == 0 {
+		cfg.ORBVolumeMultiplier = 1.5
+	}
+	if cfg.ORBMaxGapPct == 0 {
+		cfg.ORBMaxGapPct = 0.02
+	}
+	if cfg.ORBTargetMultiplier == 0 {
+		cfg.ORBTargetMultiplier = 1.5
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 
