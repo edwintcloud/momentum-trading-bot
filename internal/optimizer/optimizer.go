@@ -294,7 +294,6 @@ func (o *Optimizer) generateVariations(profile config.StrategyProfile, count int
 		cfg.MinEntryScore = 1.5 + r.Float64()*2.0
 		cfg.ShortMinEntryScore = 2.0 + r.Float64()*2.0
 		cfg.RiskPerTradePct = 0.003 + r.Float64()*0.007
-		cfg.StopLossPct = 0.01 + r.Float64()*0.03
 		cfg.TrailActivationR = 0.5 + r.Float64()*1.5
 		cfg.TrailATRMultiplier = 1.0 + r.Float64()*2.0
 		cfg.ProfitTargetR = 2.0 + r.Float64()*4.0

@@ -14,7 +14,6 @@
     "MaxExposurePct": 0.8,
     "MaxShortOpenPositions": 3,
     "MaxShortExposurePct": 0.3,
-    "StopLossPct": 0.02,
     "EntryCooldownSec": 30,
     "ExitCooldownSec": 10,
     "MinEntryScore": 2.0,

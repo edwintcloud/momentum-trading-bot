@@ -446,3 +446,21 @@ func (m *Manager) OpenPositionCount() int {
 	defer m.mu.RUnlock()
 	return len(m.positions)
 }
+
+// CurrentEquity returns the current equity: starting capital + realized PnL + unrealized PnL.
+func (m *Manager) CurrentEquity() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	equity := m.config.StartingCapital + m.dayPnL
+	for _, pos := range m.positions {
+		equity += pos.UnrealizedPnL
+	}
+	return equity
+}
+
+// DayPnL returns the realized day PnL.
+func (m *Manager) DayPnL() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.dayPnL
+}

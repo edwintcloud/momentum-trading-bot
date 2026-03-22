@@ -33,9 +33,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.MaxShortExposurePct == 0 {
 		cfg.MaxShortExposurePct = 0.3
 	}
-	if cfg.StopLossPct == 0 {
-		cfg.StopLossPct = 0.02
-	}
 	if cfg.EntryCooldownSec == 0 {
 		cfg.EntryCooldownSec = 30
 	}
@@ -57,19 +54,12 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.MinVolumeRate == 0 {
 		cfg.MinVolumeRate = 1.5
 	}
-	if cfg.MaxPriceVsOpenPct == 0 {
-		cfg.MaxPriceVsOpenPct = 20.0
-	}
 	if cfg.BreakoutFailureWindowMin == 0 {
 		cfg.BreakoutFailureWindowMin = 5
 	}
 	if cfg.StagnationWindowMin == 0 {
 		cfg.StagnationWindowMin = 15
 	}
-	if cfg.StagnationMinPeakPct == 0 {
-		cfg.StagnationMinPeakPct = 0.3
-	}
-
 	// Scanner thresholds — scale with capital
 	if cfg.ScannerWorkers == 0 {
 		cfg.ScannerWorkers = 4
@@ -89,12 +79,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.MinPremarketVolume == 0 {
 		cfg.MinPremarketVolume = 50000
 	}
-	if cfg.ScannerMinPriceVsOpenPctFloor == 0 {
-		cfg.ScannerMinPriceVsOpenPctFloor = 1.0
-	}
-	if cfg.ScannerMinPriceVsOpenGapMultiplier == 0 {
-		cfg.ScannerMinPriceVsOpenGapMultiplier = 0.3
-	}
 	if cfg.ScannerMinSetupVolumeRateOffset == 0 {
 		cfg.ScannerMinSetupVolumeRateOffset = 0.5
 	}
@@ -104,28 +88,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.ScannerVWAPTolerancePct == 0 {
 		cfg.ScannerVWAPTolerancePct = 2.0
 	}
-	if cfg.ScannerConsolidationATRMultiplier == 0 {
-		cfg.ScannerConsolidationATRMultiplier = 1.5
-	}
-	if cfg.ScannerConsolidationMaxPct == 0 {
-		cfg.ScannerConsolidationMaxPct = 3.0
-	}
-	if cfg.ScannerPullbackDepthMinATRMultiplier == 0 {
-		cfg.ScannerPullbackDepthMinATRMultiplier = 0.3
-	}
-	if cfg.ScannerPullbackDepthMinPct == 0 {
-		cfg.ScannerPullbackDepthMinPct = 0.5
-	}
-	if cfg.ScannerPullbackDepthMaxATRMultiplier == 0 {
-		cfg.ScannerPullbackDepthMaxATRMultiplier = 2.0
-	}
-	if cfg.ScannerPullbackDepthMaxPct == 0 {
-		cfg.ScannerPullbackDepthMaxPct = 5.0
-	}
-	if cfg.ScannerRenewedVolumeRateMin == 0 {
-		cfg.ScannerRenewedVolumeRateMin = 2.0
-	}
-
 	// Market regime
 	if len(cfg.MarketRegimeBenchmarkSymbols) == 0 {
 		cfg.MarketRegimeBenchmarkSymbols = []string{"SPY", "QQQ", "IWM"}
@@ -169,9 +131,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	}
 
 	// Trade management
-	if cfg.BreakEvenHoldMinutes == 0 {
-		cfg.BreakEvenHoldMinutes = 10
-	}
 	if cfg.BreakEvenMinR == 0 {
 		cfg.BreakEvenMinR = 0.5
 	}
@@ -193,10 +152,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.FailedBreakoutCutR == 0 {
 		cfg.FailedBreakoutCutR = -0.5
 	}
-	if cfg.StructureConfirmR == 0 {
-		cfg.StructureConfirmR = 0.3
-	}
-
 	// Short-specific
 	if cfg.ShortPeakExtensionMinPct == 0 {
 		cfg.ShortPeakExtensionMinPct = 5.0
@@ -208,6 +163,33 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.ShortStopATRMultiplier = 2.0
 	}
 
+	// Regime gating defaults
+	if !cfg.RegimeGatingEnabled && cfg.RegimeMixedScoreBoost == 0 {
+		cfg.RegimeGatingEnabled = true
+	}
+	if cfg.RegimeMixedScoreBoost == 0 {
+		cfg.RegimeMixedScoreBoost = 1.25
+	}
+	if cfg.RegimeNeutralScoreBoost == 0 {
+		cfg.RegimeNeutralScoreBoost = 1.10
+	}
+
+	// Confidence sizing defaults
+	if !cfg.ConfidenceSizingEnabled && cfg.ConfidenceSizingFloor == 0 {
+		cfg.ConfidenceSizingEnabled = true
+	}
+	if cfg.ConfidenceSizingFloor == 0 {
+		cfg.ConfidenceSizingFloor = 0.5
+	}
+
+	// Stagnation fix: R-multiple threshold
+	if cfg.StagnationMinPeakR == 0 {
+		cfg.StagnationMinPeakR = 0.3
+	}
+
+	// Playbook exit defaults
+	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
+
 	// Scale position count and limits with capital
 	if equity >= 100000 {
 		cfg.MaxOpenPositions = intMax(cfg.MaxOpenPositions, 8)
@@ -215,6 +197,62 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	}
 
 	return cfg
+}
+
+func defaultPlaybookExits(pe PlaybookExitsConfig) PlaybookExitsConfig {
+	if pe.Breakout == (PlaybookExitConfig{}) {
+		pe.Breakout = PlaybookExitConfig{
+			ProfitTargetR:            4.0,
+			FailedBreakoutCutR:       -0.5,
+			BreakoutFailureWindowMin: 5,
+			StagnationWindowMin:      15,
+			StagnationMinPeakR:       0.3,
+			TrailActivationR:         1.0,
+			TrailATRMultiplier:       2.0,
+			TightTrailTriggerR:       2.5,
+			TightTrailATRMultiplier:  1.0,
+		}
+	}
+	if pe.Pullback == (PlaybookExitConfig{}) {
+		pe.Pullback = PlaybookExitConfig{
+			ProfitTargetR:            3.0,
+			FailedBreakoutCutR:       -0.3,
+			BreakoutFailureWindowMin: 10,
+			StagnationWindowMin:      20,
+			StagnationMinPeakR:       0.2,
+			TrailActivationR:         0.75,
+			TrailATRMultiplier:       1.5,
+			TightTrailTriggerR:       2.0,
+			TightTrailATRMultiplier:  0.8,
+		}
+	}
+	if pe.Continuation == (PlaybookExitConfig{}) {
+		pe.Continuation = PlaybookExitConfig{
+			ProfitTargetR:            5.0,
+			FailedBreakoutCutR:       -0.5,
+			BreakoutFailureWindowMin: 5,
+			StagnationWindowMin:      15,
+			StagnationMinPeakR:       0.3,
+			TrailActivationR:         1.0,
+			TrailATRMultiplier:       2.5,
+			TightTrailTriggerR:       3.0,
+			TightTrailATRMultiplier:  1.2,
+		}
+	}
+	if pe.Reversal == (PlaybookExitConfig{}) {
+		pe.Reversal = PlaybookExitConfig{
+			ProfitTargetR:            2.5,
+			FailedBreakoutCutR:       -0.3,
+			BreakoutFailureWindowMin: 5,
+			StagnationWindowMin:      10,
+			StagnationMinPeakR:       0.2,
+			TrailActivationR:         0.5,
+			TrailATRMultiplier:       1.5,
+			TightTrailTriggerR:       1.5,
+			TightTrailATRMultiplier:  0.8,
+		}
+	}
+	return pe
 }
 
 func intMax(a, b int) int {
