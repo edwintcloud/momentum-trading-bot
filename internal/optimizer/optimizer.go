@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
@@ -31,6 +32,7 @@ type Optimizer struct {
 	lookbackStart time.Time                                                     // used with iterFactory for time splits
 	asOf          time.Time
 	outDir        string
+	floatStore    *alpaca.FloatStore
 }
 
 // Report records the optimizer's recommendations.
@@ -66,6 +68,11 @@ func NewOptimizer(bars []backtest.InputBar, asOf time.Time, outDir string) *Opti
 // instead of loading them all into RAM.
 func NewStreamingOptimizer(iterFactory func(start, end time.Time) (backtest.InputBarIterator, error), lookbackStart, asOf time.Time, outDir string) *Optimizer {
 	return &Optimizer{iterFactory: iterFactory, lookbackStart: lookbackStart, asOf: asOf, outDir: outDir}
+}
+
+// SetFloatStore attaches a FloatStore to propagate float data into backtest runs.
+func (o *Optimizer) SetFloatStore(fs *alpaca.FloatStore) {
+	o.floatStore = fs
 }
 
 // formatDuration formats a duration as a human-readable string like "2m15s" or "1h3m".
@@ -148,16 +155,19 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 			IteratorFn: func() (backtest.InputBarIterator, error) {
 				return iterFactory(lbStart, searchEnd)
 			},
+			FloatStore: o.floatStore,
 		}
 		validCfg = backtest.RunConfig{
 			IteratorFn: func() (backtest.InputBarIterator, error) {
 				return iterFactory(searchEnd, validEnd)
 			},
+			FloatStore: o.floatStore,
 		}
 		holdoutCfg = backtest.RunConfig{
 			IteratorFn: func() (backtest.InputBarIterator, error) {
 				return iterFactory(validEnd, asOf)
 			},
+			FloatStore: o.floatStore,
 		}
 		log.Printf("Data split (streaming): search=%s..%s validation=%s..%s holdout=%s..%s",
 			lbStart.Format("2006-01-02"), searchEnd.Format("2006-01-02"),
@@ -173,9 +183,9 @@ func (o *Optimizer) RunWithConfig(baseCfg config.TradingConfig) (Report, error) 
 		}
 		log.Printf("Data split: search=%d bars, validation=%d bars, holdout=%d bars (time_split=%v)",
 			len(searchBars), len(validBars), len(holdoutBars), baseCfg.OptimizerTimeSplit)
-		searchCfg = backtest.RunConfig{Bars: searchBars}
-		validCfg = backtest.RunConfig{Bars: validBars}
-		holdoutCfg = backtest.RunConfig{Bars: holdoutBars}
+		searchCfg = backtest.RunConfig{Bars: searchBars, FloatStore: o.floatStore}
+		validCfg = backtest.RunConfig{Bars: validBars, FloatStore: o.floatStore}
+		holdoutCfg = backtest.RunConfig{Bars: holdoutBars, FloatStore: o.floatStore}
 	}
 
 	// === Search Phase ===

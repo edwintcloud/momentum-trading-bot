@@ -296,6 +296,161 @@ func TestComputeSlippage(t *testing.T) {
 	}
 }
 
+func TestFloatFilter_RejectHighFloat(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxFloat = 20_000_000 // 20M max
+	cfg.MinFloat = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// Tick with float above max should be rejected
+	tick := domain.Tick{
+		Symbol:          "BIGFLOAT",
+		Price:           10.0,
+		BarOpen:         9.8,
+		BarHigh:         10.5,
+		BarLow:          9.5,
+		Open:            9.0,
+		HighOfDay:       10.5,
+		Volume:          500000,
+		RelativeVolume:  5.0,
+		GapPercent:      10.0,
+		PreMarketVolume: 200000,
+		Float:           50_000_000, // 50M > 20M max
+		Timestamp:       time.Date(2026, 3, 23, 14, 35, 0, 0, time.UTC),
+	}
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("tick with float 50M should be rejected when MaxFloat=20M")
+	}
+
+	// Verify rejection reason
+	_, _, reason := s.EvaluateTickDetailed(tick)
+	if reason != "float-too-high" {
+		t.Errorf("rejection reason: got %q, want %q", reason, "float-too-high")
+	}
+}
+
+func TestFloatFilter_AcceptLowFloat(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxFloat = 20_000_000
+	cfg.MinEntryScore = 0 // lower threshold so we can test float filter in isolation
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	tick := domain.Tick{
+		Symbol:          "LOWFLOAT",
+		Price:           5.0,
+		BarOpen:         4.8,
+		BarHigh:         5.5,
+		BarLow:          4.5,
+		Open:            4.0,
+		HighOfDay:       5.5,
+		Volume:          300000,
+		RelativeVolume:  8.0,
+		GapPercent:      15.0,
+		PreMarketVolume: 200000,
+		Float:           3_000_000, // 3M < 20M max — should pass float filter
+		Timestamp:       time.Date(2026, 3, 23, 14, 35, 0, 0, time.UTC),
+	}
+	candidate, ok := s.Evaluate(tick)
+	if !ok {
+		t.Skip("candidate did not pass all filters (may fail for non-float reasons)")
+	}
+	if candidate.Float != 3_000_000 {
+		t.Errorf("candidate.Float: got %d, want 3000000", candidate.Float)
+	}
+}
+
+func TestFloatFilter_AcceptUnknownFloat(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxFloat = 20_000_000
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// Float=0 means unknown — should NOT be filtered out
+	tick := domain.Tick{
+		Symbol:          "NOFLOAT",
+		Price:           5.0,
+		BarOpen:         4.8,
+		BarHigh:         5.5,
+		BarLow:          4.5,
+		Open:            4.0,
+		HighOfDay:       5.5,
+		Volume:          300000,
+		RelativeVolume:  8.0,
+		GapPercent:      15.0,
+		PreMarketVolume: 200000,
+		Float:           0, // unknown
+		Timestamp:       time.Date(2026, 3, 23, 14, 35, 0, 0, time.UTC),
+	}
+
+	// Should not be rejected by float filter (may still be rejected by score)
+	_, _, reason := s.EvaluateTickDetailed(tick)
+	if reason == "float-too-high" || reason == "float-too-low" {
+		t.Errorf("unknown float (0) should not be filtered, got reason: %s", reason)
+	}
+}
+
+func TestFloatFilter_RejectTooLowFloat(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MinFloat = 500_000 // minimum 500K shares
+	cfg.MaxFloat = 0       // no max
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	tick := domain.Tick{
+		Symbol:          "TINYFLOAT",
+		Price:           3.0,
+		BarOpen:         2.8,
+		BarHigh:         3.5,
+		BarLow:          2.5,
+		Open:            2.5,
+		HighOfDay:       3.5,
+		Volume:          300000,
+		RelativeVolume:  5.0,
+		GapPercent:      10.0,
+		PreMarketVolume: 200000,
+		Float:           100_000, // 100K < 500K min
+		Timestamp:       time.Date(2026, 3, 23, 14, 35, 0, 0, time.UTC),
+	}
+
+	_, _, reason := s.EvaluateTickDetailed(tick)
+	if reason != "float-too-low" {
+		t.Errorf("rejection reason: got %q, want %q", reason, "float-too-low")
+	}
+}
+
+func TestFloatFilter_Disabled(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxFloat = 0 // disabled
+	cfg.MinFloat = 0 // disabled
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// With float filter disabled, any float should pass the float check
+	tick := domain.Tick{
+		Symbol:          "ANYFLOAT",
+		Price:           5.0,
+		BarOpen:         4.8,
+		BarHigh:         5.5,
+		BarLow:          4.5,
+		Open:            4.0,
+		HighOfDay:       5.5,
+		Volume:          300000,
+		RelativeVolume:  5.0,
+		GapPercent:      10.0,
+		PreMarketVolume: 200000,
+		Float:           500_000_000, // very high float
+		Timestamp:       time.Date(2026, 3, 23, 14, 35, 0, 0, time.UTC),
+	}
+
+	_, _, reason := s.EvaluateTickDetailed(tick)
+	if reason == "float-too-high" || reason == "float-too-low" {
+		t.Errorf("float filter should be disabled when MaxFloat=0 and MinFloat=0, got reason: %s", reason)
+	}
+}
+
 func TestRankCandidates(t *testing.T) {
 	candidates := []domain.Candidate{
 		{Symbol: "A", RelativeVolume: 2.0, GapPercent: 5.0, Score: 3.0},

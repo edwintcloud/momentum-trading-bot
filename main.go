@@ -113,6 +113,22 @@ func runLive() {
 	runtimeState.SetDependencyStatus("alpaca", true)
 	runtimeState.SetDependencyStatus("storage", true)
 
+	// Initialize float store for momentum filtering
+	floatStore := alpaca.NewFloatStore()
+	if err := floatStore.LoadFromAssets(ctx, alpacaClient); err != nil {
+		log.Printf("float-store: asset load warning: %v", err)
+	}
+	floatOverrideURL := appCfg.FloatDataURL
+	if floatOverrideURL == "" {
+		floatOverrideURL = tradingCfg.FloatOverrideURL
+	}
+	if floatOverrideURL != "" {
+		if err := floatStore.LoadFromCSV(floatOverrideURL); err != nil {
+			log.Printf("float-store: override load warning: %v", err)
+		}
+	}
+	log.Printf("float-store: %d symbols with float data", floatStore.Len())
+
 	// Initialize pipeline components
 	portfolioMgr := portfolio.NewManager(tradingCfg, logger)
 	portfolioMgr.SetBrokerEquity(acct.Equity)
@@ -297,6 +313,7 @@ func runLive() {
 	go func() {
 		for bar := range barCh {
 			tick := normalizer.Normalize(bar)
+			tick.Float = floatStore.Get(tick.Symbol)
 			select {
 			case tickCh <- tick:
 			default:
@@ -478,6 +495,13 @@ func runOptimize(args []string) error {
 		log.Printf("Optimize historical dataset ready shards=%d symbols=%d (streaming mode)", len(dataset.jobs), len(symbols))
 		iterFactory := newDatasetIteratorFactory(dataset)
 		opt := optimizer.NewStreamingOptimizer(iterFactory, lookbackStart, asOf, *outDir)
+		streamFloatStore := alpaca.NewFloatStore()
+		if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
+			if loadErr := streamFloatStore.LoadFromCSV(floatURL); loadErr != nil {
+				log.Printf("Optimize float data warning: %v", loadErr)
+			}
+		}
+		opt.SetFloatStore(streamFloatStore)
 		report, err := opt.Run()
 		if err != nil {
 			return err
@@ -488,6 +512,13 @@ func runOptimize(args []string) error {
 	}
 
 	opt := optimizer.NewOptimizer(bars, asOf, *outDir)
+	optFloatStore := alpaca.NewFloatStore()
+	if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
+		if loadErr := optFloatStore.LoadFromCSV(floatURL); loadErr != nil {
+			log.Printf("Optimize float data warning: %v", loadErr)
+		}
+	}
+	opt.SetFloatStore(optFloatStore)
 	report, err := opt.Run()
 	if err != nil {
 		return err
@@ -626,5 +657,12 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 	log.Printf("auto-optimize: dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
 	iterFactory := newDatasetIteratorFactory(dataset)
 	opt := optimizer.NewStreamingOptimizer(iterFactory, lookbackStart, asOf, outDir)
+	autoFloatStore := alpaca.NewFloatStore()
+	if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
+		if loadErr := autoFloatStore.LoadFromCSV(floatURL); loadErr != nil {
+			log.Printf("auto-optimize: float data warning: %v", loadErr)
+		}
+	}
+	opt.SetFloatStore(autoFloatStore)
 	return opt.Run()
 }

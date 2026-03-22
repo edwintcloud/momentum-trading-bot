@@ -35,6 +35,7 @@ type Tick struct {
 	GapPercent      float64   `json:"gapPercent"`
 	PreMarketVolume int64     `json:"premarketVolume"`
 	VolumeSpike     bool      `json:"volumeSpike"`
+	Float           int64     `json:"float"`       // shares available to trade (0 = unknown)
 	Catalyst        string    `json:"catalyst"`
 	CatalystURL     string    `json:"catalystUrl"`
 	Timestamp       time.Time `json:"timestamp"`
@@ -80,6 +81,7 @@ type Candidate struct {
 	MarketRegime          string    `json:"marketRegime"`
 	RegimeConfidence      float64   `json:"regimeConfidence"`
 	Playbook              string    `json:"playbook"`
+	Float                 int64     `json:"float"`
 	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
