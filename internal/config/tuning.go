@@ -1,6 +1,5 @@
 package config
 
-import "math"
 
 const defaultStartingCapital = 25000.0
 
@@ -214,10 +213,6 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.MaxOpenPositions = intMax(cfg.MaxOpenPositions, 8)
 		cfg.MaxTradesPerDay = intMax(cfg.MaxTradesPerDay, 30)
 	}
-
-	// Factor in broker day PnL for daily loss limit
-	_ = brokerDayPnL
-	_ = math.Abs(1) // keep math import for future scaling
 
 	return cfg
 }

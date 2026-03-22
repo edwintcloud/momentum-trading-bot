@@ -20,6 +20,7 @@ type State struct {
 	marketRegime   domain.MarketRegimeSnapshot
 	eventRecorder  domain.EventRecorder
 	depStatuses    map[string]bool
+	heartbeats     map[string]time.Time
 }
 
 // NewState creates a new runtime state.
@@ -33,6 +34,7 @@ func NewState(recorders ...domain.EventRecorder) *State {
 		candidates:    make([]domain.Candidate, 0),
 		logs:          make([]domain.LogEntry, 0, maxLogs),
 		depStatuses:   make(map[string]bool),
+		heartbeats:    make(map[string]time.Time),
 		eventRecorder: recorder,
 	}
 }
@@ -182,4 +184,25 @@ func (s *State) MarketRegime() domain.MarketRegimeSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.marketRegime
+}
+
+// Heartbeat records a heartbeat from a named component.
+func (s *State) Heartbeat(component string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.heartbeats[component] = time.Now()
+}
+
+// StaleComponents returns components that haven't sent a heartbeat in the given duration.
+func (s *State) StaleComponents(threshold time.Duration) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var stale []string
+	now := time.Now()
+	for name, lastBeat := range s.heartbeats {
+		if now.Sub(lastBeat) > threshold {
+			stale = append(stale, name)
+		}
+	}
+	return stale
 }

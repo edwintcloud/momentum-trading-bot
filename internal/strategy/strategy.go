@@ -45,6 +45,11 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 	}
 }
 
+// UpdateConfig replaces the strategy's trading config.
+func (s *Strategy) UpdateConfig(cfg config.TradingConfig) {
+	s.config = cfg
+}
+
 // Start listens for candidates and ticks, generating both entry and exit signals.
 func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate, ticks <-chan domain.Tick, out chan<- domain.TradeSignal) error {
 	for {
@@ -357,7 +362,9 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 		}
 	}
 
-	_ = newStop // stop update would go through portfolio manager
+	if newStop > 0 {
+		s.portfolio.UpdateStopPrice(pos.Symbol, newStop)
+	}
 }
 
 func (s *Strategy) currentR(pos domain.Position, price float64) float64 {

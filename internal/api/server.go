@@ -34,14 +34,20 @@ const (
 	controlPlaneSessionTTL        = 30 * 24 * time.Hour
 )
 
+// ConfigUpdater can receive updated trading configs.
+type ConfigUpdater interface {
+	UpdateConfig(cfg config.TradingConfig)
+}
+
 // Server wraps the HTTP API.
 type Server struct {
-	portfolio    *portfolio.Manager
-	runtime      *runtime.State
-	closeAll     chan<- domain.OrderRequest
-	upgrader     websocket.Upgrader
-	authToken    string
-	tradingConfig config.TradingConfig
+	portfolio      *portfolio.Manager
+	runtime        *runtime.State
+	closeAll       chan<- domain.OrderRequest
+	upgrader       websocket.Upgrader
+	authToken      string
+	tradingConfig  config.TradingConfig
+	configUpdaters []ConfigUpdater
 }
 
 // NewServer creates an API server.
@@ -60,6 +66,11 @@ func NewServer(
 		authToken:     strings.TrimSpace(appConfig.ControlPlaneAuthToken),
 		tradingConfig: tradingConfig,
 	}
+}
+
+// RegisterConfigUpdater adds a component that will be notified of config changes.
+func (s *Server) RegisterConfigUpdater(u ConfigUpdater) {
+	s.configUpdaters = append(s.configUpdaters, u)
 }
 
 // Start begins serving HTTP on the given address.
@@ -169,6 +180,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.tradingConfig = cfg
+		for _, u := range s.configUpdaters {
+			u.UpdateConfig(cfg)
+		}
 		s.runtime.RecordLog("warn", "control", "trading config updated via API")
 		s.writeJSON(w, http.StatusOK, map[string]any{"updated": true})
 		return

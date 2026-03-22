@@ -18,10 +18,13 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
+	"github.com/edwintcloud/momentum-trading-bot/internal/market"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
+	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
 	"github.com/edwintcloud/momentum-trading-bot/internal/storage"
@@ -43,6 +46,9 @@ func main() {
 			if err := runOptimize(os.Args[2:]); err != nil {
 				log.Fatalf("optimize: %v", err)
 			}
+			return
+		case "live":
+			runLive()
 			return
 		}
 	}
@@ -152,7 +158,6 @@ func runLive() {
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
 	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
-	_ = regimeTracker
 
 	// Fan-out ticks to strategy and scanner
 	scannerTicks := make(chan domain.Tick, 1024)
@@ -190,30 +195,11 @@ func runLive() {
 		}
 	}()
 
-	// Risk engine processes signals (inline for now)
+	// Start risk engine
+	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
 	go func() {
-		for signal := range signalCh {
-			select {
-			case orderCh <- domain.OrderRequest{
-				Symbol:           signal.Symbol,
-				Side:             signal.Side,
-				Intent:           signal.Intent,
-				PositionSide:     signal.PositionSide,
-				Price:            signal.Price,
-				Quantity:         signal.Quantity,
-				StopPrice:        signal.StopPrice,
-				RiskPerShare:     signal.RiskPerShare,
-				EntryATR:         signal.EntryATR,
-				SetupType:        signal.SetupType,
-				Reason:           signal.Reason,
-				MarketRegime:     signal.MarketRegime,
-				RegimeConfidence: signal.RegimeConfidence,
-				Playbook:         signal.Playbook,
-				Timestamp:        signal.Timestamp,
-			}:
-			case <-ctx.Done():
-				return
-			}
+		if err := riskEngine.Start(ctx, signalCh, orderCh); err != nil {
+			log.Printf("risk: %v", err)
 		}
 	}()
 
@@ -224,34 +210,20 @@ func runLive() {
 		}
 	}()
 
-	// Execution placeholder — in production, submit to Alpaca
+	// Create execution engine
+	fillCh := make(chan domain.ExecutionReport, 64)
+	execEngine := execution.NewEngine(alpacaClient, runtimeState, logger)
 	go func() {
-		for order := range orderCh {
-			log.Printf("execution: %s %s %s qty=%d price=%.2f",
-				order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price)
-			// In live mode: alpacaClient.SubmitOrder(ctx, order)
-			report := domain.ExecutionReport{
-				Symbol:        order.Symbol,
-				Side:          order.Side,
-				Intent:        order.Intent,
-				PositionSide:  order.PositionSide,
-				Price:         order.Price,
-				Quantity:      order.Quantity,
-				StopPrice:     order.StopPrice,
-				RiskPerShare:  order.RiskPerShare,
-				EntryATR:      order.EntryATR,
-				SetupType:     order.SetupType,
-				Reason:        order.Reason,
-				BrokerOrderID: "sim-" + fmt.Sprintf("%d", time.Now().UnixNano()),
-				BrokerStatus:  "filled",
-				FilledAt:      time.Now(),
-			}
-			if domain.IsOpeningIntent(order.Intent) {
-				portfolioMgr.OpenPosition(report)
-			} else {
-				portfolioMgr.ClosePosition(report)
-			}
-			logger.RecordExecution(report)
+		if err := execEngine.Start(ctx, orderCh, fillCh); err != nil {
+			log.Printf("execution: %v", err)
+		}
+	}()
+
+	// Process fills — update portfolio
+	go func() {
+		for fill := range fillCh {
+			portfolioMgr.ApplyExecution(fill)
+			logger.RecordExecution(fill)
 		}
 	}()
 
@@ -260,14 +232,111 @@ func runLive() {
 
 	// Start API server
 	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg)
+	apiServer.RegisterConfigUpdater(scannerInst)
+	apiServer.RegisterConfigUpdater(strategyInst)
 	go func() {
 		if err := apiServer.Start(ctx, appCfg.ListenAddr); err != nil {
 			log.Fatalf("api: %v", err)
 		}
 	}()
 
-	// TODO: Start Alpaca WebSocket streaming into tickCh
-	// For now, the bot is ready and waiting for market data
+	// Start market data streaming
+	streamCfg := alpaca.StreamConfig{
+		APIKey:    appCfg.AlpacaAPIKey,
+		APISecret: appCfg.AlpacaAPISecret,
+		Feed:      "sip",
+	}
+	stream := alpaca.NewStream(streamCfg, 4096)
+
+	barCh, err := stream.Start(ctx)
+	if err != nil {
+		log.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	// Resolve symbols and subscribe
+	symbols, err := resolveStreamSymbols(ctx, alpacaClient, appCfg)
+	if err != nil {
+		log.Fatalf("symbols: %v", err)
+	}
+	log.Printf("stream: subscribing to %d symbols", len(symbols))
+	if err := stream.Subscribe(ctx, symbols); err != nil {
+		log.Fatalf("subscribe: %v", err)
+	}
+
+	// Normalize streaming bars into ticks
+	normalizer := market.NewNormalizer()
+	go func() {
+		for bar := range barCh {
+			tick := normalizer.Normalize(bar)
+			select {
+			case tickCh <- tick:
+			default:
+				// Drop tick if pipeline is backed up
+			}
+		}
+	}()
+
+	// Broker reconciliation loop
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runtimeState.Heartbeat("reconciliation")
+				bPositions, err := alpacaClient.GetPositions(ctx)
+				if err != nil {
+					log.Printf("reconcile: failed to fetch broker positions: %v", err)
+					continue
+				}
+				// Update broker equity
+				bAcct, err := alpacaClient.GetAccount(ctx)
+				if err == nil {
+					portfolioMgr.SetBrokerEquity(bAcct.Equity)
+				}
+				// Log any mismatches
+				pmPositions := portfolioMgr.GetPositions()
+				pmSymbols := make(map[string]bool)
+				for _, p := range pmPositions {
+					pmSymbols[p.Symbol] = true
+				}
+				brokerSymbols := make(map[string]bool)
+				for _, bp := range bPositions {
+					brokerSymbols[bp.Symbol] = true
+					if !pmSymbols[bp.Symbol] {
+						log.Printf("reconcile: WARNING broker has position %s not in portfolio manager", bp.Symbol)
+					}
+				}
+				for _, p := range pmPositions {
+					if !brokerSymbols[p.Symbol] && !p.BrokerSeeded {
+						log.Printf("reconcile: WARNING portfolio manager has position %s not at broker", p.Symbol)
+					}
+				}
+			}
+		}
+	}()
+
+	// Watchdog monitors component health
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				stale := runtimeState.StaleComponents(2 * time.Minute)
+				for _, name := range stale {
+					log.Printf("watchdog: WARNING component %s appears stale (no heartbeat in 2m)", name)
+					runtimeState.RecordLog("warn", "watchdog", fmt.Sprintf("component %s stale", name))
+				}
+			}
+		}
+	}()
+
 	log.Printf("system: ready — dashboard at http://localhost%s", appCfg.ListenAddr)
 
 	// Wait for shutdown signal
@@ -276,6 +345,20 @@ func runLive() {
 	<-sigCh
 	log.Println("system: shutting down")
 	cancel()
+}
+
+func resolveStreamSymbols(ctx context.Context, client *alpaca.Client, cfg config.AppConfig) ([]string, error) {
+	if len(cfg.AlpacaSymbols) > 0 {
+		log.Printf("symbols: using %d configured symbols", len(cfg.AlpacaSymbols))
+		return cfg.AlpacaSymbols, nil
+	}
+	// Fetch all equity symbols from Alpaca
+	symbols, err := client.ListEquitySymbols(ctx, true)
+	if err != nil {
+		return nil, fmt.Errorf("list equity symbols: %w", err)
+	}
+	log.Printf("symbols: resolved %d NASDAQ+NYSE symbols from Alpaca", len(symbols))
+	return symbols, nil
 }
 
 func runOptimize(args []string) error {
@@ -378,4 +461,3 @@ func brokerAccountValues(acct alpaca.Account) (float64, float64, bool) {
 	}
 	return 0, 0, false
 }
-
