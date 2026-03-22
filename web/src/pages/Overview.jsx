@@ -3,8 +3,7 @@ import { StatusBadge, RegimeIndicator } from '../components/StatusBadge';
 import { PnlChart } from '../components/PnlChart';
 import { money, number } from '../lib/format';
 
-export function Overview({ snapshot }) {
-  const { status, marketRegime, closedTrades } = snapshot;
+export function Overview({ status, marketRegime, closedTrades, updatedAt }) {
   const statusTone = status.emergencyStop ? 'danger' : status.paused ? 'warn' : 'good';
 
   // Build PnL chart data from closed trades
@@ -23,7 +22,7 @@ export function Overview({ snapshot }) {
         <div>
           <h2 className="text-xl font-semibold text-white">Dashboard Overview</h2>
           <p className="text-sm text-muted mt-1">
-            Last updated {snapshot.updatedAt ? new Date(snapshot.updatedAt).toLocaleTimeString() : 'n/a'}
+            Last updated {updatedAt ? new Date(updatedAt).toLocaleTimeString() : 'n/a'}
           </p>
         </div>
         <StatusBadge status={status} />

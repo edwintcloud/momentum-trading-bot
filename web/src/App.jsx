@@ -12,7 +12,7 @@ export function App() {
   const [page, setPage] = useState('overview');
   const { snapshot, connected, error, setError, post } = useWebSocket();
 
-  const { status, marketRegime, candidates, positions, closedTrades, logs } = snapshot;
+  const { status, marketRegime, candidates, positions, closedTrades, logs, updatedAt } = snapshot;
 
   function renderPage() {
     switch (page) {
@@ -21,8 +21,8 @@ export function App() {
           <Overview
             status={status}
             marketRegime={marketRegime}
-            positions={positions}
             closedTrades={closedTrades}
+            updatedAt={updatedAt}
           />
         );
       case 'positions':
