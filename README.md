@@ -210,6 +210,24 @@ The `SectorForSymbol()` lookup uses a hardcoded map of ~100 large-cap tickers. A
 ### Live Trading Normalizer Cold-Start (Fixed)
 On a fresh live/paper start the normalizer had no historical state: `previousClose=0`, `prevDayVolume=0`, `preMarketVol=0`. This caused `GapPercent=0`, `RelativeVolume=1.0`, and `PreMarketVolume=0` for every symbol, which meant ALL stocks failed the scanner's `MinGapPercent`, `MinRelativeVolume`, and `MinPremarketVolume` filters — producing zero trades. The fix seeds the normalizer from the Alpaca multi-symbol snapshot API (`/v2/stocks/snapshots`) on startup, providing yesterday's close/volume and today's open/high/volume before the first bar arrives. This is transparent — no configuration changes needed. The SIP data feed (paid Alpaca subscription) is required for snapshots.
 
+### WebSocket Streaming (Fixed)
+The live bot previously only handled `b` (minute bar) messages from the Alpaca WebSocket, silently ignoring subscription confirmations, errors, updated bars, and daily bars. This caused zero visibility into streaming health and missed data corrections.
+
+**Now handles all Alpaca WebSocket message types:**
+- `b` — Minute bars (primary data source, routed to normalizer)
+- `u` — Updated bars (late trade corrections, routed to same pipeline as minute bars)
+- `d` — Daily bars (cumulative session OHLCV, updates normalizer high-of-day and volume)
+- `t` — Trades (counted for stats; future: real-time price updates)
+- `subscription` — Subscription confirmations with symbol counts logged
+- `error` — Alpaca errors (e.g., symbol limit exceeded) logged with code and message
+- `success` — Auth confirmations
+
+**Debug logging:** Stream stats (bars, updated bars, daily bars, trades, errors, drops) are logged every 60 seconds. First bar received is logged with symbol, time, price, and volume. Subscribe batches are logged individually.
+
+**Daily bars subscription:** The bot now subscribes to `dailyBars` alongside `bars` for all symbols. Daily bar updates feed the normalizer with running session high-of-day and cumulative volume, improving scanner accuracy between minute bar emissions.
+
+**JSON parsing fix:** Added explicit `Type` field (`json:"T"`) to `StreamBar` struct to prevent Go's case-insensitive JSON decoder from confusing the `"T"` (message type) and `"t"` (timestamp) fields.
+
 ## Quant Research
 
 The system's quantitative methodologies are documented in the comprehensive research document:

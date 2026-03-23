@@ -364,6 +364,13 @@ func runLive() {
 		}
 	}()
 
+	// Process daily bar updates for normalizer context (session OHLCV)
+	go func() {
+		for dbar := range stream.DailyBars() {
+			normalizer.UpdateDailyBar(dbar.Symbol, dbar.High, dbar.Volume, dbar.Open)
+		}
+	}()
+
 	// Broker reconciliation loop
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)

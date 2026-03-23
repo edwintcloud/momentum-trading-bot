@@ -132,6 +132,25 @@ func (n *Normalizer) Normalize(bar alpaca.StreamBar) domain.Tick {
 	}
 }
 
+// UpdateDailyBar updates the session high-of-day and volume from a daily bar message.
+// Daily bars are emitted every minute after market open and contain cumulative session data.
+func (n *Normalizer) UpdateDailyBar(symbol string, high float64, volume int64, open float64) {
+	state := n.states[symbol]
+	if state == nil {
+		return
+	}
+	if high > state.highOfDay {
+		state.highOfDay = high
+	}
+	if open > 0 && state.open == 0 {
+		state.open = open
+	}
+	// Daily bar volume is cumulative for the session
+	if volume > state.totalVolume {
+		state.totalVolume = volume
+	}
+}
+
 func isPremarket(timestamp time.Time) bool {
 	est := timestamp.In(markethours.Location())
 	minutes := est.Hour()*60 + est.Minute()
