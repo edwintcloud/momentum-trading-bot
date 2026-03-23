@@ -311,15 +311,20 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			diagnostics.ExitSignals++
 			if order, approved, riskReason := riskEngine.Evaluate(exitSignal); approved {
 				diagnostics.ExitRiskApproved++
-				if analytics, exists := openAnalytics[order.Symbol]; exists {
-					closedAnalytics = append(closedAnalytics, tradeAnalytics{
-						entryPrice:   analytics.entryPrice,
-						riskPerShare: analytics.riskPerShare,
-						openedAt:     analytics.openedAt,
-						mfeR:         analytics.mfeR,
-						maeR:         analytics.maeR,
-					})
-					delete(openAnalytics, order.Symbol)
+				// Only archive analytics on full close, not partial exits.
+				// Partial exits reduce the position but keep it open for
+				// subsequent trailing-stop or profit-target exits.
+				if order.Intent != domain.IntentPartial {
+					if analytics, exists := openAnalytics[order.Symbol]; exists {
+						closedAnalytics = append(closedAnalytics, tradeAnalytics{
+							entryPrice:   analytics.entryPrice,
+							riskPerShare: analytics.riskPerShare,
+							openedAt:     analytics.openedAt,
+							mfeR:         analytics.mfeR,
+							maeR:         analytics.maeR,
+						})
+						delete(openAnalytics, order.Symbol)
+					}
 				}
 				applyPaperFill(book, order, tick.Timestamp)
 			} else {

@@ -6,8 +6,9 @@ const (
 	DirectionLong  = "long"
 	DirectionShort = "short"
 
-	IntentOpen  = "open"
-	IntentClose = "close"
+	IntentOpen    = "open"
+	IntentClose   = "close"
+	IntentPartial = "partial"
 
 	SideBuy  = "buy"
 	SideSell = "sell"
@@ -24,10 +25,14 @@ func NormalizeDirection(value string) string {
 
 func NormalizeIntent(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case IntentClose, "partial":
+	case IntentClose:
 		return IntentClose
-	default:
+	case IntentPartial, "partial-exit", "reduce":
+		return IntentPartial
+	case IntentOpen, "buy", "sell", "entry":
 		return IntentOpen
+	default:
+		return value
 	}
 }
 
@@ -66,6 +71,12 @@ func IsOpeningIntent(intent string) bool {
 	return NormalizeIntent(intent) == IntentOpen
 }
 
+// IsPartialIntent returns true if the intent is a partial exit.
+func IsPartialIntent(intent string) bool {
+	return NormalizeIntent(intent) == IntentPartial
+}
+
 func IsClosingIntent(intent string) bool {
-	return NormalizeIntent(intent) == IntentClose
+	normalized := NormalizeIntent(intent)
+	return normalized == IntentClose || normalized == IntentPartial
 }
