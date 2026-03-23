@@ -28,6 +28,22 @@ export function Positions({ positions }) {
               <td className="text-muted">{pos.openedAt ? duration(Date.now() - new Date(pos.openedAt).getTime()) : '—'}</td>
             </tr>
           )}
+          renderCard={(pos) => (
+            <div key={pos.symbol} className="p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white text-base">{pos.symbol}</span>
+                <span className={sideBadge(pos.side)}>{pos.side}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-y-1.5 text-sm">
+                <div className="text-muted">Qty</div><div className="text-right font-mono text-white">{number.format(pos.quantity)}</div>
+                <div className="text-muted">Entry</div><div className="text-right font-mono text-white">{money.format(pos.avgPrice)}</div>
+                <div className="text-muted">Last</div><div className="text-right font-mono text-white">{money.format(pos.lastPrice)}</div>
+                <div className="text-muted">PnL</div><div className={`text-right font-mono ${pnlColor(pos.unrealizedPnL)}`}>{money.format(pos.unrealizedPnL)}</div>
+                <div className="text-muted">Stop</div><div className="text-right font-mono text-warning">{money.format(pos.stopPrice)}</div>
+                <div className="text-muted">Setup</div><div className="text-right"><span className="badge-info">{pos.setupType || 'n/a'}</span></div>
+              </div>
+            </div>
+          )}
         />
       </div>
     </div>

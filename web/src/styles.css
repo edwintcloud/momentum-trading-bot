@@ -74,4 +74,18 @@
   .badge-error {
     @apply badge bg-loss/15 text-red-400;
   }
+
+  /* Mobile-specific tweaks */
+  @media (max-width: 768px) {
+    .data-table th,
+    .data-table td {
+      @apply px-2 py-2 text-xs;
+    }
+    .stat-card {
+      @apply p-3;
+    }
+    .stat-card strong {
+      @apply text-lg;
+    }
+  }
 }

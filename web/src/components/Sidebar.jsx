@@ -14,7 +14,7 @@ const navItems = [
 
 export function Sidebar({ currentPage, setPage }) {
   return (
-    <aside className="w-56 shrink-0 bg-surface-1 border-r border-surface-3 flex flex-col">
+    <aside className="h-full w-56 shrink-0 bg-surface-1 border-r border-surface-3 flex flex-col">
       <div className="px-4 py-5 flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-accent/20 flex items-center justify-center">
           <Activity className="w-4 h-4 text-accent" />
