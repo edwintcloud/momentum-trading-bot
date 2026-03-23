@@ -185,6 +185,9 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 ### Sector Concentration Blocking Small-Cap Entries (Fixed)
 The `SectorForSymbol()` lookup uses a hardcoded map of ~100 large-cap tickers. Any stock not in the map gets sector `"unknown"`. With `MaxPositionsPerSector = 2`, after entering 2 small-cap momentum stocks (all `"unknown"` sector), every subsequent entry was blocked. The fix skips the sector concentration check when sector is `"unknown"` or empty. The check still applies for well-known stocks with known GICS sectors.
 
+### Live Trading Normalizer Cold-Start (Fixed)
+On a fresh live/paper start the normalizer had no historical state: `previousClose=0`, `prevDayVolume=0`, `preMarketVol=0`. This caused `GapPercent=0`, `RelativeVolume=1.0`, and `PreMarketVolume=0` for every symbol, which meant ALL stocks failed the scanner's `MinGapPercent`, `MinRelativeVolume`, and `MinPremarketVolume` filters — producing zero trades. The fix seeds the normalizer from the Alpaca multi-symbol snapshot API (`/v2/stocks/snapshots`) on startup, providing yesterday's close/volume and today's open/high/volume before the first bar arrives. This is transparent — no configuration changes needed. The SIP data feed (paid Alpaca subscription) is required for snapshots.
+
 ## Quant Research
 
 The system's quantitative methodologies are documented in the comprehensive research document:
@@ -441,7 +444,7 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 ├── profile_runtime.go               # Runtime profile management
 ├── internal/
 │   ├── alpaca/                      # Alpaca Markets integration
-│   │   ├── client.go                # REST client
+│   │   ├── client.go                # REST client + snapshot API
 │   │   ├── historical.go            # Historical bar fetching
 │   │   └── stream.go                # Real-time streaming
 │   ├── analytics/
@@ -480,7 +483,7 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 │   │   ├── twap.go                  # TWAP execution algorithm
 │   │   ├── adaptivelimit.go         # Adaptive limit pricing
 │   │   └── router.go                # Execution router (auto-select algo)
-│   ├── market/normalizer.go         # Tick normalization
+│   ├── market/normalizer.go         # Tick normalization + snapshot seeding
 │   ├── markethours/hours.go         # ET market hours + holidays
 │   ├── ml/                          # Machine learning pipeline
 │   │   ├── features.go              # Feature engineering (20+ features)

@@ -10,6 +10,16 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/volumeprofile"
 )
 
+// SeedState holds historical context for seeding the normalizer on startup.
+type SeedState struct {
+	PreviousClose float64
+	PrevDayVolume int64
+	TodayOpen     float64
+	TodayHigh     float64
+	TodayVolume   int64
+	PreMarketVol  int64
+}
+
 // symbolState tracks per-symbol daily state for normalization.
 type symbolState struct {
 	day           string
@@ -33,6 +43,27 @@ func NewNormalizer() *Normalizer {
 	return &Normalizer{
 		states: make(map[string]*symbolState),
 	}
+}
+
+// Seed initializes the normalizer with historical context for a symbol.
+// This must be called before the first bar arrives for accurate gap% and relative volume.
+// Without seeding, previousClose=0 causes GapPercent=0 and prevDayVolume=0 causes
+// RelativeVolume=1.0, which means all scanner filters fail on a fresh start.
+// The now parameter should be the current time; it determines which trading day the
+// seed state belongs to.
+func (n *Normalizer) Seed(symbol string, seed SeedState, now time.Time) {
+	day := now.In(markethours.Location()).Format("2006-01-02")
+	state := &symbolState{
+		day:           day,
+		previousClose: seed.PreviousClose,
+		lastClose:     seed.PreviousClose,
+		open:          seed.TodayOpen,
+		highOfDay:     seed.TodayHigh,
+		totalVolume:   seed.TodayVolume,
+		preMarketVol:  seed.PreMarketVol,
+		prevDayVolume: seed.PrevDayVolume,
+	}
+	n.states[symbol] = state
 }
 
 // Normalize converts a raw StreamBar into an enriched domain.Tick with
