@@ -261,6 +261,52 @@ func (c *Client) GetHistoricalBars(ctx context.Context, symbol string, start, en
 	return allBars, nil
 }
 
+// SnapshotBar is the bar data within a snapshot response.
+type SnapshotBar struct {
+	Open      float64   `json:"o"`
+	High      float64   `json:"h"`
+	Low       float64   `json:"l"`
+	Close     float64   `json:"c"`
+	Volume    int64     `json:"v"`
+	Timestamp time.Time `json:"t"`
+	VWAP      float64   `json:"vw"`
+}
+
+// Snapshot is the snapshot data for a single symbol.
+type Snapshot struct {
+	DailyBar     SnapshotBar `json:"dailyBar"`
+	PrevDailyBar SnapshotBar `json:"prevDailyBar"`
+	MinuteBar    SnapshotBar `json:"minuteBar"`
+	LatestTrade  struct {
+		Price     float64   `json:"p"`
+		Timestamp time.Time `json:"t"`
+	} `json:"latestTrade"`
+}
+
+// GetSnapshots fetches snapshot data for multiple symbols from the Alpaca data API.
+// Returns previous close, today's open/high/volume for each symbol.
+// Symbols are batched in groups of 100 (Alpaca limit).
+func (c *Client) GetSnapshots(ctx context.Context, symbols []string) (map[string]Snapshot, error) {
+	result := make(map[string]Snapshot, len(symbols))
+	for i := 0; i < len(symbols); i += 100 {
+		end := i + 100
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		batch := symbols[i:end]
+		url := fmt.Sprintf("%s/v2/stocks/snapshots?symbols=%s&feed=%s",
+			c.dataURL, strings.Join(batch, ","), c.DataFeed())
+		var batchResult map[string]Snapshot
+		if err := c.get(ctx, url, &batchResult); err != nil {
+			return nil, fmt.Errorf("snapshots batch %d-%d: %w", i, end, err)
+		}
+		for k, v := range batchResult {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
 func (c *Client) get(ctx context.Context, url string, dest interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

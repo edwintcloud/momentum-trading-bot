@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -308,8 +309,49 @@ func runLive() {
 		log.Fatalf("subscribe: %v", err)
 	}
 
-	// Normalize streaming bars into ticks
+	// Seed normalizer with historical context from Alpaca snapshots.
+	// Without this, previousClose=0 and prevDayVolume=0 on fresh start,
+	// causing GapPercent=0 and RelativeVolume=1.0 — all scanner filters fail.
 	normalizer := market.NewNormalizer()
+	log.Println("normalizer: fetching snapshots for historical context...")
+	seedCtx, seedCancel := context.WithTimeout(ctx, 2*time.Minute)
+	snapshots, snapshotErr := alpacaClient.GetSnapshots(seedCtx, symbols)
+	seedCancel()
+	if snapshotErr != nil {
+		log.Printf("normalizer: snapshot seed warning (continuing without historical context): %v", snapshotErr)
+	} else {
+		now := time.Now()
+		seeded := 0
+		for symbol, snap := range snapshots {
+			if snap.PrevDailyBar.Close <= 0 {
+				continue
+			}
+			preMarketVol := int64(0)
+			if markethours.IsPreMarket(now) {
+				// During premarket, all of today's volume is premarket volume
+				preMarketVol = snap.DailyBar.Volume
+			} else {
+				// After open, estimate premarket volume from gap size:
+				// stocks with large gaps typically had significant premarket activity
+				gap := math.Abs((snap.DailyBar.Open - snap.PrevDailyBar.Close) / snap.PrevDailyBar.Close * 100)
+				if gap > 3.0 {
+					preMarketVol = snap.DailyBar.Volume / 10
+				}
+			}
+			normalizer.Seed(symbol, market.SeedState{
+				PreviousClose: snap.PrevDailyBar.Close,
+				PrevDayVolume: snap.PrevDailyBar.Volume,
+				TodayOpen:     snap.DailyBar.Open,
+				TodayHigh:     snap.DailyBar.High,
+				TodayVolume:   snap.DailyBar.Volume,
+				PreMarketVol:  preMarketVol,
+			}, now)
+			seeded++
+		}
+		log.Printf("normalizer: seeded %d/%d symbols with historical context", seeded, len(symbols))
+	}
+
+	// Normalize streaming bars into ticks
 	go func() {
 		for bar := range barCh {
 			tick := normalizer.Normalize(bar)
