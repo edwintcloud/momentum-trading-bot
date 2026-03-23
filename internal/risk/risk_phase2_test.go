@@ -388,6 +388,186 @@ func TestVolatilityEstimatorNoClampWhenZero(t *testing.T) {
 	// No assertion on upper bound — just verifying no artificial cap
 }
 
+func TestSectorConcentration_UnknownSectorBypass(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 100000
+	cfg.SectorConcentrationEnabled = true
+	cfg.MaxPositionsPerSector = 2
+	cfg.MaxSectorExposurePct = 0.25
+	cfg.PortfolioHeatEnabled = false
+	cfg.CorrelationCheckEnabled = false
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	e := NewEngine(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Open 2 positions with sector "unknown" (typical small-cap momentum stocks)
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol: "SMCAP1", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 5.0, Quantity: 100,
+		StopPrice: 4.5, RiskPerShare: 0.5, Sector: "unknown",
+		FilledAt: ts,
+	})
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol: "SMCAP2", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 8.0, Quantity: 100,
+		StopPrice: 7.0, RiskPerShare: 1.0, Sector: "unknown",
+		FilledAt: ts.Add(time.Minute),
+	})
+
+	// 3rd "unknown" sector stock should NOT be blocked
+	signal := domain.TradeSignal{
+		Symbol:       "SMCAP3",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        6.0,
+		Quantity:     100,
+		RiskPerShare: 0.5,
+		Sector:       "unknown",
+		Timestamp:    ts,
+	}
+	_, approved, reason := e.Evaluate(signal)
+	if !approved {
+		t.Errorf("unknown sector stock should not be blocked by sector concentration, got rejected: %s", reason)
+	}
+}
+
+func TestSectorConcentration_EmptySectorBypass(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 100000
+	cfg.SectorConcentrationEnabled = true
+	cfg.MaxPositionsPerSector = 2
+	cfg.MaxSectorExposurePct = 0.25
+	cfg.PortfolioHeatEnabled = false
+	cfg.CorrelationCheckEnabled = false
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	e := NewEngine(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Stock with empty sector should not be blocked
+	signal := domain.TradeSignal{
+		Symbol:       "NOSECTOR",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        10.0,
+		Quantity:     50,
+		RiskPerShare: 1.0,
+		Sector:       "",
+		Timestamp:    ts,
+	}
+	_, approved, reason := e.Evaluate(signal)
+	if !approved {
+		t.Errorf("empty sector stock should not be blocked, got rejected: %s", reason)
+	}
+	_ = pm // silence unused
+}
+
+func TestSectorConcentration_KnownSectorStillBlocked(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 100000
+	cfg.SectorConcentrationEnabled = true
+	cfg.MaxPositionsPerSector = 2
+	cfg.MaxSectorExposurePct = 0.25
+	cfg.PortfolioHeatEnabled = false
+	cfg.CorrelationCheckEnabled = false
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	e := NewEngine(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Open 2 technology positions
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol: "AAPL", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 150.0, Quantity: 50,
+		StopPrice: 145.0, RiskPerShare: 5.0, Sector: "technology",
+		FilledAt: ts,
+	})
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol: "MSFT", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 300.0, Quantity: 25,
+		StopPrice: 290.0, RiskPerShare: 10.0, Sector: "technology",
+		FilledAt: ts.Add(time.Minute),
+	})
+
+	// 3rd technology position should still be blocked
+	signal := domain.TradeSignal{
+		Symbol:       "GOOGL",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        140.0,
+		Quantity:     30,
+		RiskPerShare: 5.0,
+		Sector:       "technology",
+		Timestamp:    ts,
+	}
+	_, approved, reason := e.Evaluate(signal)
+	if approved {
+		t.Error("3rd technology stock should be blocked by sector concentration")
+	}
+	if reason != "sector-concentration" {
+		t.Errorf("expected reason 'sector-concentration', got %q", reason)
+	}
+}
+
+func TestPartialExitBypassesRiskGates(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	cfg.MaxOpenPositions = 1
+	cfg.MaxTradesPerDay = 1
+	cfg.PortfolioHeatEnabled = false
+	cfg.CorrelationCheckEnabled = false
+	cfg.SectorConcentrationEnabled = false
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	e := NewEngine(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Open a position
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol: "TEST", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 10.0, Quantity: 100,
+		StopPrice: 9.0, RiskPerShare: 1.0, FilledAt: ts,
+	})
+
+	// Exhaust daily trade limit
+	e.Evaluate(domain.TradeSignal{
+		Symbol: "DUMMY", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 5.0, Quantity: 10,
+		RiskPerShare: 0.5, Timestamp: ts,
+	})
+
+	// Partial exit should still be approved even though trade limit is exhausted
+	signal := domain.TradeSignal{
+		Symbol:       "TEST",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentPartial,
+		PositionSide: domain.DirectionLong,
+		Price:        12.0,
+		Quantity:     50,
+		Reason:       "partial-1",
+		Timestamp:    ts.Add(5 * time.Minute),
+	}
+	order, approved, _ := e.Evaluate(signal)
+	if !approved {
+		t.Error("partial exit should bypass risk gates and be approved")
+	}
+	if order.Intent != domain.IntentPartial {
+		t.Errorf("order intent should be 'partial', got %q", order.Intent)
+	}
+}
+
 func TestVolatilityEstimatorSetMaxVol(t *testing.T) {
 	ve := NewVolatilityEstimator(0.30) // start without cap
 

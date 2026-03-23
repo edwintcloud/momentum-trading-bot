@@ -205,7 +205,10 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	}
 
 	// Phase 2 Change 3: Sector concentration gate
-	if e.config.SectorConcentrationEnabled && signal.Sector != "" {
+	// Skip for unknown/empty sectors — small-cap momentum stocks are rarely in the
+	// hardcoded sector map, so they all resolve to "unknown" and would saturate the
+	// single "unknown" bucket, blocking all subsequent entries.
+	if e.config.SectorConcentrationEnabled && signal.Sector != "" && signal.Sector != "unknown" {
 		exposures := e.sectorExposures(positions)
 		existing := exposures[signal.Sector]
 

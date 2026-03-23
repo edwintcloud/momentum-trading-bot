@@ -75,7 +75,7 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 ### Risk Management
 - Portfolio heat tracking with alert thresholds
 - Graduated daily loss response (moderate / severe / halt tiers)
-- Sector concentration limits (max positions + exposure per sector)
+- Sector concentration limits (max positions + exposure per sector; stocks with unknown/empty GICS sector bypass sector limits)
 - Correlation-aware position approval
 - Kelly Criterion position sizing
 - Volatility-target position sizing (with configurable max vol estimate clamp via `MaxVolEstimate`)
@@ -117,7 +117,7 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 - Time-of-day adaptive parameters with configurable midday score multiplier
 - **Entry deadline** — block new entries after configurable minutes from open (e.g., 120 min = 2 hours)
 - **Risk/reward pre-check** — reject trades where estimated reward < configurable R:R ratio × risk
-- Partial exit framework (two trigger levels with configurable percentages)
+- Partial exit framework (two trigger levels with configurable percentages) — partial exits use a distinct `IntentPartial` intent that correctly routes to `ReducePosition` instead of `ClosePosition`
 - Adaptive trailing stops with volatility factor
 - Mean-reversion overlay (Bollinger bands + ADX filter)
 
@@ -176,6 +176,14 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 - `GET  /ws` — Real-time dashboard updates
 - `GET  /healthz` — Liveness probe (public)
 - `GET  /readyz` — Readiness probe (public)
+
+## Bugfixes
+
+### Partial Exits Closing Full Position (Fixed)
+`NormalizeIntent("partial")` was mapped to `"close"`, causing partial exit signals to fully close positions instead of reducing them. The fix introduces a distinct `IntentPartial` constant and updates `NormalizeIntent` to preserve partial intent. The backtest engine also no longer deletes per-trade analytics on partial exits, so MFE/MAE tracking continues through the remainder of the position.
+
+### Sector Concentration Blocking Small-Cap Entries (Fixed)
+The `SectorForSymbol()` lookup uses a hardcoded map of ~100 large-cap tickers. Any stock not in the map gets sector `"unknown"`. With `MaxPositionsPerSector = 2`, after entering 2 small-cap momentum stocks (all `"unknown"` sector), every subsequent entry was blocked. The fix skips the sector concentration check when sector is `"unknown"` or empty. The check still applies for well-known stocks with known GICS sectors.
 
 ## Quant Research
 

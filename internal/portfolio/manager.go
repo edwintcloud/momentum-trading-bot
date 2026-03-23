@@ -469,7 +469,7 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
 	if domain.IsOpeningIntent(report.Intent) {
 		m.OpenPosition(report)
-	} else if report.Intent == "partial" {
+	} else if domain.IsPartialIntent(report.Intent) {
 		m.ReducePosition(report)
 	} else {
 		m.ClosePosition(report)
