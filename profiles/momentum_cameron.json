@@ -307,7 +307,13 @@
     "DollarNeutralTolerance": 0.05,
     "BetaNeutralThreshold": 0.30,
     "MaxGrossLeverage": 2.0,
-    "SectorNeutralTolerance": 0.10
+    "SectorNeutralTolerance": 0.10,
+
+    "HODMomoEnabled": true,
+    "HODMomoMinIntradayPct": 10.0,
+    "HODMomoMinRelativeVolume": 5.0,
+    "HODMomoMaxDistFromHigh": 5.0,
+    "HODMomoMinMinutesSinceOpen": 5
   },
   "promotion": {
     "deploymentMode": "paper",

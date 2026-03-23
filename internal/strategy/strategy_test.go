@@ -696,3 +696,194 @@ func TestMidDayMultiplierDefaultBehavior(t *testing.T) {
 		t.Error("expected midday candidate with score 2.4 to pass with default 1.15x multiplier (threshold 2.3)")
 	}
 }
+
+// Diagnostic fix tests
+
+func TestDiagnosticMarketClosed(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+	// Premarket time (8:00 AM ET) — market not open
+	premarketTime := time.Date(2026, 3, 23, 8, 0, 0, 0, loc)
+
+	candidate := domain.Candidate{
+		Symbol:          "PREMARKET",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       premarketTime,
+	}
+
+	decision := s.EvaluateCandidateDecision(candidate)
+	if decision.Emit {
+		t.Fatal("expected premarket candidate to not emit")
+	}
+	if decision.Reason != "market-closed" {
+		t.Errorf("expected reason %q, got %q", "market-closed", decision.Reason)
+	}
+}
+
+func TestDiagnosticRegimeGated(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.RegimeGatingEnabled = true
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+	candidate := domain.Candidate{
+		Symbol:           "GATED",
+		Direction:        domain.DirectionLong,
+		Price:            50.0,
+		ATR:              1.0,
+		Score:            5.0,
+		Playbook:         "breakout",
+		MarketRegime:     domain.RegimeBearish,
+		RegimeConfidence: 0.8,
+		GapPercent:       5.0,
+		RelativeVolume:   3.0,
+		PreMarketVolume:  60000,
+		Timestamp:        ts,
+	}
+
+	decision := s.EvaluateCandidateDecision(candidate)
+	if decision.Emit {
+		t.Fatal("expected regime-gated candidate to not emit")
+	}
+	if decision.Reason != "regime-gated" {
+		t.Errorf("expected reason %q, got %q", "regime-gated", decision.Reason)
+	}
+}
+
+func TestDiagnosticPastEntryDeadline(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryDeadlineMinutesAfterOpen = 120
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+	// 3 hours after open
+	lateTime := time.Date(2026, 3, 23, 12, 30, 0, 0, loc)
+
+	candidate := domain.Candidate{
+		Symbol:          "LATE",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       lateTime,
+	}
+
+	decision := s.EvaluateCandidateDecision(candidate)
+	if decision.Emit {
+		t.Fatal("expected past-deadline candidate to not emit")
+	}
+	if decision.Reason != "past-entry-deadline" {
+		t.Errorf("expected reason %q, got %q", "past-entry-deadline", decision.Reason)
+	}
+}
+
+func TestDiagnosticExistingPosition(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Open a position first
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol:       "EXISTING",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        10.0,
+		Quantity:     100,
+		StopPrice:    9.0,
+		RiskPerShare: 1.0,
+		FilledAt:     ts,
+	})
+
+	candidate := domain.Candidate{
+		Symbol:          "EXISTING",
+		Direction:       domain.DirectionLong,
+		Price:           10.5,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts.Add(time.Minute),
+	}
+
+	decision := s.EvaluateCandidateDecision(candidate)
+	if decision.Emit {
+		t.Fatal("expected existing-position candidate to not emit")
+	}
+	if decision.Reason != "existing-position" {
+		t.Errorf("expected reason %q, got %q", "existing-position", decision.Reason)
+	}
+}
+
+func TestDiagnosticLowScore(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 5.0 // high threshold
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	candidate := domain.Candidate{
+		Symbol:          "LOWSCORE",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           2.0, // below threshold
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	decision := s.EvaluateCandidateDecision(candidate)
+	if decision.Emit {
+		t.Fatal("expected low-score candidate to not emit")
+	}
+	if decision.Reason != "low-score" {
+		t.Errorf("expected reason %q, got %q", "low-score", decision.Reason)
+	}
+}
