@@ -10,6 +10,7 @@ type VolatilityEstimator struct {
 	mu               sync.RWMutex
 	estimates        map[string]*volEstimate
 	defaultVol       float64
+	maxVol           float64
 }
 
 type volEstimate struct {
@@ -19,14 +20,26 @@ type volEstimate struct {
 }
 
 // NewVolatilityEstimator creates a new estimator with the given default volatility.
-func NewVolatilityEstimator(defaultVol float64) *VolatilityEstimator {
+func NewVolatilityEstimator(defaultVol float64, opts ...float64) *VolatilityEstimator {
 	if defaultVol <= 0 {
 		defaultVol = 0.30
+	}
+	maxVol := 0.0 // 0 = no cap
+	if len(opts) > 0 && opts[0] > 0 {
+		maxVol = opts[0]
 	}
 	return &VolatilityEstimator{
 		estimates:  make(map[string]*volEstimate),
 		defaultVol: defaultVol,
+		maxVol:     maxVol,
 	}
+}
+
+// SetMaxVol sets the maximum annualized vol estimate (0 = no cap).
+func (ve *VolatilityEstimator) SetMaxVol(maxVol float64) {
+	ve.mu.Lock()
+	defer ve.mu.Unlock()
+	ve.maxVol = maxVol
 }
 
 // UpdatePrice updates the volatility estimate with a new price observation.
@@ -62,6 +75,10 @@ func (ve *VolatilityEstimator) UpdatePrice(symbol string, price float64) {
 			variance := sumSq/n - mean*mean
 			if variance > 0 {
 				est.realizedVol = math.Sqrt(variance) * math.Sqrt(390*252)
+			}
+			// Clamp to max vol if configured
+			if ve.maxVol > 0 && est.realizedVol > ve.maxVol {
+				est.realizedVol = ve.maxVol
 			}
 		}
 	}

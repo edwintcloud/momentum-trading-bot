@@ -144,7 +144,7 @@
     "KellyFraction": 0.25,
     "MaxKellyRiskPct": 0.02,
 
-    "VolTargetSizingEnabled": true,
+    "VolTargetSizingEnabled": false,
     "TargetVolPerPosition": 0.02,
     "DefaultVolatility": 0.3,
 
@@ -313,7 +313,11 @@
     "HODMomoMinIntradayPct": 10.0,
     "HODMomoMinRelativeVolume": 5.0,
     "HODMomoMaxDistFromHigh": 5.0,
-    "HODMomoMinMinutesSinceOpen": 5
+    "HODMomoPullbackMaxDist": 10.0,
+    "HODMomoMinMinutesSinceOpen": 5,
+
+    "MinPositionNotionalPct": 0.02,
+    "MaxVolEstimate": 5.0
   },
   "promotion": {
     "deploymentMode": "paper",

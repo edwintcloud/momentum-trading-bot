@@ -132,7 +132,7 @@ func runLive() {
 	// Initialize pipeline components
 	portfolioMgr := portfolio.NewManager(tradingCfg, logger)
 	portfolioMgr.SetBrokerEquity(acct.Equity)
-	volEstimator := risk.NewVolatilityEstimator(tradingCfg.DefaultVolatility)
+	volEstimator := risk.NewVolatilityEstimator(tradingCfg.DefaultVolatility, tradingCfg.MaxVolEstimate)
 
 	// Seed broker positions
 	brokerPositions, err := alpacaClient.GetPositions(ctx)

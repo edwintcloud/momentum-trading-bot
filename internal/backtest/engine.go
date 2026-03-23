@@ -221,7 +221,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
 	}
 	scan := scanner.NewScanner(cfg, runtimeState)
-	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility)
+	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
 	pendingEntries := make(map[string]pendingEntry)

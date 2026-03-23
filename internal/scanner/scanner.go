@@ -139,10 +139,18 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 		hodMomoQualified = intradayPct >= cfg.HODMomoMinIntradayPct &&
 			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume &&
 			minutesSinceOpen >= cfg.HODMomoMinMinutesSinceOpen
-		if hodMomoQualified && cfg.HODMomoMaxDistFromHigh > 0 && tick.HighOfDay > 0 {
+		if hodMomoQualified && tick.HighOfDay > 0 {
 			distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-			if distFromHigh > cfg.HODMomoMaxDistFromHigh {
-				hodMomoQualified = false
+			pullbackMaxDist := cfg.HODMomoPullbackMaxDist
+			if pullbackMaxDist <= 0 {
+				pullbackMaxDist = cfg.HODMomoMaxDistFromHigh
+			}
+			if cfg.HODMomoMaxDistFromHigh > 0 && distFromHigh > cfg.HODMomoMaxDistFromHigh {
+				if pullbackMaxDist > 0 && distFromHigh <= pullbackMaxDist {
+					// qualifies as pullback
+				} else {
+					hodMomoQualified = false
+				}
 			}
 		}
 	}
@@ -191,6 +199,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Path 2: HOD Momo scanner (new) — stock is making a big intraday move
 	hodMomoQualified := false
+	hodMomoPullback := false // true when qualified via pullback distance (beyond breakout range)
 	intradayReturnPct := 0.0
 	if cfg.HODMomoEnabled && tick.Open > 0 && tick.Price > 0 {
 		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
@@ -200,11 +209,20 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume &&
 			minutesSinceOpen >= cfg.HODMomoMinMinutesSinceOpen
 
-		// Also check distance from HOD if configured
-		if hodMomoQualified && cfg.HODMomoMaxDistFromHigh > 0 && tick.HighOfDay > 0 {
+		// Two-tier distance check: breakout (tight) and pullback (wider)
+		if hodMomoQualified && tick.HighOfDay > 0 {
 			distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-			if distFromHigh > cfg.HODMomoMaxDistFromHigh {
-				hodMomoQualified = false
+			pullbackMaxDist := cfg.HODMomoPullbackMaxDist
+			if pullbackMaxDist <= 0 {
+				pullbackMaxDist = cfg.HODMomoMaxDistFromHigh // fallback to breakout distance
+			}
+			if cfg.HODMomoMaxDistFromHigh > 0 && distFromHigh > cfg.HODMomoMaxDistFromHigh {
+				// Beyond breakout range — check pullback range
+				if pullbackMaxDist > 0 && distFromHigh <= pullbackMaxDist {
+					hodMomoPullback = true // qualifies as pullback
+				} else {
+					hodMomoQualified = false // too far from HOD
+				}
 			}
 		}
 	}
@@ -252,7 +270,8 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day
-	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong {
+	// Skip for HOD momo qualified stocks — they use their own distance thresholds
+	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified {
 		if tick.HighOfDay > 0 && tick.Price > 0 {
 			distPct := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
 			if distPct > cfg.MaxDistanceFromHighPct {
@@ -286,12 +305,16 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	// Get market regime
 	regime := s.runtime.MarketRegime()
 
-	// HOD breakout detection: price near session high with strong intraday move
+	// HOD breakout/pullback detection: price near session high with strong intraday move
 	if cfg.HODMomoEnabled && tick.Open > 0 && tick.HighOfDay > 0 {
 		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
 		distFromHOD := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-		if intradayPct >= cfg.HODMomoMinIntradayPct && distFromHOD < 1.0 {
-			metrics.setupType = "hod_breakout"
+		if intradayPct >= cfg.HODMomoMinIntradayPct {
+			if distFromHOD < 1.0 {
+				metrics.setupType = "hod_breakout"
+			} else if hodMomoPullback {
+				metrics.setupType = "hod_pullback"
+			}
 		}
 	}
 
@@ -657,6 +680,9 @@ func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction stri
 func (s *Scanner) selectPlaybook(direction string, m scanMetrics) string {
 	if m.setupType == "hod_breakout" {
 		return "breakout"
+	}
+	if m.setupType == "hod_pullback" {
+		return "pullback"
 	}
 	if m.setupType == "breakout" || m.setupType == "breakdown" {
 		return "breakout"

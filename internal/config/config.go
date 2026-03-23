@@ -342,8 +342,15 @@ type TradingConfig struct {
 	HODMomoEnabled             bool    // enable intraday momentum scanner mode
 	HODMomoMinIntradayPct      float64 // min % move from open to qualify (e.g., 10.0)
 	HODMomoMinRelativeVolume   float64 // min relative volume for HOD momo (e.g., 5.0)
-	HODMomoMaxDistFromHigh     float64 // max % distance from HOD (e.g., 5.0)
+	HODMomoMaxDistFromHigh     float64 // max % distance from HOD for breakout qualification (e.g., 5.0)
+	HODMomoPullbackMaxDist     float64 // max % distance from HOD for pullback qualification (e.g., 10.0)
 	HODMomoMinMinutesSinceOpen float64 // minimum minutes after open before HOD momo triggers (e.g., 5)
+
+	// Position sizing floor
+	MinPositionNotionalPct float64 // minimum position as % of equity (0 = no floor)
+
+	// Volatility estimator cap
+	MaxVolEstimate float64 // max annualized vol estimate (default 5.0 = 500%)
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.
