@@ -759,6 +759,25 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	r := s.currentR(pos, tick.Price)
 	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
+	// Safety: if stop price is zero (shouldn't happen but defensive), compute one
+	if pos.StopPrice == 0 {
+		fallbackRisk := pos.AvgPrice * s.config.EntryATRPercentFallback / 100.0
+		if fallbackRisk <= 0 {
+			fallbackRisk = pos.AvgPrice * 0.02
+		}
+		if domain.IsLong(pos.Side) {
+			computedStop := pos.AvgPrice - fallbackRisk
+			if tick.Price <= computedStop {
+				return "stop-loss-fallback", true
+			}
+		} else {
+			computedStop := pos.AvgPrice + fallbackRisk
+			if tick.Price >= computedStop {
+				return "stop-loss-fallback", true
+			}
+		}
+	}
+
 	// Hard stop
 	if domain.IsLong(pos.Side) && tick.Price <= pos.StopPrice {
 		return "stop-loss", true

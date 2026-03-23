@@ -224,6 +224,36 @@ func (m *Manager) SeedBrokerPosition(pos domain.Position) {
 	m.positions[pos.Symbol] = pos
 }
 
+// UpdateSeededPositionRisk sets stop price, risk per share, original quantity,
+// entry ATR, and playbook for a broker-seeded position that was missing these values.
+// Only zero-valued fields are updated; non-zero values are preserved.
+func (m *Manager) UpdateSeededPositionRisk(symbol string, stopPrice, riskPerShare float64, originalQty int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pos, ok := m.positions[symbol]
+	if !ok {
+		return
+	}
+	if pos.StopPrice == 0 {
+		pos.StopPrice = stopPrice
+		pos.InitialStopPrice = stopPrice
+	}
+	if pos.RiskPerShare == 0 {
+		pos.RiskPerShare = riskPerShare
+	}
+	if pos.OriginalQuantity == 0 {
+		pos.OriginalQuantity = originalQty
+	}
+	if pos.EntryATR == 0 {
+		pos.EntryATR = riskPerShare // Use risk per share as ATR proxy
+	}
+	if pos.Playbook == "" {
+		pos.Playbook = "breakout" // Safe default
+	}
+	pos.UpdatedAt = time.Now()
+	m.positions[symbol] = pos
+}
+
 // Exposure returns total long and short exposure.
 func (m *Manager) Exposure() (total, long, short float64) {
 	m.mu.RLock()
