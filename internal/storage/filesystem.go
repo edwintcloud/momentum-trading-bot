@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
@@ -82,9 +83,15 @@ func NewFilesystemRecorder(ctx context.Context, dir string) (domain.EventRecorde
 
 // LoadTodayClosedTrades reads closed_trades.jsonl and returns trades from today (ET).
 func (f *FilesystemStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) {
+	return f.LoadClosedTradesByDate(time.Now())
+}
+
+// LoadClosedTradesByDate reads closed_trades.jsonl and returns trades for a specific date (ET).
+func (f *FilesystemStore) LoadClosedTradesByDate(date time.Time) ([]domain.ClosedTrade, error) {
 	loc := markethours.Location()
-	now := time.Now().In(loc)
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	d := date.In(loc)
+	dayStart := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+	dayEnd := dayStart.AddDate(0, 0, 1)
 
 	path := filepath.Join(f.dir, "closed_trades.jsonl")
 	file, err := os.Open(path)
@@ -103,9 +110,54 @@ func (f *FilesystemStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) 
 		if err := json.Unmarshal(scanner.Bytes(), &t); err != nil {
 			continue
 		}
-		if !t.ClosedAt.IsZero() && t.ClosedAt.In(loc).After(dayStart) {
+		closedET := t.ClosedAt.In(loc)
+		if !t.ClosedAt.IsZero() && !closedET.Before(dayStart) && closedET.Before(dayEnd) {
 			trades = append(trades, t)
 		}
 	}
 	return trades, scanner.Err()
+}
+
+// ListTradeDates returns all dates (ET) that have at least one closed trade, descending.
+func (f *FilesystemStore) ListTradeDates() ([]string, error) {
+	loc := markethours.Location()
+
+	path := filepath.Join(f.dir, "closed_trades.jsonl")
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var t domain.ClosedTrade
+		if err := json.Unmarshal(scanner.Bytes(), &t); err != nil {
+			continue
+		}
+		if !t.ClosedAt.IsZero() {
+			dateStr := t.ClosedAt.In(loc).Format("2006-01-02")
+			seen[dateStr] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort descending
+	dates := make([]string, 0, len(seen))
+	for d := range seen {
+		dates = append(dates, d)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
+
+	// Limit to 90
+	if len(dates) > 90 {
+		dates = dates[:90]
+	}
+	return dates, nil
 }

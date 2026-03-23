@@ -75,6 +75,11 @@
     @apply badge bg-loss/15 text-red-400;
   }
 
+  /* Dark theme date picker */
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+  }
+
   /* Mobile-specific tweaks */
   @media (max-width: 768px) {
     .data-table th,

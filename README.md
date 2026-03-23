@@ -179,7 +179,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - **Overview** — Account summary, PnL chart, regime status, recent activity
 - **Positions** — Live positions with unrealized PnL, side indicators, and exit status
 - **Scanner** — Real-time candidate scoring with momentum metrics
-- **Trades** — Closed trade history with PnL, duration, and setup type
+- **Trades** — Historical trade view with date picker, CSV export, entry/exit time tooltips, and mobile-optimized date navigation
 - **Logs** — Filterable system log viewer
 - **Controls** — Pause/resume, emergency stop, close all positions
 
@@ -188,7 +188,10 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - `GET  /api/status` — System status
 - `GET  /api/positions` — Open positions
 - `GET  /api/candidates` — Scanner candidates
-- `GET  /api/trades` — Trade history
+- `GET  /api/trades` — Today's closed trades (live)
+- `GET  /api/trades/history?date=YYYY-MM-DD` — Historical trades for a specific date
+- `GET  /api/trades/export?date=YYYY-MM-DD` — CSV export of trades for a specific date
+- `GET  /api/trades/dates` — List of dates with trade activity (up to 90 days)
 - `GET  /api/logs` — System logs
 - `GET  /api/config` — Get trading config
 - `POST /api/config` — Update trading config (hot-reload)

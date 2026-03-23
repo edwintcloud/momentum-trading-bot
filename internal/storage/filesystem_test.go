@@ -170,6 +170,137 @@ func TestFilesystemStore_LoadTodayClosedTrades_AllFieldsPreserved(t *testing.T) 
 	}
 }
 
+func TestFilesystemStore_LoadClosedTradesByDate(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFilesystemStore(dir)
+	loc := markethours.Location()
+
+	// Create trades on specific dates
+	march20 := time.Date(2026, 3, 20, 10, 30, 0, 0, loc)
+	march21 := time.Date(2026, 3, 21, 11, 0, 0, 0, loc)
+	march22 := time.Date(2026, 3, 22, 14, 0, 0, 0, loc)
+
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "AAPL", Side: "long", Quantity: 100,
+		EntryPrice: 150, ExitPrice: 155, PnL: 500,
+		OpenedAt: march20.Add(-time.Hour), ClosedAt: march20,
+	})
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "TSLA", Side: "short", Quantity: 50,
+		EntryPrice: 200, ExitPrice: 195, PnL: 250,
+		OpenedAt: march21.Add(-2 * time.Hour), ClosedAt: march21,
+	})
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "NVDA", Side: "long", Quantity: 200,
+		EntryPrice: 300, ExitPrice: 310, PnL: 2000,
+		OpenedAt: march22.Add(-30 * time.Minute), ClosedAt: march22,
+	})
+
+	// Query March 20 — should get AAPL only
+	trades, err := store.LoadClosedTradesByDate(march20)
+	if err != nil {
+		t.Fatalf("LoadClosedTradesByDate(march20): %v", err)
+	}
+	if len(trades) != 1 {
+		t.Fatalf("expected 1 trade on March 20, got %d", len(trades))
+	}
+	if trades[0].Symbol != "AAPL" {
+		t.Errorf("expected AAPL, got %s", trades[0].Symbol)
+	}
+
+	// Query March 21 — should get TSLA only
+	trades, err = store.LoadClosedTradesByDate(march21)
+	if err != nil {
+		t.Fatalf("LoadClosedTradesByDate(march21): %v", err)
+	}
+	if len(trades) != 1 {
+		t.Fatalf("expected 1 trade on March 21, got %d", len(trades))
+	}
+	if trades[0].Symbol != "TSLA" {
+		t.Errorf("expected TSLA, got %s", trades[0].Symbol)
+	}
+
+	// Query a date with no trades
+	noTradesDate := time.Date(2026, 3, 19, 12, 0, 0, 0, loc)
+	trades, err = store.LoadClosedTradesByDate(noTradesDate)
+	if err != nil {
+		t.Fatalf("LoadClosedTradesByDate(no trades): %v", err)
+	}
+	if len(trades) != 0 {
+		t.Errorf("expected 0 trades on March 19, got %d", len(trades))
+	}
+}
+
+func TestFilesystemStore_LoadClosedTradesByDate_NoFile(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFilesystemStore(dir)
+	loc := markethours.Location()
+
+	trades, err := store.LoadClosedTradesByDate(time.Now().In(loc))
+	if err != nil {
+		t.Fatalf("LoadClosedTradesByDate should not error on missing file: %v", err)
+	}
+	if trades != nil {
+		t.Errorf("expected nil trades for missing file, got %v", trades)
+	}
+}
+
+func TestFilesystemStore_ListTradeDates(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFilesystemStore(dir)
+	loc := markethours.Location()
+
+	// Record trades on three different dates
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "AAPL", PnL: 100,
+		ClosedAt: time.Date(2026, 3, 20, 10, 0, 0, 0, loc),
+	})
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "TSLA", PnL: -50,
+		ClosedAt: time.Date(2026, 3, 20, 14, 0, 0, 0, loc),
+	})
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "NVDA", PnL: 200,
+		ClosedAt: time.Date(2026, 3, 18, 11, 0, 0, 0, loc),
+	})
+	store.RecordClosedTrade(domain.ClosedTrade{
+		Symbol: "MSFT", PnL: 150,
+		ClosedAt: time.Date(2026, 3, 21, 9, 30, 0, 0, loc),
+	})
+
+	dates, err := store.ListTradeDates()
+	if err != nil {
+		t.Fatalf("ListTradeDates: %v", err)
+	}
+	if len(dates) != 3 {
+		t.Fatalf("expected 3 distinct dates, got %d: %v", len(dates), dates)
+	}
+
+	// Should be in descending order
+	if dates[0] != "2026-03-21" {
+		t.Errorf("expected first date 2026-03-21, got %s", dates[0])
+	}
+	if dates[1] != "2026-03-20" {
+		t.Errorf("expected second date 2026-03-20, got %s", dates[1])
+	}
+	if dates[2] != "2026-03-18" {
+		t.Errorf("expected third date 2026-03-18, got %s", dates[2])
+	}
+}
+
+func TestFilesystemStore_ListTradeDates_NoFile(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFilesystemStore(dir)
+
+	dates, err := store.ListTradeDates()
+	if err != nil {
+		t.Fatalf("ListTradeDates should not error on missing file: %v", err)
+	}
+	if dates != nil {
+		t.Errorf("expected nil dates for missing file, got %v", dates)
+	}
+}
+
 func TestFilesystemStore_LoadTodayClosedTrades_MultipleToday(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFilesystemStore(dir)
