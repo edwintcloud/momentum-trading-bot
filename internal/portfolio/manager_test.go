@@ -279,6 +279,155 @@ func TestSeedClosedTrades_ThenNewTradeAppends(t *testing.T) {
 	}
 }
 
+func TestUpdateSeededPositionRisk_SetsAllFields(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	// Seed a position with zero risk metadata (like broker seeding does)
+	m.SeedBrokerPosition(domain.Position{
+		Symbol:   "SEED",
+		Side:     domain.DirectionLong,
+		Quantity: 200,
+		AvgPrice: 8.35,
+	})
+
+	m.UpdateSeededPositionRisk("SEED", 8.10, 0.125, 200)
+
+	pos, ok := m.GetPosition("SEED")
+	if !ok {
+		t.Fatal("position should exist")
+	}
+	if pos.StopPrice != 8.10 {
+		t.Errorf("StopPrice = %.2f, want 8.10", pos.StopPrice)
+	}
+	if pos.InitialStopPrice != 8.10 {
+		t.Errorf("InitialStopPrice = %.2f, want 8.10", pos.InitialStopPrice)
+	}
+	if pos.RiskPerShare != 0.125 {
+		t.Errorf("RiskPerShare = %.4f, want 0.125", pos.RiskPerShare)
+	}
+	if pos.OriginalQuantity != 200 {
+		t.Errorf("OriginalQuantity = %d, want 200", pos.OriginalQuantity)
+	}
+	if pos.EntryATR != 0.125 {
+		t.Errorf("EntryATR = %.4f, want 0.125 (ATR proxy)", pos.EntryATR)
+	}
+	if pos.Playbook != "breakout" {
+		t.Errorf("Playbook = %q, want breakout", pos.Playbook)
+	}
+}
+
+func TestUpdateSeededPositionRisk_DoesNotOverwriteNonZero(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	// Seed a position that already has some risk metadata
+	m.SeedBrokerPosition(domain.Position{
+		Symbol:           "EXISTING",
+		Side:             domain.DirectionLong,
+		Quantity:         100,
+		AvgPrice:         10.00,
+		StopPrice:        9.50,
+		RiskPerShare:     0.50,
+		OriginalQuantity: 100,
+		EntryATR:         0.40,
+		Playbook:         "pullback",
+	})
+
+	// Try to overwrite with different values
+	m.UpdateSeededPositionRisk("EXISTING", 9.00, 1.00, 200)
+
+	pos, ok := m.GetPosition("EXISTING")
+	if !ok {
+		t.Fatal("position should exist")
+	}
+	// All values should remain unchanged since they were non-zero
+	if pos.StopPrice != 9.50 {
+		t.Errorf("StopPrice = %.2f, want 9.50 (preserved)", pos.StopPrice)
+	}
+	if pos.RiskPerShare != 0.50 {
+		t.Errorf("RiskPerShare = %.2f, want 0.50 (preserved)", pos.RiskPerShare)
+	}
+	if pos.OriginalQuantity != 100 {
+		t.Errorf("OriginalQuantity = %d, want 100 (preserved)", pos.OriginalQuantity)
+	}
+	if pos.EntryATR != 0.40 {
+		t.Errorf("EntryATR = %.2f, want 0.40 (preserved)", pos.EntryATR)
+	}
+	if pos.Playbook != "pullback" {
+		t.Errorf("Playbook = %q, want pullback (preserved)", pos.Playbook)
+	}
+}
+
+func TestUpdateSeededPositionRisk_FallbackStopComputation(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	// Seed a position at $8.35 with no risk info
+	m.SeedBrokerPosition(domain.Position{
+		Symbol:   "FALLBACK",
+		Side:     domain.DirectionLong,
+		Quantity: 100,
+		AvgPrice: 8.35,
+	})
+
+	// Simulate the fallback computation: 1.5% fallback → risk = $8.35 * 0.015 = $0.12525
+	// stop = $8.35 - $0.12525 * 1.5 (ATR multiplier) = $8.35 - $0.1879 ≈ $8.16
+	riskPct := 0.015
+	riskPerShare := 8.35 * riskPct
+	stopPrice := 8.35 - riskPerShare*1.5
+
+	m.UpdateSeededPositionRisk("FALLBACK", stopPrice, riskPerShare, 100)
+
+	pos, ok := m.GetPosition("FALLBACK")
+	if !ok {
+		t.Fatal("position should exist")
+	}
+	if pos.StopPrice < 8.15 || pos.StopPrice > 8.17 {
+		t.Errorf("StopPrice = %.4f, want ~8.16", pos.StopPrice)
+	}
+	if pos.RiskPerShare < 0.12 || pos.RiskPerShare > 0.13 {
+		t.Errorf("RiskPerShare = %.4f, want ~0.125", pos.RiskPerShare)
+	}
+}
+
+func TestUpdateSeededPositionRisk_ShortPosition(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	m.SeedBrokerPosition(domain.Position{
+		Symbol:   "SHORT",
+		Side:     domain.DirectionShort,
+		Quantity: 100,
+		AvgPrice: 50.00,
+	})
+
+	// Short stop should be above entry: stop = 50 + risk
+	stopPrice := 51.00
+	riskPerShare := 1.00
+	m.UpdateSeededPositionRisk("SHORT", stopPrice, riskPerShare, 100)
+
+	pos, ok := m.GetPosition("SHORT")
+	if !ok {
+		t.Fatal("position should exist")
+	}
+	if pos.StopPrice != 51.00 {
+		t.Errorf("StopPrice = %.2f, want 51.00", pos.StopPrice)
+	}
+}
+
+func TestUpdateSeededPositionRisk_NonExistentSymbol(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	m := NewManager(cfg)
+
+	// Should not panic on non-existent symbol
+	m.UpdateSeededPositionRisk("NONE", 10.0, 1.0, 100)
+}
+
 func TestApplyExecution_PartialExitExceedingQty_FullyCloses(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.StartingCapital = 25000

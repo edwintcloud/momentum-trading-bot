@@ -976,6 +976,191 @@ func TestPositionSizeNoFloorWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestFallbackStopLongTriggersWhenStopIsZero(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryATRPercentFallback = 1.5 // 1.5%
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Position with StopPrice = 0 (simulates broker-seeded without risk metadata)
+	pos := domain.Position{
+		Symbol:       "NOSTP",
+		Side:         domain.DirectionLong,
+		Quantity:     100,
+		AvgPrice:     10.00,
+		StopPrice:    0, // Missing!
+		RiskPerShare: 0,
+		EntryATR:     0,
+		Playbook:     "breakout",
+		HighestPrice: 10.05,
+		LowestPrice:  9.90,
+		OpenedAt:     ts.Add(-5 * time.Minute),
+	}
+
+	// fallbackRisk = 10.00 * 1.5 / 100 = 0.15
+	// computedStop = 10.00 - 0.15 = 9.85
+	// Price at 9.84 should trigger stop-loss-fallback
+	tick := domain.Tick{
+		Symbol:    "NOSTP",
+		Price:     9.84,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if !shouldExit || reason != "stop-loss-fallback" {
+		t.Errorf("expected stop-loss-fallback, got reason=%q shouldExit=%v", reason, shouldExit)
+	}
+}
+
+func TestFallbackStopLongDoesNotTriggerAboveStop(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryATRPercentFallback = 1.5
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	pos := domain.Position{
+		Symbol:       "NOSTP",
+		Side:         domain.DirectionLong,
+		Quantity:     100,
+		AvgPrice:     10.00,
+		StopPrice:    0,
+		RiskPerShare: 0,
+		EntryATR:     0,
+		Playbook:     "breakout",
+		HighestPrice: 10.10,
+		LowestPrice:  9.90,
+		OpenedAt:     ts.Add(-5 * time.Minute),
+	}
+
+	// Price at 9.90 is above computed stop of 9.85 — should not trigger fallback
+	tick := domain.Tick{
+		Symbol:    "NOSTP",
+		Price:     9.90,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if shouldExit && reason == "stop-loss-fallback" {
+		t.Error("should not trigger fallback stop when price is above computed stop")
+	}
+}
+
+func TestFallbackStopShortTriggersWhenStopIsZero(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryATRPercentFallback = 2.0 // 2%
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	pos := domain.Position{
+		Symbol:       "NOSTP",
+		Side:         domain.DirectionShort,
+		Quantity:     100,
+		AvgPrice:     50.00,
+		StopPrice:    0, // Missing!
+		RiskPerShare: 0,
+		EntryATR:     0,
+		Playbook:     "reversal",
+		HighestPrice: 50.50,
+		LowestPrice:  49.50,
+		OpenedAt:     ts.Add(-5 * time.Minute),
+	}
+
+	// fallbackRisk = 50.00 * 2.0 / 100 = 1.00
+	// computedStop = 50.00 + 1.00 = 51.00
+	// Price at 51.10 should trigger stop-loss-fallback
+	tick := domain.Tick{
+		Symbol:    "NOSTP",
+		Price:     51.10,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if !shouldExit || reason != "stop-loss-fallback" {
+		t.Errorf("expected stop-loss-fallback for short, got reason=%q shouldExit=%v", reason, shouldExit)
+	}
+}
+
+func TestFallbackStopUsesDefaultWhenATRPercentZero(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryATRPercentFallback = 0 // Not configured
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	pos := domain.Position{
+		Symbol:       "NOSTP",
+		Side:         domain.DirectionLong,
+		Quantity:     100,
+		AvgPrice:     10.00,
+		StopPrice:    0,
+		RiskPerShare: 0,
+		Playbook:     "breakout",
+		HighestPrice: 10.05,
+		LowestPrice:  9.90,
+		OpenedAt:     ts.Add(-5 * time.Minute),
+	}
+
+	// Default fallback: 2% of $10.00 = $0.20
+	// computedStop = 10.00 - 0.20 = 9.80
+	// Price at 9.79 should trigger
+	tick := domain.Tick{
+		Symbol:    "NOSTP",
+		Price:     9.79,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if !shouldExit || reason != "stop-loss-fallback" {
+		t.Errorf("expected stop-loss-fallback with 2%% default, got reason=%q shouldExit=%v", reason, shouldExit)
+	}
+}
+
+func TestNormalStopStillWorksWhenSet(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Position WITH a proper stop — should use normal stop, not fallback
+	pos := domain.Position{
+		Symbol:       "HASSTOP",
+		Side:         domain.DirectionLong,
+		Quantity:     100,
+		AvgPrice:     10.00,
+		StopPrice:    9.50, // Properly set
+		RiskPerShare: 0.50,
+		EntryATR:     0.40,
+		Playbook:     "breakout",
+		HighestPrice: 10.10,
+		LowestPrice:  9.60,
+		OpenedAt:     ts.Add(-5 * time.Minute),
+	}
+
+	tick := domain.Tick{
+		Symbol:    "HASSTOP",
+		Price:     9.45,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if !shouldExit || reason != "stop-loss" {
+		t.Errorf("expected normal stop-loss, got reason=%q shouldExit=%v", reason, shouldExit)
+	}
+}
+
 func TestVolTargetSizingDisabledNoVolCap(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.StartingCapital = 77000

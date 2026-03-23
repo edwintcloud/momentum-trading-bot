@@ -171,6 +171,9 @@ func runLive() {
 		}
 	}
 
+	// Compute defensive stops for broker-seeded positions (snapshot-enhanced pass runs later)
+	computeSeededPositionStops(portfolioMgr, tradingCfg, nil)
+
 	// Restore today's closed trades from storage
 	if loader, ok := eventRecorder.(domain.TradeLoader); ok {
 		trades, err := loader.LoadTodayClosedTrades()
@@ -361,6 +364,9 @@ func runLive() {
 		}
 		log.Printf("normalizer: seeded %d/%d symbols with historical context", seeded, len(symbols))
 	}
+
+	// Improve seeded position stops using snapshot data (if available)
+	computeSeededPositionStops(portfolioMgr, tradingCfg, snapshots)
 
 	// Normalize streaming bars into ticks
 	go func() {
@@ -725,4 +731,53 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 	}
 	opt.SetFloatStore(autoFloatStore)
 	return opt.Run()
+}
+
+// computeSeededPositionStops sets defensive stop prices for broker-seeded positions
+// that are missing risk metadata (StopPrice, RiskPerShare, OriginalQuantity, EntryATR).
+// When snapshots are provided, the previous day's low/high is used as a natural support/resistance
+// level. Otherwise, a percentage-based fallback is used (EntryATRPercentFallback or 2% default).
+func computeSeededPositionStops(portfolioMgr *portfolio.Manager, tradingCfg config.TradingConfig, snapshots map[string]alpaca.Snapshot) {
+	for _, pos := range portfolioMgr.GetPositions() {
+		if !pos.BrokerSeeded || pos.StopPrice != 0 {
+			continue
+		}
+
+		// Try snapshot-based stop first (more accurate)
+		if snapshots != nil {
+			snap, ok := snapshots[pos.Symbol]
+			if ok && snap.PrevDailyBar.Low > 0 {
+				var stopPrice, riskPerShare float64
+				if domain.IsLong(pos.Side) {
+					stopPrice = snap.PrevDailyBar.Low * 0.99 // 1% below prev day low
+					riskPerShare = pos.AvgPrice - stopPrice
+				} else {
+					stopPrice = snap.PrevDailyBar.High * 1.01 // 1% above prev day high
+					riskPerShare = stopPrice - pos.AvgPrice
+				}
+				if riskPerShare > 0 {
+					portfolioMgr.UpdateSeededPositionRisk(pos.Symbol, stopPrice, riskPerShare, pos.Quantity)
+					log.Printf("alpaca: snapshot-based stop for %s: stop=%.2f (prev day low=%.2f)",
+						pos.Symbol, stopPrice, snap.PrevDailyBar.Low)
+					continue
+				}
+			}
+		}
+
+		// Fallback to percentage-based stop
+		riskPct := tradingCfg.EntryATRPercentFallback / 100.0
+		if riskPct <= 0 {
+			riskPct = 0.02 // 2% default fallback
+		}
+		riskPerShare := pos.AvgPrice * riskPct
+		var stopPrice float64
+		if domain.IsLong(pos.Side) {
+			stopPrice = pos.AvgPrice - riskPerShare*tradingCfg.EntryStopATRMultiplier
+		} else {
+			stopPrice = pos.AvgPrice + riskPerShare*tradingCfg.EntryStopATRMultiplier
+		}
+		portfolioMgr.UpdateSeededPositionRisk(pos.Symbol, stopPrice, riskPerShare, pos.Quantity)
+		log.Printf("alpaca: fallback stop for %s: stop=%.2f risk/share=%.4f",
+			pos.Symbol, stopPrice, riskPerShare)
+	}
 }

@@ -102,6 +102,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - Kelly Criterion position sizing
 - Volatility-target position sizing (with configurable max vol estimate clamp via `MaxVolEstimate`)
 - Position size floor (`MinPositionNotionalPct`) — prevents vol-target from sizing momentum positions to near-zero
+- Defensive stops for broker-seeded positions — on restart, existing broker positions automatically get stop prices computed from the previous day's low (via Alpaca snapshots) or a configurable ATR fallback percentage (`EntryATRPercentFallback`), ensuring no position is ever unprotected
 - Drawdown-based risk reduction (linear scale to max acceptable drawdown)
 - Per-minute entry throttle (`MaxEntriesPerMinute`)
 - **Value-at-Risk (VaR)** — parametric and historical simulation
@@ -201,6 +202,9 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - `GET  /readyz` — Readiness probe (public)
 
 ## Bugfixes
+
+### Broker-Seeded Positions Missing Stop Prices (Fixed)
+When the bot restarts, existing broker positions are seeded via `SeedBrokerPosition()` but had `StopPrice=0`, `RiskPerShare=0`, `EntryATR=0`, `OriginalQuantity=0`, and `Playbook=""`. This meant after a restart, positions were unprotected — no stop-losses, no trailing stops, no partial exits — until the end-of-day forced exit at 3:45 PM. The fix runs two passes after broker position seeding: first, a snapshot-based pass uses the previous day's low/high as natural support/resistance for stop placement; second, a percentage-based fallback (`EntryATRPercentFallback` or 2% default) ensures every position gets a stop. The strategy also gained a defensive `stop-loss-fallback` check that fires if a position somehow reaches exit evaluation with `StopPrice=0`. This is transparent — no configuration changes needed.
 
 ### Partial Exits Closing Full Position (Fixed)
 `NormalizeIntent("partial")` was mapped to `"close"`, causing partial exit signals to fully close positions instead of reducing them. The fix introduces a distinct `IntentPartial` constant and updates `NormalizeIntent` to preserve partial intent. The backtest engine also no longer deletes per-trade analytics on partial exits, so MFE/MAE tracking continues through the remainder of the position.
