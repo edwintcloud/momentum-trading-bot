@@ -29,16 +29,12 @@ type TradingConfig struct {
 	MinGapPercent                      float64
 	MinRelativeVolume                  float64
 	MinPremarketVolume                 int64
-	MaxFloat                           int64  // max float for momentum filtering (0 = disabled)
-	MinFloat                           int64  // min float to avoid micro-float stocks (0 = disabled)
 	FloatOverrideURL                   string // URL or file path to CSV with symbol,float data
 	ScannerMinSetupVolumeRateOffset    float64
 	ScannerMinSetupRelativeVolumeExtra float64
 	ScannerVWAPTolerancePct            float64
 	MaxFloat                           int64   // 0 = disabled; max outstanding shares for momentum filtering
 	MinFloat                           int64   // 0 = disabled; min outstanding shares
-	MaxDistanceFromHighPct             float64 // 0 = disabled; longs must be within X% of HOD
-	VolumeOnPullbackEnabled            bool    // score bonus/penalty based on pullback volume pattern
 	MarketRegimeBenchmarkSymbols       []string
 	MarketRegimeMinBenchmarks          int
 	MarketRegimeEMAFastPeriod          int
@@ -117,11 +113,6 @@ type TradingConfig struct {
 	RSIFilterEnabled       bool
 	RSIOverboughtThreshold float64
 	RSIOversoldThreshold   float64
-
-	// Strategy quality filters
-	MinRiskRewardRatio            float64 // 0 = disabled; min reward/risk ratio before entry (e.g. 2.0)
-	EntryDeadlineMinutesAfterOpen int     // 0 = disabled; block entries after N minutes from open
-	MidDayScoreMultiplier         float64 // 0 = use hardcoded default (1.15); score multiplier for midday entries
 
 	// Phase 3: Time-of-day adaptive parameters (Change 3)
 	TimeOfDayEnabled bool
