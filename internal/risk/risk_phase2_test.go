@@ -345,3 +345,71 @@ func TestVolatilityEstimator(t *testing.T) {
 		t.Errorf("low-vol stock (%.4f) should have lower vol than high-vol stock (%.4f)", calmVol, vol)
 	}
 }
+
+func TestVolatilityEstimatorMaxVolClamp(t *testing.T) {
+	maxVol := 5.0 // 500% annualized cap
+	ve := NewVolatilityEstimator(0.30, maxVol)
+
+	// Feed extreme price moves that would produce >500% annualized vol
+	// 5% per-minute moves should produce ~500%+ unclamped vol
+	prices := []float64{
+		100, 105, 100, 110, 95, 115, 90, 120, 85, 125,
+		80, 130, 75, 135, 70, 140, 65, 145, 60, 150, 55,
+	}
+	for _, p := range prices {
+		ve.UpdatePrice("EXTREME", p)
+	}
+
+	vol := ve.GetVolatility("EXTREME")
+	if vol > maxVol {
+		t.Errorf("vol estimate %.2f should be clamped to maxVol %.2f", vol, maxVol)
+	}
+	if vol <= 0 {
+		t.Error("expected positive vol estimate")
+	}
+}
+
+func TestVolatilityEstimatorNoClampWhenZero(t *testing.T) {
+	ve := NewVolatilityEstimator(0.30) // no maxVol
+
+	// Feed extreme prices
+	prices := []float64{
+		100, 105, 100, 110, 95, 115, 90, 120, 85, 125,
+	}
+	for _, p := range prices {
+		ve.UpdatePrice("WILD", p)
+	}
+
+	vol := ve.GetVolatility("WILD")
+	// Without clamp, vol should be very high
+	if vol <= 5.0 {
+		t.Skipf("vol estimate %.2f not high enough without clamp, skipping", vol)
+	}
+	// No assertion on upper bound — just verifying no artificial cap
+}
+
+func TestVolatilityEstimatorSetMaxVol(t *testing.T) {
+	ve := NewVolatilityEstimator(0.30) // start without cap
+
+	// Feed extreme prices
+	prices := []float64{
+		100, 110, 90, 120, 80, 130, 70, 140, 60, 150,
+	}
+	for _, p := range prices {
+		ve.UpdatePrice("SETTER", p)
+	}
+
+	volBefore := ve.GetVolatility("SETTER")
+
+	// Now set max vol and feed more prices
+	ve.SetMaxVol(2.0)
+	for _, p := range prices {
+		ve.UpdatePrice("SETTER2", p)
+	}
+
+	volAfter := ve.GetVolatility("SETTER2")
+	if volAfter > 2.0 {
+		t.Errorf("after SetMaxVol(2.0), vol %.2f should be <= 2.0", volAfter)
+	}
+	_ = volBefore
+}

@@ -63,6 +63,8 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
   - **Path 2: HOD Momo Scanner** — detects intraday momentum runners (stocks up `HODMomoMinIntradayPct`%+ from open with high relative volume), bypasses gap and premarket volume requirements. Catches stocks like ANNA that gap small but run 50-100% intraday.
   - Both paths share price, float, and HOD proximity filters
   - New `hod_breakout` setup type when price is within 1% of session high with strong intraday move
+  - New `hod_pullback` setup type when price is between `HODMomoMaxDistFromHigh` and `HODMomoPullbackMaxDist` of HOD — catches pullback entries on momentum runners (e.g., ANNA 7.3% below HOD)
+  - HOD momo qualified stocks bypass the general `MaxDistanceFromHighPct` filter
 - **Scanner Filters** — price, float (`MaxFloat`/`MinFloat`), HOD proximity, RSI overbought/oversold
 - **Dual-Direction Strategy** — long breakouts/pullbacks, short breakdowns
 - **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
@@ -76,7 +78,8 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 - Sector concentration limits (max positions + exposure per sector)
 - Correlation-aware position approval
 - Kelly Criterion position sizing
-- Volatility-target position sizing
+- Volatility-target position sizing (with configurable max vol estimate clamp via `MaxVolEstimate`)
+- Position size floor (`MinPositionNotionalPct`) — prevents vol-target from sizing momentum positions to near-zero
 - Drawdown-based risk reduction (linear scale to max acceptable drawdown)
 - Per-minute entry throttle (`MaxEntriesPerMinute`)
 - **Value-at-Risk (VaR)** — parametric and historical simulation
@@ -385,7 +388,9 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Four strateg
 
 **Scanner Quality** — `MaxDistanceFromHighPct`, `VolumeOnPullbackEnabled`
 
-**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5%), `HODMomoMinMinutesSinceOpen` (5 min). Enabled in `momentum_cameron` profile.
+**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range), `HODMomoMinMinutesSinceOpen` (5 min). Enabled in `momentum_cameron` profile.
+
+**Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor), `MaxVolEstimate` (5.0 = cap annualized vol at 500%)
 
 **Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
 
@@ -403,7 +408,9 @@ The `momentum_cameron` profile implements Ross Cameron's momentum day trading me
 - **Morning-only** — entry deadline 120 minutes after open; midday score multiplier 2x
 - **Conservative risk** — 1% risk per trade, max 6 trades/day, max 3 open positions, 2:1 minimum R:R requirement
 - **Tighter exits** — Breakout target 2.5R (vs 4.0R), faster trailing stops, partial exits at 1R (50%) and 2R (25%)
-- **HOD Momo scanner enabled** — catches intraday momentum runners that gap small but run 50-100%+ from open (e.g., ANNA 2026-03-20)
+- **HOD Momo scanner enabled** — catches intraday momentum runners that gap small but run 50-100%+ from open (e.g., ANNA 2026-03-20), with pullback entries up to 10% from HOD
+- **Vol-target sizing disabled** — momentum trading IS about volatile stocks; risk-per-trade % and ATR stops control risk instead
+- **Position size floor** — `MinPositionNotionalPct=2%` prevents vol estimates from crushing position sizes to near-zero
 - **Momentum signals enabled** — OFI, VPIN, ORB, OBV divergence for order flow confirmation
 - **Portfolio construction disabled** — MVO, risk parity, factor-neutral off (not applicable for 1–3 position momentum)
 - **ML disabled** — until models are trained on momentum-specific data

@@ -518,6 +518,15 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
+	// Position size floor: enforce minimum notional position
+	if s.config.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
+		minNotional := currentEquity * s.config.MinPositionNotionalPct
+		minQty := int64(math.Ceil(minNotional / c.Price))
+		if quantity < minQty {
+			quantity = minQty
+		}
+	}
+
 	// ML Scoring gate: skip trade if ML score below threshold
 	if s.config.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
 		features := ml.ScorerFeatures{

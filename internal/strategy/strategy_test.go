@@ -8,6 +8,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
+	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 )
 
@@ -885,5 +886,134 @@ func TestDiagnosticLowScore(t *testing.T) {
 	}
 	if decision.Reason != "low-score" {
 		t.Errorf("expected reason %q, got %q", "low-score", decision.Reason)
+	}
+}
+
+func TestPositionSizeFloorBumpsUp(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 77000
+	cfg.RiskPerTradePct = 0.005
+	cfg.MinPositionNotionalPct = 0.02 // 2% floor = $1540 minimum
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.VolTargetSizingEnabled = true
+	cfg.TargetVolPerPosition = 0.02
+	cfg.DefaultVolatility = 0.3
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	// Create a vol estimator that produces very high vol (to force small qty)
+	volEst := risk.NewVolatilityEstimator(8.0) // 800% default vol
+	s := NewStrategy(cfg, pm, runtimeState, volEst)
+
+	ts := marketOpenTime()
+	candidate := domain.Candidate{
+		Symbol:          "ANNA",
+		Direction:       domain.DirectionLong,
+		Price:           6.18,
+		ATR:             0.23,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  6.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	signal, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Fatal("expected signal for ANNA candidate")
+	}
+
+	// Floor: 77000 * 0.02 / 6.18 = ceil(249.2) = 250 shares minimum
+	minQty := int64(250) // ceil(1540 / 6.18)
+	if signal.Quantity < minQty {
+		t.Errorf("quantity %d should be >= min floor %d ($1540 notional)", signal.Quantity, minQty)
+	}
+}
+
+func TestPositionSizeNoFloorWhenDisabled(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 77000
+	cfg.RiskPerTradePct = 0.005
+	cfg.MinPositionNotionalPct = 0 // disabled
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.VolTargetSizingEnabled = true
+	cfg.TargetVolPerPosition = 0.02
+	cfg.DefaultVolatility = 0.3
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	volEst := risk.NewVolatilityEstimator(8.0) // very high vol
+	s := NewStrategy(cfg, pm, runtimeState, volEst)
+
+	ts := marketOpenTime()
+	candidate := domain.Candidate{
+		Symbol:          "ANNA",
+		Direction:       domain.DirectionLong,
+		Price:           6.18,
+		ATR:             0.23,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  6.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	signal, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Fatal("expected signal")
+	}
+
+	// With 800% vol and vol target sizing, qty should be tiny
+	// volBasedQty = (77000 * 0.02) / (8.0 * 6.18) = 31 shares
+	if signal.Quantity > 50 {
+		t.Errorf("without floor, quantity (%d) should be small due to high vol cap", signal.Quantity)
+	}
+}
+
+func TestVolTargetSizingDisabledNoVolCap(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 77000
+	cfg.RiskPerTradePct = 0.01
+	cfg.VolTargetSizingEnabled = false // disabled for momentum
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	volEst := risk.NewVolatilityEstimator(8.0) // high vol — shouldn't matter
+	s := NewStrategy(cfg, pm, runtimeState, volEst)
+
+	ts := marketOpenTime()
+	candidate := domain.Candidate{
+		Symbol:          "ANNA",
+		Direction:       domain.DirectionLong,
+		Price:           6.18,
+		ATR:             0.23,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  6.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	signal, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Fatal("expected signal")
+	}
+
+	// riskBudget = 77000 * 0.01 = 770
+	// riskPerShare = ATR * 1.5 = 0.23 * 1.5 = 0.345
+	// quantity = 770 / 0.345 = 2231
+	// With vol disabled, should be large
+	if signal.Quantity < 1000 {
+		t.Errorf("with VolTargetSizing disabled, quantity (%d) should be large", signal.Quantity)
 	}
 }

@@ -1061,3 +1061,169 @@ func TestVolumeOnPullbackIncreasingPenalty(t *testing.T) {
 		t.Errorf("score with volume penalty (%.2f) should be < score without (%.2f)", scoreWithPenalty, scoreWithout)
 	}
 }
+
+// HOD Momo Pullback Tests
+
+func TestHODMomoPullbackQualifies(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoPullbackMaxDist = 10.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 20.0 // gap path won't match
+	cfg.MaxDistanceFromHighPct = 5.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock 7.3% below HOD with 15% intraday return — ANNA scenario
+	// Beyond breakout range (5%) but within pullback range (10%)
+	tick := domain.Tick{
+		Symbol:          "ANNA",
+		Price:           5.10,
+		BarOpen:         5.05,
+		BarHigh:         5.15,
+		BarLow:          5.00,
+		Open:            4.00,    // 27.5% intraday return
+		HighOfDay:       5.50,    // 7.3% above price
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	candidate, ok := s.Evaluate(tick)
+	if !ok {
+		t.Fatal("expected ANNA-like pullback (7.3% from HOD, 27.5% intraday) to qualify via HOD momo pullback")
+	}
+	if candidate.SetupType != "hod_pullback" {
+		t.Errorf("SetupType = %q, want %q", candidate.SetupType, "hod_pullback")
+	}
+	if candidate.Playbook != "pullback" {
+		t.Errorf("Playbook = %q, want %q", candidate.Playbook, "pullback")
+	}
+}
+
+func TestHODMomoPullbackRejectedBeyondMaxDist(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoPullbackMaxDist = 10.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 20.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock 12% below HOD — beyond both breakout (5%) and pullback (10%) ranges
+	tick := domain.Tick{
+		Symbol:          "TOOFAR",
+		Price:           4.40,
+		BarOpen:         4.35,
+		BarHigh:         4.45,
+		BarLow:          4.30,
+		Open:            4.00,    // 10% intraday return
+		HighOfDay:       5.00,    // 12% above price
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("expected stock 12% from HOD to be rejected (pullback max 10%)")
+	}
+}
+
+func TestHODBreakoutStillWorksWithPullbackConfig(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoPullbackMaxDist = 10.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 20.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Price within 0.5% of HOD — should be hod_breakout, not hod_pullback
+	tick := domain.Tick{
+		Symbol:          "HODBREAK",
+		Price:           5.48,
+		BarOpen:         5.45,
+		BarHigh:         5.50,
+		BarLow:          5.40,
+		Open:            4.00,    // 37% intraday return
+		HighOfDay:       5.50,    // 0.36% above price
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	candidate, ok := s.Evaluate(tick)
+	if !ok {
+		t.Fatal("expected HOD breakout candidate near HOD to pass")
+	}
+	if candidate.SetupType != "hod_breakout" {
+		t.Errorf("SetupType = %q, want %q", candidate.SetupType, "hod_breakout")
+	}
+}
+
+func TestMaxDistanceFromHighPctSkippedForHODMomo(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoPullbackMaxDist = 10.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MaxDistanceFromHighPct = 5.0 // general HOD filter would block pullbacks
+	cfg.MinGapPercent = 20.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock 8% from HOD — would fail MaxDistanceFromHighPct=5% but qualifies via HOD momo pullback
+	tick := domain.Tick{
+		Symbol:          "BYPASSED",
+		Price:           4.60,
+		BarOpen:         4.55,
+		BarHigh:         4.65,
+		BarLow:          4.50,
+		Open:            4.00,    // 15% intraday return
+		HighOfDay:       5.00,    // 8% above price
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if !ok {
+		t.Error("expected HOD momo qualified stock to bypass MaxDistanceFromHighPct filter")
+	}
+}
