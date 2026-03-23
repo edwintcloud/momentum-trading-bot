@@ -31,16 +31,12 @@
     "MinGapPercent": 3.0,
     "MinRelativeVolume": 2.0,
     "MinPremarketVolume": 50000,
-    "MaxFloat": 0,
-    "MinFloat": 0,
     "FloatOverrideURL": "",
     "ScannerMinSetupVolumeRateOffset": 0.5,
     "ScannerMinSetupRelativeVolumeExtra": 0.5,
     "ScannerVWAPTolerancePct": 2.0,
     "MaxFloat": 0,
     "MinFloat": 0,
-    "MaxDistanceFromHighPct": 0,
-    "VolumeOnPullbackEnabled": false,
 
     "MarketRegimeBenchmarkSymbols": ["SPY", "QQQ", "IWM"],
     "MarketRegimeMinBenchmarks": 2,
@@ -153,10 +149,6 @@
 
     "DrawdownRiskEnabled": true,
     "MaxAcceptableDrawdown": 0.15,
-
-    "MinRiskRewardRatio": 0,
-    "EntryDeadlineMinutesAfterOpen": 0,
-    "MidDayScoreMultiplier": 0,
 
     "RSIFilterEnabled": true,
     "RSIOverboughtThreshold": 80.0,

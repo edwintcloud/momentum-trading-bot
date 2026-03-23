@@ -185,8 +185,11 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 			if !ok {
 				return fmt.Errorf("strategy candidates channel closed")
 			}
-			signal, shouldEmit := s.evaluateCandidate(candidate)
+			signal, shouldEmit, reason := s.evaluateCandidate(candidate)
 			if !shouldEmit {
+				if reason != "" && reason != "market-closed"  && reason != "system-paused" {
+					s.runtime.RecordLog("debug", "strategy", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
+				}
 				continue
 			}
 			select {
@@ -213,7 +216,8 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 
 // EvaluateCandidate applies entry rules (exported for backtesting).
 func (s *Strategy) EvaluateCandidate(candidate domain.Candidate) (domain.TradeSignal, bool) {
-	return s.evaluateCandidate(candidate)
+	signal, shouldEmit, _ := s.evaluateCandidate(candidate)
+	return signal, shouldEmit
 }
 
 // EvaluateExit applies exit rules (exported for backtesting).
@@ -240,7 +244,7 @@ type CandidateDecision struct {
 
 // EvaluateCandidateDecision returns a rich decision object for a candidate.
 func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) CandidateDecision {
-	signal, ok := s.evaluateCandidate(candidate)
+	signal, ok, signalReason := s.evaluateCandidate(candidate)
 	reason := "no-signal"
 	if ok {
 		reason = signal.Reason
@@ -288,6 +292,9 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 			reason = "loss-cooldown"
 		}
 	}
+	if reason == "no-signal" {
+		reason = signalReason
+	}
 	return CandidateDecision{
 		Signal: signal,
 		Emit:   ok,
@@ -295,35 +302,35 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 	}
 }
 
-func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bool) {
+func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bool, string) {
 	now := c.Timestamp
 	if !markethours.IsMarketOpen(now) {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "market-closed"
 	}
 
 	// Entry deadline: block entries after N minutes from open
 	if s.config.EntryDeadlineMinutesAfterOpen > 0 {
 		minutesSinceOpen := markethours.MinutesSinceOpen(now)
 		if minutesSinceOpen > float64(s.config.EntryDeadlineMinutesAfterOpen) {
-			return domain.TradeSignal{}, false
+			return domain.TradeSignal{}, false, "past-entry-deadline"
 		}
 	}
 
 	// Check if paused or emergency stopped
 	if s.runtime.IsPaused() || s.runtime.IsEmergencyStopped() {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "system-paused"
 	}
 
 	// Cooldown check
 	if last, ok := s.lastEntryAt[c.Symbol]; ok {
 		if now.Sub(last) < time.Duration(s.config.EntryCooldownSec)*time.Second {
-			return domain.TradeSignal{}, false
+			return domain.TradeSignal{}, false, "cooldown"
 		}
 	}
 
 	// Already have a position in this symbol
 	if _, exists := s.portfolio.GetPosition(c.Symbol); exists {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "existing-position"
 	}
 
 	// Day state
@@ -332,12 +339,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 
 	// Check if already entered this side today
 	if state.entrySides[c.Direction] {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "same-side-today"
 	}
 
 	// Too many losses on this symbol today
 	if state.lossExits >= 2 && now.Sub(state.lastLossAt) < 30*time.Minute {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "loss-cooldown"
 	}
 
 	// Score threshold already checked in scanner, but double-check
@@ -359,7 +366,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	if c.Score < minScore {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "low-score"
 	}
 
 	// Regime gating
@@ -367,21 +374,21 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		switch c.MarketRegime {
 		case domain.RegimeBearish:
 			if c.Direction == domain.DirectionLong {
-				return domain.TradeSignal{}, false
+				return domain.TradeSignal{}, false, "regime-gated"
 			}
 		case domain.RegimeBullish:
 			if c.Direction == domain.DirectionShort {
-				return domain.TradeSignal{}, false
+				return domain.TradeSignal{}, false, "regime-gated"
 			}
 		case domain.RegimeMixed:
 			boosted := minScore * s.config.RegimeMixedScoreBoost
 			if c.Score < boosted {
-				return domain.TradeSignal{}, false
+				return domain.TradeSignal{}, false, "regime-gated"
 			}
 		case domain.RegimeNeutral:
 			boosted := minScore * s.config.RegimeNeutralScoreBoost
 			if c.Score < boosted {
-				return domain.TradeSignal{}, false
+				return domain.TradeSignal{}, false, "regime-gated"
 			}
 		}
 	}
@@ -413,7 +420,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	// Compute position sizing
 	riskPerShare := s.computeRiskPerShare(c)
 	if riskPerShare <= 0 {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "invalid-risk"
 	}
 
 	// Phase 3 Change 3: Time-of-day risk multiplier (wider stops at open, tighter at close)
@@ -427,7 +434,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		var estimatedReward float64
 		if domain.IsLong(c.Direction) {
 			estimatedReward = c.HighOfDay - c.Price
-			if estimatedReward <= 0 {
+			if estimatedReward <= 0 || c.SetupType == "hod_breakout" {
 				estimatedReward = c.ATR * 2.0
 			}
 		} else {
@@ -438,7 +445,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 		rewardRiskRatio := estimatedReward / riskPerShare
 		if rewardRiskRatio < s.config.MinRiskRewardRatio {
-			return domain.TradeSignal{}, false
+			return domain.TradeSignal{}, false, "poor-risk-reward"
 		}
 	}
 
@@ -480,7 +487,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if s.riskEngine != nil {
 		dailyLossFactor := s.riskEngine.DailyLossSizingFactor()
 		if dailyLossFactor <= 0 {
-			return domain.TradeSignal{}, false
+			return domain.TradeSignal{}, false, "daily-loss-cooldown"
 		}
 		if dailyLossFactor < 1.0 {
 			s.runtime.RecordLog("info", "strategy", fmt.Sprintf("daily loss response: sizing reduced to %.0f%%", dailyLossFactor*100))
@@ -492,7 +499,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if s.riskEngine != nil {
 		drawdownFactor := s.riskEngine.DrawdownSizingFactor()
 		if drawdownFactor <= 0 {
-			return domain.TradeSignal{}, false
+			return domain.TradeSignal{}, false, "drawdown-cooldown"
 		}
 		riskBudget *= drawdownFactor
 	}
@@ -502,7 +509,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 
 	quantity := int64(math.Floor(riskBudget / riskPerShare))
 	if quantity <= 0 {
-		return domain.TradeSignal{}, false
+		return domain.TradeSignal{}, false, "position-too-small"
 	}
 
 	// Phase 2 Change 6: Volatility-based position sizing cap
@@ -560,7 +567,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 				}
 			}
 			if mlScore < s.config.MLScoringThreshold {
-				return domain.TradeSignal{}, false
+				return domain.TradeSignal{}, false, "ml-score-gated"
 			}
 			// Scale position by ML score (above threshold gets boost)
 			mlSizeMultiplier := 0.5 + mlScore
@@ -569,7 +576,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			}
 			quantity = int64(math.Floor(float64(quantity) * mlSizeMultiplier))
 			if quantity <= 0 {
-				return domain.TradeSignal{}, false
+				return domain.TradeSignal{}, false, "ml-score-position-too-small"
 			}
 		}
 	}
@@ -582,7 +589,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 		quantity = int64(ml.MetaLabelSizing(metaProb, int(quantity), s.config.MetaLabelConfidenceThreshold))
 		if quantity <= 0 {
-			return domain.TradeSignal{}, false
+			return domain.TradeSignal{}, false, "meta-label-gated"
 		}
 	}
 
@@ -624,7 +631,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	state.entrySides[c.Direction] = true
 	s.symbolStates[c.Symbol] = state
 
-	return signal, true
+	return signal, true, ""
 }
 
 func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
