@@ -52,6 +52,22 @@ export function Trades({ closedTrades }) {
               </td>
             </tr>
           )}
+          renderCard={(trade, index) => (
+            <div key={`${trade.symbol}-${index}`} className="p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white text-base">{trade.symbol}</span>
+                <span className={`font-mono text-sm ${pnlColor(trade.pnl)}`}>{money.format(trade.pnl)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-y-1.5 text-sm">
+                <div className="text-muted">Side</div><div className="text-right"><span className={sideBadge(trade.side)}>{trade.side}</span></div>
+                <div className="text-muted">Entry / Exit</div><div className="text-right font-mono text-white">{money.format(trade.entryPrice)} → {money.format(trade.exitPrice)}</div>
+                <div className="text-muted">R-Multiple</div><div className={`text-right font-mono ${pnlColor(trade.rMultiple)}`}>{trade.rMultiple ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R` : '—'}</div>
+                <div className="text-muted">Setup</div><div className="text-right"><span className="badge-info">{trade.setupType || 'n/a'}</span></div>
+                <div className="text-muted">Exit</div><div className="text-right text-gray-300">{trade.exitReason || '—'}</div>
+                <div className="text-muted">Qty</div><div className="text-right font-mono text-white">{number.format(trade.quantity)}</div>
+              </div>
+            </div>
+          )}
         />
       </div>
     </div>

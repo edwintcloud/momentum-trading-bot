@@ -174,6 +174,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - Telegram notifications for optimizer events
 
 ### Dashboard
+- **Mobile-friendly** — Collapsible sidebar with hamburger menu, responsive card layouts for data tables, touch-friendly navigation
 - **Overview** — Account summary, PnL chart, regime status, recent activity
 - **Positions** — Live positions with unrealized PnL, side indicators, and exit status
 - **Scanner** — Real-time candidate scoring with momentum metrics

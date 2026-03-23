@@ -47,6 +47,25 @@ export function Scanner({ candidates }) {
               </td>
             </tr>
           )}
+          renderCard={(c) => (
+            <div key={c.symbol} className="p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white text-base">{c.symbol}</span>
+                <div className="flex items-center gap-2">
+                  <span className={sideBadge(c.direction)}>{c.direction}</span>
+                  <span className="text-accent font-mono text-sm">{c.score?.toFixed(1)}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-y-1.5 text-sm">
+                <div className="text-muted">Price</div><div className="text-right font-mono text-white">{money.format(c.price)}</div>
+                <div className="text-muted">Gap</div><div className={`text-right font-mono ${c.gapPercent >= 0 ? 'text-gain' : 'text-loss'}`}>{c.gapPercent?.toFixed(2)}%</div>
+                <div className="text-muted">Rel Vol</div><div className="text-right font-mono text-white">{c.relativeVolume?.toFixed(2)}x</div>
+                <div className="text-muted">VWAP %</div><div className="text-right font-mono text-white">{c.priceVsVwapPct?.toFixed(2)}%</div>
+                <div className="text-muted">Regime</div><div className="text-right"><span className="badge-info">{c.marketRegime || 'n/a'}</span></div>
+                <div className="text-muted">Playbook</div><div className="text-right text-gray-300">{c.playbook || 'n/a'}</div>
+              </div>
+            </div>
+          )}
         />
       </div>
     </div>

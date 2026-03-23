@@ -31,7 +31,7 @@ export function LogViewer({ logs }) {
 
   return (
     <div className="panel">
-      <div className="panel-header">
+      <div className="panel-header flex-wrap gap-2">
         <h2 className="text-sm font-medium text-white">System Logs</h2>
         <div className="flex gap-1">
           {levels.map((level) => (
@@ -53,7 +53,7 @@ export function LogViewer({ logs }) {
       <div
         ref={listRef}
         onScroll={handleScroll}
-        className="h-80 overflow-y-auto px-4 py-2 space-y-1"
+        className="h-80 overflow-y-auto px-3 md:px-4 py-2 space-y-1"
       >
         {filtered.length === 0 ? (
           <p className="text-muted text-sm text-center py-8">No logs yet.</p>
@@ -61,14 +61,14 @@ export function LogViewer({ logs }) {
           filtered.map((entry, i) => (
             <div
               key={`${entry.timestamp}-${i}`}
-              className="flex items-start gap-3 py-1.5 text-xs border-b border-surface-3/30 last:border-0"
+              className="flex flex-wrap md:flex-nowrap items-start gap-2 md:gap-3 py-1.5 text-xs border-b border-surface-3/30 last:border-0"
             >
-              <span className="text-muted font-mono shrink-0 w-20">
+              <span className="text-muted font-mono shrink-0 w-16 md:w-20">
                 {entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '—'}
               </span>
               <span className={levelBadge(entry.level)}>{entry.level}</span>
-              <span className="text-gray-400 font-medium shrink-0 w-20">{entry.component}</span>
-              <span className="text-gray-300">{entry.message}</span>
+              <span className="text-gray-400 font-medium shrink-0 hidden md:inline w-20">{entry.component}</span>
+              <span className="text-gray-300 break-all md:break-normal">{entry.message}</span>
             </div>
           ))
         )}
