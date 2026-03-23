@@ -58,7 +58,7 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 - **Signal Aggregator** — combines multiple signal sources with configurable weights
 
 ### Trading Engine
-- **Momentum Scanner** — gap filter, price filter, relative volume, premarket volume, volume rate, VWAP distance
+- **Momentum Scanner** — gap filter, price filter, relative volume, premarket volume, volume rate, VWAP distance, **float filter** (`MaxFloat`/`MinFloat` for low-float momentum stock selection)
 - **Dual-Direction Strategy** — long breakouts/pullbacks, short breakdowns
 - **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
 - **Market Regime Detection** — threshold-based (default) and HMM regime detector
@@ -344,6 +344,7 @@ This starts PostgreSQL + the bot + the auto-optimizer. The `.cache` directory is
 | `POSTGRES_DB` | PostgreSQL database name (Docker) | `momentum` |
 | `POSTGRES_USER` | PostgreSQL user (Docker) | `momentum` |
 | `POSTGRES_PASSWORD` | PostgreSQL password (Docker) | `momentum` |
+| `FLOAT_DATA_URL` | URL or file path to CSV with `symbol,float` per line | (optional) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | (optional) |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID for notifications | (optional) |
 
@@ -371,7 +372,7 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Three strate
 
 **Core Risk** — `RiskPerTradePct`, `DailyLossLimitPct`, `MaxTradesPerDay`, `MaxOpenPositions`, `MaxExposurePct`, `MaxEntriesPerMinute`
 
-**Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`
+**Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`, `MaxFloat`, `MinFloat`, `FloatOverrideURL`
 
 **Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`, `EntryDeadlineMinutesAfterOpen`, `MinRiskRewardRatio`, `MidDayScoreMultiplier`
 

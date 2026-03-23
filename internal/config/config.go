@@ -29,6 +29,9 @@ type TradingConfig struct {
 	MinGapPercent                      float64
 	MinRelativeVolume                  float64
 	MinPremarketVolume                 int64
+	MaxFloat                           int64  // max float for momentum filtering (0 = disabled)
+	MinFloat                           int64  // min float to avoid micro-float stocks (0 = disabled)
+	FloatOverrideURL                   string // URL or file path to CSV with symbol,float data
 	ScannerMinSetupVolumeRateOffset    float64
 	ScannerMinSetupRelativeVolumeExtra float64
 	ScannerVWAPTolerancePct            float64

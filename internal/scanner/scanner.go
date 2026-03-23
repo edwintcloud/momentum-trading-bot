@@ -137,6 +137,12 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 	if tick.PreMarketVolume < cfg.MinPremarketVolume {
 		return "premarket-volume"
 	}
+	if cfg.MaxFloat > 0 && tick.Float > 0 && tick.Float > cfg.MaxFloat {
+		return "float-too-high"
+	}
+	if cfg.MinFloat > 0 && tick.Float > 0 && tick.Float < cfg.MinFloat {
+		return "float-too-low"
+	}
 	return "other-filter"
 }
 
@@ -156,6 +162,12 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		return domain.Candidate{}, false
 	}
 	if tick.PreMarketVolume < cfg.MinPremarketVolume {
+		return domain.Candidate{}, false
+	}
+	if cfg.MaxFloat > 0 && tick.Float > 0 && tick.Float > cfg.MaxFloat {
+		return domain.Candidate{}, false
+	}
+	if cfg.MinFloat > 0 && tick.Float > 0 && tick.Float < cfg.MinFloat {
 		return domain.Candidate{}, false
 	}
 
@@ -262,6 +274,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
 		Playbook:              s.selectPlaybook(direction, metrics),
+		Float:                 tick.Float,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,

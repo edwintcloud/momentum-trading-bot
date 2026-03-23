@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwintcloud/momentum-trading-bot/internal/analytics"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
@@ -30,6 +31,7 @@ type RunConfig struct {
 	End          time.Time
 	Recorder     domain.EventRecorder
 	DebugSymbols []string // symbols to trace per-bar through scanner/strategy
+	FloatStore   *alpaca.FloatStore // optional float data for tick enrichment
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -249,6 +251,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
 		tick := normalizeBar(currentBar, normalizerState)
+		if runCfg.FloatStore != nil {
+			tick.Float = runCfg.FloatStore.Get(tick.Symbol)
+		}
 		if regimeTracker != nil {
 			regimeTracker.UpdateTick(tick)
 		}

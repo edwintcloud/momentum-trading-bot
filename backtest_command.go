@@ -68,11 +68,21 @@ func runBacktest(args []string) error {
 		log.Printf("Backtest logs writing to %s", logDir)
 	}
 
+	// Load float data for backtest tick enrichment
+	floatStore := alpaca.NewFloatStore()
+	floatDataURL := os.Getenv("FLOAT_DATA_URL")
+	if floatDataURL != "" {
+		if err := floatStore.LoadFromCSV(floatDataURL); err != nil {
+			log.Printf("Backtest float data warning: %v", err)
+		}
+	}
+
 	runCfg := backtest.RunConfig{
-		DataPath: *dataPath,
-		Start:    start,
-		End:      end,
-		Recorder: fsRecorder,
+		DataPath:   *dataPath,
+		Start:      start,
+		End:        end,
+		Recorder:   fsRecorder,
+		FloatStore: floatStore,
 	}
 	if *debugSymbols != "" {
 		for _, sym := range strings.Split(*debugSymbols, ",") {
@@ -137,6 +147,12 @@ func runBacktest(args []string) error {
 		}
 	} else {
 		log.Printf("Backtest using broker-tuned baseline config (no bundled trading profile found)")
+	}
+	// Load float data from trading profile's FloatOverrideURL if set and not already loaded from env
+	if cfg.FloatOverrideURL != "" && floatDataURL == "" {
+		if err := floatStore.LoadFromCSV(cfg.FloatOverrideURL); err != nil {
+			log.Printf("Backtest profile float data warning: %v", err)
+		}
 	}
 	logBacktestConfig(cfg)
 
