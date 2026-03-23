@@ -337,6 +337,13 @@ type TradingConfig struct {
 	MaxDistanceFromHighPct        float64 // 0 = disabled, 5.0 = longs must be within 5% of HOD
 	VolumeOnPullbackEnabled       bool    // enable volume-on-pullback scoring
 	MidDayScoreMultiplier         float64 // 0 = use hardcoded 1.15, otherwise override midday threshold multiplier
+
+	// HOD Momo scanner: intraday momentum runner detection
+	HODMomoEnabled             bool    // enable intraday momentum scanner mode
+	HODMomoMinIntradayPct      float64 // min % move from open to qualify (e.g., 10.0)
+	HODMomoMinRelativeVolume   float64 // min relative volume for HOD momo (e.g., 5.0)
+	HODMomoMaxDistFromHigh     float64 // max % distance from HOD (e.g., 5.0)
+	HODMomoMinMinutesSinceOpen float64 // minimum minutes after open before HOD momo triggers (e.g., 5)
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

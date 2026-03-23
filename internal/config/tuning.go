@@ -676,6 +676,21 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	// VolumeOnPullbackEnabled: false = disabled
 	// MidDayScoreMultiplier: 0 means use hardcoded default (1.15)
 
+	// HOD Momo scanner defaults (disabled by default)
+	// HODMomoEnabled: false = disabled
+	if cfg.HODMomoMinIntradayPct == 0 {
+		cfg.HODMomoMinIntradayPct = 10.0
+	}
+	if cfg.HODMomoMinRelativeVolume == 0 {
+		cfg.HODMomoMinRelativeVolume = 5.0
+	}
+	if cfg.HODMomoMaxDistFromHigh == 0 {
+		cfg.HODMomoMaxDistFromHigh = 5.0
+	}
+	if cfg.HODMomoMinMinutesSinceOpen == 0 {
+		cfg.HODMomoMinMinutesSinceOpen = 5
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

@@ -244,12 +244,49 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 	reason := "no-signal"
 	if ok {
 		reason = signal.Reason
+	} else if !markethours.IsMarketOpen(candidate.Timestamp) {
+		reason = "market-closed"
 	} else if candidate.Score < s.config.MinEntryScore {
 		reason = "low-score"
 	} else if s.runtime.IsPaused() || s.runtime.IsEmergencyStopped() {
 		reason = "system-paused"
 	} else if _, exists := s.portfolio.GetPosition(candidate.Symbol); exists {
 		reason = "existing-position"
+	} else if s.config.RegimeGatingEnabled {
+		if (candidate.MarketRegime == domain.RegimeBearish && domain.IsLong(candidate.Direction)) ||
+			(candidate.MarketRegime == domain.RegimeBullish && domain.IsShort(candidate.Direction)) {
+			reason = "regime-gated"
+		}
+	}
+	if reason == "no-signal" && s.config.EntryDeadlineMinutesAfterOpen > 0 {
+		minutesSinceOpen := markethours.MinutesSinceOpen(candidate.Timestamp)
+		if minutesSinceOpen > float64(s.config.EntryDeadlineMinutesAfterOpen) {
+			reason = "past-entry-deadline"
+		}
+	}
+	if reason == "no-signal" {
+		// Check cooldown
+		if last, exists := s.lastEntryAt[candidate.Symbol]; exists {
+			if candidate.Timestamp.Sub(last) < time.Duration(s.config.EntryCooldownSec)*time.Second {
+				reason = "cooldown"
+			}
+		}
+	}
+	if reason == "no-signal" {
+		// Check same-side-today
+		dayKey := markethours.TradingDay(candidate.Timestamp)
+		state := s.getSymbolState(candidate.Symbol, dayKey)
+		if state.entrySides[candidate.Direction] {
+			reason = "same-side-today"
+		}
+	}
+	if reason == "no-signal" {
+		// Check loss cooldown
+		dayKey := markethours.TradingDay(candidate.Timestamp)
+		state := s.getSymbolState(candidate.Symbol, dayKey)
+		if state.lossExits >= 2 && candidate.Timestamp.Sub(state.lastLossAt) < 30*time.Minute {
+			reason = "loss-cooldown"
+		}
 	}
 	return CandidateDecision{
 		Signal: signal,

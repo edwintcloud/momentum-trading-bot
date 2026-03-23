@@ -663,6 +663,352 @@ func TestVolumeOnPullbackDecreasingBonus(t *testing.T) {
 	}
 }
 
+// HOD Momo Scanner Tests
+
+func TestHODMomoQualified(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 5.0 // gap filter won't match this stock
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	// 10 minutes after open
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock up 15% from open with 6x rvol — should pass via HOD momo path
+	tick := domain.Tick{
+		Symbol:          "ANNA",
+		Price:           4.60,   // 15% above open of 4.00
+		BarOpen:         4.55,
+		BarHigh:         4.65,
+		BarLow:          4.50,
+		Open:            4.00,
+		HighOfDay:       4.65,   // within 5% of high
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,    // small gap — would fail gap filter
+		PreMarketVolume: 10000,  // low premarket — would fail premarket filter
+		Timestamp:       ts,
+	}
+
+	candidate, ok := s.Evaluate(tick)
+	if !ok {
+		t.Fatal("expected HOD momo qualified stock (15% intraday, 6x rvol) to pass scanner")
+	}
+	if candidate.IntradayReturnPct < 14.0 || candidate.IntradayReturnPct > 16.0 {
+		t.Errorf("IntradayReturnPct = %.2f, want ~15.0", candidate.IntradayReturnPct)
+	}
+}
+
+func TestHODMomoRejectedBelowThreshold(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 5.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock up only 5% — fails HOD momo threshold
+	tick := domain.Tick{
+		Symbol:          "WEAK",
+		Price:           4.20,
+		BarOpen:         4.15,
+		BarHigh:         4.25,
+		BarLow:          4.10,
+		Open:            4.00,
+		HighOfDay:       4.25,
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 10000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("expected stock with 5% intraday move to be rejected (threshold 10%)")
+	}
+
+	// Verify rejection reason
+	_, _, reason := s.EvaluateTickDetailed(tick)
+	if reason != "hod-momo-below-threshold" {
+		t.Errorf("rejection reason: got %q, want %q", reason, "hod-momo-below-threshold")
+	}
+}
+
+func TestBothPathsGapAndHODMomo(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 5.0
+	cfg.MinRelativeVolume = 2.0
+	cfg.MinPremarketVolume = 50000
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock with 8% gap AND 20% intraday — passes via gap path
+	tick := domain.Tick{
+		Symbol:          "BOTH",
+		Price:           4.80,
+		BarOpen:         4.75,
+		BarHigh:         4.85,
+		BarLow:          4.70,
+		Open:            4.00,
+		HighOfDay:       4.85,
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      8.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if !ok {
+		t.Error("expected stock qualifying via both paths to pass scanner")
+	}
+}
+
+func TestHODMomoOnlySmallGap(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 5.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock with 1% gap but 25% intraday move — passes via HOD momo path only
+	tick := domain.Tick{
+		Symbol:          "MOMOONLY",
+		Price:           5.00,
+		BarOpen:         4.95,
+		BarHigh:         5.05,
+		BarLow:          4.90,
+		Open:            4.00,
+		HighOfDay:       5.05,
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,    // fails gap filter
+		PreMarketVolume: 5000,   // low premarket — would fail gap path
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if !ok {
+		t.Fatal("expected stock with 1% gap but 25% intraday move to pass via HOD momo path")
+	}
+}
+
+func TestHODMomoDistanceFromHighRejection(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 20.0 // very high so gap path won't match
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Stock 8% below HOD — should be rejected by HOD momo distance filter
+	tick := domain.Tick{
+		Symbol:          "FARFROMHOD",
+		Price:           4.60,
+		BarOpen:         4.55,
+		BarHigh:         4.65,
+		BarLow:          4.50,
+		Open:            4.00,    // 15% intraday return
+		HighOfDay:       5.00,    // 8% above price
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("expected stock 8% from HOD to be rejected (max 5%)")
+	}
+}
+
+func TestHODMomoTimingRejection(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 20.0 // gap path won't match
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	// Only 2 minutes after open
+	ts := time.Date(2026, 3, 23, 9, 32, 0, 0, loc)
+
+	tick := domain.Tick{
+		Symbol:          "TOOEARLY",
+		Price:           4.60,
+		BarOpen:         4.55,
+		BarHigh:         4.65,
+		BarLow:          4.50,
+		Open:            4.00,
+		HighOfDay:       4.65,
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("expected stock at 2 minutes after open to be rejected (min 5 min)")
+	}
+}
+
+func TestHODBreakoutSetupType(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.HODMomoMinRelativeVolume = 5.0
+	cfg.HODMomoMaxDistFromHigh = 5.0
+	cfg.HODMomoMinMinutesSinceOpen = 5
+	cfg.MinGapPercent = 5.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 9, 40, 0, 0, loc)
+
+	// Price within 1% of HOD with strong intraday move → hod_breakout
+	tick := domain.Tick{
+		Symbol:          "HODBREAK",
+		Price:           4.60,
+		BarOpen:         4.55,
+		BarHigh:         4.65,
+		BarLow:          4.50,
+		Open:            4.00,
+		HighOfDay:       4.63,   // price within 0.7% of HOD
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0,
+		PreMarketVolume: 5000,
+		Timestamp:       ts,
+	}
+
+	candidate, ok := s.Evaluate(tick)
+	if !ok {
+		t.Fatal("expected HOD breakout candidate to pass")
+	}
+	if candidate.SetupType != "hod_breakout" {
+		t.Errorf("SetupType = %q, want %q", candidate.SetupType, "hod_breakout")
+	}
+	if candidate.Playbook != "breakout" {
+		t.Errorf("Playbook = %q, want %q", candidate.Playbook, "breakout")
+	}
+}
+
+func TestHODMomoIntradayReturnScoring(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = true
+	cfg.HODMomoMinIntradayPct = 10.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// Tick with 20% intraday return should get higher score than one without
+	tickWithIntraday := domain.Tick{
+		Symbol:         "INTRA",
+		Price:          4.80,
+		Open:           4.00,  // 20% return
+		RelativeVolume: 5.0,
+		GapPercent:     10.0,
+		HighOfDay:      4.85,
+	}
+
+	tickWithoutIntraday := domain.Tick{
+		Symbol:         "NOINTRA",
+		Price:          4.80,
+		Open:           4.80,  // 0% return
+		RelativeVolume: 5.0,
+		GapPercent:     10.0,
+		HighOfDay:      4.85,
+	}
+
+	m := scanMetrics{}
+	scoreWith := s.scoreCandidate(tickWithIntraday, m, domain.DirectionLong)
+	scoreWithout := s.scoreCandidate(tickWithoutIntraday, m, domain.DirectionLong)
+
+	if scoreWith <= scoreWithout {
+		t.Errorf("score with 20%% intraday return (%.2f) should be > score without (%.2f)", scoreWith, scoreWithout)
+	}
+}
+
+func TestHODMomoDisabledRegressionNoBehaviorChange(t *testing.T) {
+	// When HODMomoEnabled=false, behavior should be identical to before
+	cfg := config.DefaultTradingConfig()
+	cfg.HODMomoEnabled = false
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+
+	// Stock with small gap should still be rejected
+	tick := domain.Tick{
+		Symbol:          "NOGAP",
+		Price:           4.60,
+		BarOpen:         4.55,
+		BarHigh:         4.65,
+		BarLow:          4.50,
+		Open:            4.00,
+		HighOfDay:       4.65,
+		Volume:          500000,
+		RelativeVolume:  6.0,
+		GapPercent:      1.0, // below default 3% gap
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("expected stock with 1% gap to be rejected when HOD momo is disabled")
+	}
+}
+
 func TestVolumeOnPullbackIncreasingPenalty(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.VolumeOnPullbackEnabled = true

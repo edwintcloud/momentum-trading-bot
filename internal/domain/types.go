@@ -76,6 +76,7 @@ type Candidate struct {
 	PriceVsEMA9Pct        float64   `json:"priceVsEma9Pct"`
 	EMAFast               float64   `json:"emaFast"`
 	EMASlow               float64   `json:"emaSlow"`
+	IntradayReturnPct     float64   `json:"intradayReturnPct"`
 	SetupType             string    `json:"setupType"`
 	Score                 float64   `json:"score"`
 	MarketRegime          string    `json:"marketRegime"`

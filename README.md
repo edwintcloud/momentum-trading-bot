@@ -58,11 +58,17 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 - **Signal Aggregator** — combines multiple signal sources with configurable weights
 
 ### Trading Engine
-- **Momentum Scanner** — gap filter, price filter, relative volume, premarket volume, volume rate, VWAP distance, **float filter** (`MaxFloat`/`MinFloat` for low-float momentum stock selection)
+- **Two-Path Momentum Scanner** — scans for candidates via two independent paths:
+  - **Path 1: Gap Scanner** — traditional overnight gap filter (`MinGapPercent`), relative volume, premarket volume
+  - **Path 2: HOD Momo Scanner** — detects intraday momentum runners (stocks up `HODMomoMinIntradayPct`%+ from open with high relative volume), bypasses gap and premarket volume requirements. Catches stocks like ANNA that gap small but run 50-100% intraday.
+  - Both paths share price, float, and HOD proximity filters
+  - New `hod_breakout` setup type when price is within 1% of session high with strong intraday move
+- **Scanner Filters** — price, float (`MaxFloat`/`MinFloat`), HOD proximity, RSI overbought/oversold
 - **Dual-Direction Strategy** — long breakouts/pullbacks, short breakdowns
 - **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
 - **Market Regime Detection** — threshold-based (default) and HMM regime detector
 - **Confidence-Based Entry Scoring** — with regime gating and ML score integration
+- **Improved Diagnostics** — candidate rejection reasons include `market-closed`, `regime-gated`, `past-entry-deadline`, `cooldown`, `same-side-today`, `loss-cooldown` (replaces generic `no-signal`)
 
 ### Risk Management
 - Portfolio heat tracking with alert thresholds
@@ -379,6 +385,8 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Four strateg
 
 **Scanner Quality** — `MaxDistanceFromHighPct`, `VolumeOnPullbackEnabled`
 
+**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5%), `HODMomoMinMinutesSinceOpen` (5 min). Enabled in `momentum_cameron` profile.
+
 **Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
 
 **Optimization** — `OptimizerSamples`, `OptimizerUseLHS`, `BayesianOptEnabled`, `WalkForwardEnabled`, `CPCVEnabled`
@@ -395,6 +403,7 @@ The `momentum_cameron` profile implements Ross Cameron's momentum day trading me
 - **Morning-only** — entry deadline 120 minutes after open; midday score multiplier 2x
 - **Conservative risk** — 1% risk per trade, max 6 trades/day, max 3 open positions, 2:1 minimum R:R requirement
 - **Tighter exits** — Breakout target 2.5R (vs 4.0R), faster trailing stops, partial exits at 1R (50%) and 2R (25%)
+- **HOD Momo scanner enabled** — catches intraday momentum runners that gap small but run 50-100%+ from open (e.g., ANNA 2026-03-20)
 - **Momentum signals enabled** — OFI, VPIN, ORB, OBV divergence for order flow confirmation
 - **Portfolio construction disabled** — MVO, risk parity, factor-neutral off (not applicable for 1–3 position momentum)
 - **ML disabled** — until models are trained on momentum-specific data

@@ -316,7 +316,13 @@
     "MinRiskRewardRatio": 0,
     "MaxDistanceFromHighPct": 0,
     "VolumeOnPullbackEnabled": false,
-    "MidDayScoreMultiplier": 0
+    "MidDayScoreMultiplier": 0,
+
+    "HODMomoEnabled": false,
+    "HODMomoMinIntradayPct": 10.0,
+    "HODMomoMinRelativeVolume": 5.0,
+    "HODMomoMaxDistFromHigh": 5.0,
+    "HODMomoMinMinutesSinceOpen": 5
   },
   "promotion": {
     "deploymentMode": "paper",

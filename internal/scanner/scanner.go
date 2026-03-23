@@ -128,15 +128,45 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
 		return "price-filter"
 	}
-	if tick.GapPercent < cfg.MinGapPercent && tick.GapPercent > -cfg.MinGapPercent {
+
+	gapQualified := tick.GapPercent >= cfg.MinGapPercent || tick.GapPercent <= -cfg.MinGapPercent
+
+	// Check HOD momo qualification for diagnostics
+	hodMomoQualified := false
+	if cfg.HODMomoEnabled && tick.Open > 0 && tick.Price > 0 {
+		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
+		minutesSinceOpen := markethours.MinutesSinceOpen(tick.Timestamp)
+		hodMomoQualified = intradayPct >= cfg.HODMomoMinIntradayPct &&
+			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume &&
+			minutesSinceOpen >= cfg.HODMomoMinMinutesSinceOpen
+		if hodMomoQualified && cfg.HODMomoMaxDistFromHigh > 0 && tick.HighOfDay > 0 {
+			distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
+			if distFromHigh > cfg.HODMomoMaxDistFromHigh {
+				hodMomoQualified = false
+			}
+		}
+	}
+
+	if !gapQualified && !hodMomoQualified {
+		// Provide more informative reason when HOD momo is enabled
+		if cfg.HODMomoEnabled && tick.Open > 0 && tick.Price > 0 {
+			intradayPct := (tick.Price - tick.Open) / tick.Open * 100
+			if intradayPct > 0 && intradayPct < cfg.HODMomoMinIntradayPct {
+				return "hod-momo-below-threshold"
+			}
+		}
 		return "gap-filter"
 	}
-	if tick.RelativeVolume < cfg.MinRelativeVolume {
-		return "relative-volume"
+
+	if gapQualified {
+		if tick.RelativeVolume < cfg.MinRelativeVolume {
+			return "relative-volume"
+		}
+		if tick.PreMarketVolume < cfg.MinPremarketVolume {
+			return "premarket-volume"
+		}
 	}
-	if tick.PreMarketVolume < cfg.MinPremarketVolume {
-		return "premarket-volume"
-	}
+
 	if cfg.MaxFloat > 0 && tick.Float > 0 && tick.Float > cfg.MaxFloat {
 		return "float-too-high"
 	}
@@ -155,15 +185,48 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
 		return domain.Candidate{}, false
 	}
-	if tick.GapPercent < cfg.MinGapPercent && tick.GapPercent > -cfg.MinGapPercent {
+
+	// Path 1: Traditional gap scanner (existing)
+	gapQualified := tick.GapPercent >= cfg.MinGapPercent || tick.GapPercent <= -cfg.MinGapPercent
+
+	// Path 2: HOD Momo scanner (new) — stock is making a big intraday move
+	hodMomoQualified := false
+	intradayReturnPct := 0.0
+	if cfg.HODMomoEnabled && tick.Open > 0 && tick.Price > 0 {
+		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
+		minutesSinceOpen := markethours.MinutesSinceOpen(tick.Timestamp)
+
+		hodMomoQualified = intradayReturnPct >= cfg.HODMomoMinIntradayPct &&
+			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume &&
+			minutesSinceOpen >= cfg.HODMomoMinMinutesSinceOpen
+
+		// Also check distance from HOD if configured
+		if hodMomoQualified && cfg.HODMomoMaxDistFromHigh > 0 && tick.HighOfDay > 0 {
+			distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
+			if distFromHigh > cfg.HODMomoMaxDistFromHigh {
+				hodMomoQualified = false
+			}
+		}
+	}
+
+	// Must qualify via at least one path
+	if !gapQualified && !hodMomoQualified {
 		return domain.Candidate{}, false
 	}
-	if tick.RelativeVolume < cfg.MinRelativeVolume {
-		return domain.Candidate{}, false
+
+	// Apply remaining filters based on qualification path
+	if gapQualified {
+		// Traditional filters apply as-is
+		if tick.RelativeVolume < cfg.MinRelativeVolume {
+			return domain.Candidate{}, false
+		}
+		if tick.PreMarketVolume < cfg.MinPremarketVolume {
+			return domain.Candidate{}, false
+		}
 	}
-	if tick.PreMarketVolume < cfg.MinPremarketVolume {
-		return domain.Candidate{}, false
-	}
+	// HOD momo path: relative volume already checked above, skip premarket volume
+
+	// Float filters apply to both paths
 	if cfg.MaxFloat > 0 && tick.Float > 0 && tick.Float > cfg.MaxFloat {
 		return domain.Candidate{}, false
 	}
@@ -182,6 +245,10 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	direction := domain.DirectionLong
 	if tick.GapPercent < 0 && cfg.EnableShorts {
 		direction = domain.DirectionShort
+	}
+	// HOD momo qualified stocks with positive intraday return are always long
+	if hodMomoQualified && !gapQualified && intradayReturnPct > 0 {
+		direction = domain.DirectionLong
 	}
 
 	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day
@@ -204,6 +271,11 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		}
 	}
 
+	// Compute intraday return for candidate
+	if tick.Open > 0 && tick.Price > 0 {
+		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
+	}
+
 	// Score the candidate
 	score := s.scoreCandidate(tick, metrics, direction)
 	minScore := cfg.MinEntryScore
@@ -213,6 +285,15 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Get market regime
 	regime := s.runtime.MarketRegime()
+
+	// HOD breakout detection: price near session high with strong intraday move
+	if cfg.HODMomoEnabled && tick.Open > 0 && tick.HighOfDay > 0 {
+		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
+		distFromHOD := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
+		if intradayPct >= cfg.HODMomoMinIntradayPct && distFromHOD < 1.0 {
+			metrics.setupType = "hod_breakout"
+		}
+	}
 
 	setupType := metrics.setupType
 
@@ -269,6 +350,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PriceVsEMA9Pct:        safePct(tick.Price-metrics.ema9, metrics.ema9) * 100,
 		EMAFast:               metrics.emaFast,
 		EMASlow:               metrics.emaSlow,
+		IntradayReturnPct:     intradayReturnPct,
 		SetupType:             setupType,
 		Score:                 score,
 		MarketRegime:          regime.Regime,
@@ -553,10 +635,29 @@ func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction stri
 		}
 	}
 
+	// HOD Momo: intraday return from open scoring
+	if cfg.HODMomoEnabled && tick.Open > 0 {
+		intradayReturn := (tick.Price - tick.Open) / tick.Open * 100
+		if intradayReturn > 0 {
+			score += 2.0 * continuousScore(intradayReturn, cfg.HODMomoMinIntradayPct, 50.0)
+		}
+	}
+
+	// Near HOD bonus: within 3% of high = buying strength
+	if tick.HighOfDay > 0 && tick.Price > 0 {
+		distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
+		if distFromHigh < 3.0 {
+			score += 0.5 * (1.0 - distFromHigh/3.0) // 0.5 at HOD, 0 at 3% below
+		}
+	}
+
 	return score
 }
 
 func (s *Scanner) selectPlaybook(direction string, m scanMetrics) string {
+	if m.setupType == "hod_breakout" {
+		return "breakout"
+	}
 	if m.setupType == "breakout" || m.setupType == "breakdown" {
 		return "breakout"
 	}
