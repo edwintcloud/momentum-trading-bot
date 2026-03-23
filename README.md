@@ -105,10 +105,16 @@ A modular momentum-trading system built in Go with a React operator dashboard. T
 
 ### Trade Management
 - RSI overbought/oversold filter
-- Time-of-day adaptive parameters
+- Time-of-day adaptive parameters with configurable midday score multiplier
+- **Entry deadline** — block new entries after configurable minutes from open (e.g., 120 min = 2 hours)
+- **Risk/reward pre-check** — reject trades where estimated reward < configurable R:R ratio × risk
 - Partial exit framework (two trigger levels with configurable percentages)
 - Adaptive trailing stops with volatility factor
 - Mean-reversion overlay (Bollinger bands + ADX filter)
+
+### Scanner Quality Filters
+- **HOD proximity filter** — longs must be within configurable % of high of day (buying strength, not catching knives)
+- **Volume-on-pullback scoring** — decreasing volume on pullback candles = score bonus; increasing volume = penalty (distribution detection)
 
 ### Backtesting & Validation
 - Backtest engine with streaming bar iterator (memory efficient)
@@ -367,7 +373,9 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Three strate
 
 **Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`
 
-**Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`
+**Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`, `EntryDeadlineMinutesAfterOpen`, `MinRiskRewardRatio`, `MidDayScoreMultiplier`
+
+**Scanner Quality** — `MaxDistanceFromHighPct`, `VolumeOnPullbackEnabled`
 
 **Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
 

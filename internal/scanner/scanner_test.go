@@ -322,3 +322,241 @@ func TestRankCandidates(t *testing.T) {
 		}
 	}
 }
+
+func TestHODProximityBlocksFarFromHigh(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxDistanceFromHighPct = 5.0 // must be within 5% of HOD
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+
+	// Price is 15% below HOD — should be rejected
+	tick := domain.Tick{
+		Symbol:          "FARHOD",
+		Price:           8.5,
+		BarOpen:         8.5,
+		BarHigh:         8.6,
+		BarLow:          8.4,
+		Open:            8.0,
+		HighOfDay:       10.0, // 15% above price
+		Volume:          100000,
+		RelativeVolume:  5.0,
+		GapPercent:      10.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if ok {
+		t.Error("expected long candidate 15% from HOD to be rejected (max 5%)")
+	}
+}
+
+func TestHODProximityAcceptsNearHigh(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxDistanceFromHighPct = 5.0
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+
+	// Price is 2% below HOD — should pass
+	tick := domain.Tick{
+		Symbol:          "NEARHOD",
+		Price:           9.8,
+		BarOpen:         9.8,
+		BarHigh:         9.9,
+		BarLow:          9.7,
+		Open:            9.0,
+		HighOfDay:       10.0, // 2% above price
+		Volume:          100000,
+		RelativeVolume:  5.0,
+		GapPercent:      10.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if !ok {
+		t.Error("expected long candidate 2% from HOD to pass (max 5%)")
+	}
+}
+
+func TestHODProximityDisabledByDefault(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxDistanceFromHighPct = 0 // disabled
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+
+	// Price far from HOD — should still pass when disabled
+	tick := domain.Tick{
+		Symbol:          "DISABLED",
+		Price:           5.0,
+		BarOpen:         5.0,
+		BarHigh:         5.1,
+		BarLow:          4.9,
+		Open:            4.5,
+		HighOfDay:       10.0, // 50% away
+		Volume:          100000,
+		RelativeVolume:  5.0,
+		GapPercent:      10.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if !ok {
+		t.Error("expected candidate to pass when HOD proximity filter is disabled")
+	}
+}
+
+func TestHODProximityDoesNotAffectShorts(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MaxDistanceFromHighPct = 5.0
+	cfg.EnableShorts = true
+	cfg.MinEntryScore = 0
+	cfg.ShortMinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	loc, _ := time.LoadLocation("America/New_York")
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+
+	// Short candidate far from HOD — should not be affected by HOD filter
+	tick := domain.Tick{
+		Symbol:          "SHORTFAR",
+		Price:           5.0,
+		BarOpen:         5.0,
+		BarHigh:         5.1,
+		BarLow:          4.9,
+		Open:            5.5,
+		HighOfDay:       10.0,
+		Volume:          100000,
+		RelativeVolume:  5.0,
+		GapPercent:      -10.0, // negative gap -> short
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.Evaluate(tick)
+	if !ok {
+		t.Error("expected short candidate to not be affected by HOD proximity filter")
+	}
+}
+
+func TestVolumeOnPullbackDecreasingBonus(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.VolumeOnPullbackEnabled = true
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// Build bars where volume decreases on pullback
+	// Peak volume bar followed by decreasing volume bars, price in pullback territory
+	bars := make([]symbolBar, 10)
+	for i := 0; i < 10; i++ {
+		bars[i] = symbolBar{
+			high:   100.0 + float64(i),
+			low:    98.0 + float64(i),
+			close:  99.0 + float64(i),
+			volume: 100000,
+		}
+	}
+	// Last 5 bars: peak volume then decreasing
+	bars[5].volume = 500000 // peak volume
+	bars[6].volume = 400000
+	bars[7].volume = 300000
+	bars[8].volume = 200000
+	bars[9].volume = 100000
+
+	// Price in pullback territory (between high5 and low5 of last 5 bars)
+	tick := domain.Tick{
+		Symbol:         "PULLVOL",
+		Price:          105.0, // between low5 and high5 of bars[5:10]
+		RelativeVolume: 5.0,
+		GapPercent:     10.0,
+	}
+
+	m := s.computeMetrics(&symbolState{bars: bars}, tick)
+	if m.setupType != "pullback" {
+		t.Skipf("setup type is %q, not pullback — skipping volume test", m.setupType)
+	}
+	if !m.volumeDecreasingOnPullback {
+		t.Error("expected volumeDecreasingOnPullback=true for decreasing volume bars")
+	}
+
+	// Score with volume bonus
+	scoreWithBonus := s.scoreCandidate(tick, m, domain.DirectionLong)
+
+	// Score without volume (disable feature)
+	cfg2 := cfg
+	cfg2.VolumeOnPullbackEnabled = false
+	s2 := NewScanner(cfg2, runtimeState)
+	scoreWithout := s2.scoreCandidate(tick, m, domain.DirectionLong)
+
+	if scoreWithBonus <= scoreWithout {
+		t.Errorf("score with volume bonus (%.2f) should be > score without (%.2f)", scoreWithBonus, scoreWithout)
+	}
+}
+
+func TestVolumeOnPullbackIncreasingPenalty(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.VolumeOnPullbackEnabled = true
+	cfg.MinEntryScore = 0
+	runtimeState := runtime.NewState()
+	s := NewScanner(cfg, runtimeState)
+
+	// Build bars where volume increases on pullback (distribution)
+	bars := make([]symbolBar, 10)
+	for i := 0; i < 10; i++ {
+		bars[i] = symbolBar{
+			high:   100.0 + float64(i),
+			low:    98.0 + float64(i),
+			close:  99.0 + float64(i),
+			volume: 100000,
+		}
+	}
+	// Last 5 bars: increasing volume (distribution pattern)
+	bars[5].volume = 100000
+	bars[6].volume = 200000
+	bars[7].volume = 300000
+	bars[8].volume = 400000
+	bars[9].volume = 500000
+
+	tick := domain.Tick{
+		Symbol:         "DISTVOL",
+		Price:          105.0,
+		RelativeVolume: 5.0,
+		GapPercent:     10.0,
+	}
+
+	m := s.computeMetrics(&symbolState{bars: bars}, tick)
+	if m.setupType != "pullback" {
+		t.Skipf("setup type is %q, not pullback — skipping volume test", m.setupType)
+	}
+	if m.volumeDecreasingOnPullback {
+		t.Error("expected volumeDecreasingOnPullback=false for increasing volume bars")
+	}
+
+	// Score with penalty
+	scoreWithPenalty := s.scoreCandidate(tick, m, domain.DirectionLong)
+
+	// Score without feature
+	cfg2 := cfg
+	cfg2.VolumeOnPullbackEnabled = false
+	s2 := NewScanner(cfg2, runtimeState)
+	scoreWithout := s2.scoreCandidate(tick, m, domain.DirectionLong)
+
+	if scoreWithPenalty >= scoreWithout {
+		t.Errorf("score with volume penalty (%.2f) should be < score without (%.2f)", scoreWithPenalty, scoreWithout)
+	}
+}

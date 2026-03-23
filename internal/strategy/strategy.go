@@ -264,6 +264,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false
 	}
 
+	// Entry deadline: block entries after N minutes from open
+	if s.config.EntryDeadlineMinutesAfterOpen > 0 {
+		minutesSinceOpen := markethours.MinutesSinceOpen(now)
+		if minutesSinceOpen > float64(s.config.EntryDeadlineMinutesAfterOpen) {
+			return domain.TradeSignal{}, false
+		}
+	}
+
 	// Check if paused or emergency stopped
 	if s.runtime.IsPaused() || s.runtime.IsEmergencyStopped() {
 		return domain.TradeSignal{}, false
@@ -305,7 +313,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	tw := currentTimeWindow(now)
 	if s.config.TimeOfDayEnabled {
 		twCfg := defaultTimeWindowConfigs[tw]
-		minScore *= twCfg.ScoreThresholdMultiplier
+		multiplier := twCfg.ScoreThresholdMultiplier
+		// Allow configurable midday multiplier override
+		if tw == TimeWindowMidDay && s.config.MidDayScoreMultiplier > 0 {
+			multiplier = s.config.MidDayScoreMultiplier
+		}
+		minScore *= multiplier
 	}
 
 	if c.Score < minScore {
@@ -370,6 +383,26 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if s.config.TimeOfDayEnabled {
 		twCfg := defaultTimeWindowConfigs[tw]
 		riskPerShare *= twCfg.RiskMultiplier
+	}
+
+	// Risk/Reward pre-check: reject trades where reward < MinRiskRewardRatio × risk
+	if s.config.MinRiskRewardRatio > 0 && riskPerShare > 0 {
+		var estimatedReward float64
+		if domain.IsLong(c.Direction) {
+			estimatedReward = c.HighOfDay - c.Price
+			if estimatedReward <= 0 {
+				estimatedReward = c.ATR * 2.0
+			}
+		} else {
+			estimatedReward = c.Price - c.Open
+			if estimatedReward <= 0 {
+				estimatedReward = c.ATR * 2.0
+			}
+		}
+		rewardRiskRatio := estimatedReward / riskPerShare
+		if rewardRiskRatio < s.config.MinRiskRewardRatio {
+			return domain.TradeSignal{}, false
+		}
 	}
 
 	currentEquity := s.portfolio.CurrentEquity()

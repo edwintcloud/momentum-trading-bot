@@ -432,3 +432,267 @@ func TestStagnationUsesPeakR(t *testing.T) {
 		t.Errorf("should exit for stagnation when peakR (0.1) < threshold (0.3), got reason=%q shouldExit=%v", reason2, shouldExit2)
 	}
 }
+
+func TestEntryDeadlineBlocksLateEntry(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryDeadlineMinutesAfterOpen = 120 // 2 hours after open
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+
+	// 3 hours after open (11:30+1h = 12:30 ET) — should be blocked
+	lateTime := time.Date(2026, 3, 23, 12, 30, 0, 0, loc)
+	candidate := domain.Candidate{
+		Symbol:          "LATE",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       lateTime,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if ok {
+		t.Error("expected entry to be blocked past deadline (180 min > 120 min)")
+	}
+
+	// 30 min after open (10:00 ET) — should pass
+	earlyTime := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+	candidate.Symbol = "EARLY"
+	candidate.Timestamp = earlyTime
+	_, ok = s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected entry to pass before deadline (30 min < 120 min)")
+	}
+}
+
+func TestEntryDeadlineDisabledByDefault(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.EntryDeadlineMinutesAfterOpen = 0 // disabled
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+
+	// Late afternoon — should still pass when disabled
+	lateTime := time.Date(2026, 3, 23, 15, 0, 0, 0, loc)
+	candidate := domain.Candidate{
+		Symbol:          "LATE",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       lateTime,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected entry to pass when deadline is disabled (0)")
+	}
+}
+
+func TestRiskRewardPreCheckRejectsBadRR(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MinRiskRewardRatio = 2.0 // require 2:1 R:R
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Long with price near HOD: reward = HOD - Price = 10.5 - 10.0 = 0.5
+	// Risk = ATR * 1.5 = 0.5 * 1.5 = 0.75
+	// R:R = 0.5 / 0.75 = 0.67 < 2.0 — should be rejected
+	candidate := domain.Candidate{
+		Symbol:          "BADRR",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		HighOfDay:       10.5,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if ok {
+		t.Error("expected trade to be rejected when R:R (0.67) < min (2.0)")
+	}
+}
+
+func TestRiskRewardPreCheckAcceptsGoodRR(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MinRiskRewardRatio = 2.0
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Long with HOD well above price: reward = 15.0 - 10.0 = 5.0
+	// Risk = ATR * 1.5 = 0.5 * 1.5 = 0.75
+	// R:R = 5.0 / 0.75 = 6.67 >= 2.0 — should pass
+	candidate := domain.Candidate{
+		Symbol:          "GOODRR",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		HighOfDay:       15.0,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected trade to pass when R:R (6.67) >= min (2.0)")
+	}
+}
+
+func TestRiskRewardFallbackToATR(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MinRiskRewardRatio = 2.0
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Long where price is at/above HOD — falls back to ATR*2.0 estimate
+	// Reward = ATR * 2.0 = 0.5 * 2.0 = 1.0
+	// Risk = ATR * 1.5 = 0.75
+	// R:R = 1.0 / 0.75 = 1.33 < 2.0 — should be rejected
+	candidate := domain.Candidate{
+		Symbol:          "ATHOD",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		HighOfDay:       10.0, // price at HOD
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if ok {
+		t.Error("expected trade with ATR fallback R:R (1.33) to be rejected when min is 2.0")
+	}
+}
+
+func TestMidDayScoreMultiplierConfigurable(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.TimeOfDayEnabled = true
+	cfg.MidDayScoreMultiplier = 2.0 // very strict midday
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 2.0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+
+	// MidDay candidate with score 3.5 — blocked by 2.0x multiplier (threshold = 4.0)
+	midDayTime := time.Date(2026, 3, 23, 13, 0, 0, 0, loc)
+	candidate := domain.Candidate{
+		Symbol:          "MIDDAY",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           3.5,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       midDayTime,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if ok {
+		t.Error("expected midday candidate with score 3.5 to be blocked (threshold 2.0*2.0=4.0)")
+	}
+
+	// Score 5.0 should pass even with 2.0x multiplier
+	candidate.Symbol = "MIDDAY2"
+	candidate.Score = 5.0
+	_, ok = s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected midday candidate with score 5.0 to pass (threshold 4.0)")
+	}
+}
+
+func TestMidDayMultiplierDefaultBehavior(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.TimeOfDayEnabled = true
+	cfg.MidDayScoreMultiplier = 0 // use hardcoded default (1.15)
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 2.0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	loc := markethours.Location()
+
+	// MidDay candidate with score 2.4 — should pass with default 1.15x (threshold = 2.3)
+	midDayTime := time.Date(2026, 3, 23, 13, 0, 0, 0, loc)
+	candidate := domain.Candidate{
+		Symbol:          "MIDDEF",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           2.4,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       midDayTime,
+	}
+
+	_, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected midday candidate with score 2.4 to pass with default 1.15x multiplier (threshold 2.3)")
+	}
+}
