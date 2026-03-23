@@ -319,6 +319,133 @@ func TestSeed_PreMarketBarAddsToPreMarketVol(t *testing.T) {
 	}
 }
 
+func TestUpdateDailyBar_UpdatesHighOfDay(t *testing.T) {
+	n := NewNormalizer()
+
+	n.Seed("HOD", SeedState{
+		PreviousClose: 10.0,
+		PrevDayVolume: 1_000_000,
+		TodayOpen:     11.0,
+		TodayHigh:     12.0,
+		TodayVolume:   100_000,
+	}, testDay)
+
+	// Daily bar with higher high
+	n.UpdateDailyBar("HOD", 13.0, 200_000, 11.0)
+
+	bar := alpaca.StreamBar{
+		Symbol:    "HOD",
+		Open:      11.5,
+		High:      11.8,
+		Low:       11.3,
+		Close:     11.6,
+		Volume:    10_000,
+		Timestamp: marketTime(9, 35),
+	}
+	tick := n.Normalize(bar)
+
+	if tick.HighOfDay != 13.0 {
+		t.Errorf("HighOfDay = %f, want 13.0 (updated from daily bar)", tick.HighOfDay)
+	}
+}
+
+func TestUpdateDailyBar_DoesNotLowerHigh(t *testing.T) {
+	n := NewNormalizer()
+
+	n.Seed("HOD2", SeedState{
+		PreviousClose: 10.0,
+		PrevDayVolume: 1_000_000,
+		TodayOpen:     11.0,
+		TodayHigh:     15.0,
+		TodayVolume:   100_000,
+	}, testDay)
+
+	// Daily bar with lower high should not reduce HOD
+	n.UpdateDailyBar("HOD2", 14.0, 200_000, 11.0)
+
+	bar := alpaca.StreamBar{
+		Symbol:    "HOD2",
+		Open:      11.5,
+		High:      11.8,
+		Low:       11.3,
+		Close:     11.6,
+		Volume:    10_000,
+		Timestamp: marketTime(9, 35),
+	}
+	tick := n.Normalize(bar)
+
+	if tick.HighOfDay != 15.0 {
+		t.Errorf("HighOfDay = %f, want 15.0 (should not be lowered)", tick.HighOfDay)
+	}
+}
+
+func TestUpdateDailyBar_UpdatesCumulativeVolume(t *testing.T) {
+	n := NewNormalizer()
+
+	n.Seed("VOL", SeedState{
+		PreviousClose: 10.0,
+		PrevDayVolume: 1_000_000,
+		TodayOpen:     10.5,
+		TodayHigh:     11.0,
+		TodayVolume:   100_000,
+	}, testDay)
+
+	// Daily bar reports cumulative session volume higher than current total
+	n.UpdateDailyBar("VOL", 11.0, 500_000, 10.5)
+
+	bar := alpaca.StreamBar{
+		Symbol:    "VOL",
+		Open:      10.6,
+		High:      10.8,
+		Low:       10.4,
+		Close:     10.7,
+		Volume:    25_000,
+		Timestamp: marketTime(9, 35),
+	}
+	tick := n.Normalize(bar)
+
+	// Volume should be daily bar's 500k + bar's 25k = 525k
+	if tick.Volume != 525_000 {
+		t.Errorf("Volume = %d, want 525000", tick.Volume)
+	}
+}
+
+func TestUpdateDailyBar_SetsOpenIfZero(t *testing.T) {
+	n := NewNormalizer()
+
+	// Create state without open set
+	n.Seed("OPEN", SeedState{
+		PreviousClose: 10.0,
+		PrevDayVolume: 1_000_000,
+	}, testDay)
+
+	n.UpdateDailyBar("OPEN", 11.5, 100_000, 11.0)
+
+	bar := alpaca.StreamBar{
+		Symbol:    "OPEN",
+		Open:      11.2,
+		High:      11.5,
+		Low:       11.0,
+		Close:     11.3,
+		Volume:    10_000,
+		Timestamp: marketTime(9, 35),
+	}
+	tick := n.Normalize(bar)
+
+	// Gap should use open=11.0 (set by UpdateDailyBar) and previousClose=10.0
+	expectedGap := 10.0 // (11.0 - 10.0) / 10.0 * 100
+	if math.Abs(tick.GapPercent-expectedGap) > 0.01 {
+		t.Errorf("GapPercent = %f, want %f", tick.GapPercent, expectedGap)
+	}
+}
+
+func TestUpdateDailyBar_UnknownSymbolNoOp(t *testing.T) {
+	n := NewNormalizer()
+
+	// Should not panic on unknown symbol
+	n.UpdateDailyBar("UNKNOWN", 100.0, 1_000_000, 50.0)
+}
+
 // marketTime creates a time on the test day in ET.
 func marketTime(hour, minute int) time.Time {
 	return time.Date(testDay.Year(), testDay.Month(), testDay.Day(), hour, minute, 0, 0, markethours.Location())

@@ -15,6 +15,9 @@ const (
 	sipStreamURL       = "wss://stream.data.alpaca.markets/v2/sip"
 	streamPingInterval = 30 * time.Second
 	maxReconnectDelay  = 30 * time.Second
+	statsLogInterval   = 60 * time.Second
+	subscribeBatchSize = 500
+	subscribeBatchWait = 100 * time.Millisecond
 )
 
 // StreamConfig holds WebSocket streaming configuration.
@@ -26,6 +29,7 @@ type StreamConfig struct {
 
 // StreamBar is a real-time bar from the Alpaca WebSocket.
 type StreamBar struct {
+	Type       string    `json:"T"` // Message type: "b" (bar), "u" (updated bar), "d" (daily bar)
 	Symbol     string    `json:"S"`
 	Open       float64   `json:"o"`
 	High       float64   `json:"h"`
@@ -37,6 +41,79 @@ type StreamBar struct {
 	VWAP       float64   `json:"vw"`
 }
 
+// streamStats tracks debug counters for stream health monitoring.
+type streamStats struct {
+	mu            sync.Mutex
+	barsReceived  int64
+	updatedBars   int64
+	dailyBarsRecv int64
+	tradesReceived int64
+	errorsReceived int64
+	subscriptions  int64
+	droppedBars   int64
+	lastBarAt     time.Time
+	lastErrorMsg  string
+}
+
+func (s *streamStats) recordBar(t time.Time) {
+	s.mu.Lock()
+	s.barsReceived++
+	s.lastBarAt = t
+	s.mu.Unlock()
+}
+
+func (s *streamStats) recordUpdatedBar() {
+	s.mu.Lock()
+	s.updatedBars++
+	s.mu.Unlock()
+}
+
+func (s *streamStats) recordDailyBar() {
+	s.mu.Lock()
+	s.dailyBarsRecv++
+	s.mu.Unlock()
+}
+
+func (s *streamStats) recordTrade() {
+	s.mu.Lock()
+	s.tradesReceived++
+	s.mu.Unlock()
+}
+
+func (s *streamStats) recordError(msg string) {
+	s.mu.Lock()
+	s.errorsReceived++
+	s.lastErrorMsg = msg
+	s.mu.Unlock()
+}
+
+func (s *streamStats) recordSubscription() {
+	s.mu.Lock()
+	s.subscriptions++
+	s.mu.Unlock()
+}
+
+func (s *streamStats) recordDrop() {
+	s.mu.Lock()
+	s.droppedBars++
+	s.mu.Unlock()
+}
+
+func (s *streamStats) snapshot() (bars, updated, daily, trades, errors, subs, dropped int64, lastBar time.Time, lastErr string) {
+	s.mu.Lock()
+	bars = s.barsReceived
+	updated = s.updatedBars
+	daily = s.dailyBarsRecv
+	trades = s.tradesReceived
+	errors = s.errorsReceived
+	subs = s.subscriptions
+	dropped = s.droppedBars
+	lastBar = s.lastBarAt
+	lastErr = s.lastErrorMsg
+	s.mu.Unlock()
+	return
+}
+
 // Stream manages a real-time WebSocket connection to Alpaca market data.
 type Stream struct {
 	config      StreamConfig
@@ -44,8 +121,10 @@ type Stream struct {
 	mu          sync.Mutex
 	symbols     map[string]bool
 	bars        chan StreamBar
+	dailyBars   chan StreamBar
 	done        chan struct{}
 	reconnectCh chan struct{}
+	stats       streamStats
 }
 
 // NewStream creates a new Alpaca market data stream.
@@ -57,9 +136,15 @@ func NewStream(cfg StreamConfig, bufSize int) *Stream {
 		config:      cfg,
 		symbols:     make(map[string]bool),
 		bars:        make(chan StreamBar, bufSize),
+		dailyBars:   make(chan StreamBar, 1024),
 		done:        make(chan struct{}),
 		reconnectCh: make(chan struct{}, 1),
 	}
+}
+
+// DailyBars returns the channel for receiving daily bar updates.
+func (s *Stream) DailyBars() <-chan StreamBar {
+	return s.dailyBars
 }
 
 // Start connects to the WebSocket, authenticates, and begins reading bars.
@@ -71,11 +156,13 @@ func (s *Stream) Start(ctx context.Context) (<-chan StreamBar, error) {
 
 	go s.readLoop(ctx)
 	go s.pingLoop(ctx)
+	go s.statsLoop(ctx)
 
 	return s.bars, nil
 }
 
 // Subscribe adds symbols to the active subscription.
+// Subscribes to bars, updatedBars (automatic with bars), and dailyBars.
 func (s *Stream) Subscribe(ctx context.Context, symbols []string) error {
 	s.mu.Lock()
 	for _, sym := range symbols {
@@ -88,16 +175,19 @@ func (s *Stream) Subscribe(ctx context.Context, symbols []string) error {
 		return nil
 	}
 
-	// Subscribe in batches of 500
-	for i := 0; i < len(symbols); i += 500 {
-		end := i + 500
+	// Subscribe in batches
+	totalBatches := (len(symbols) + subscribeBatchSize - 1) / subscribeBatchSize
+	for i := 0; i < len(symbols); i += subscribeBatchSize {
+		end := i + subscribeBatchSize
 		if end > len(symbols) {
 			end = len(symbols)
 		}
 		batch := symbols[i:end]
+		batchNum := i/subscribeBatchSize + 1
 		msg := map[string]interface{}{
-			"action": "subscribe",
-			"bars":   batch,
+			"action":    "subscribe",
+			"bars":      batch,
+			"dailyBars": batch,
 		}
 		s.mu.Lock()
 		err := conn.WriteJSON(msg)
@@ -105,8 +195,14 @@ func (s *Stream) Subscribe(ctx context.Context, symbols []string) error {
 		if err != nil {
 			return fmt.Errorf("subscribe batch: %w", err)
 		}
+		log.Printf("stream: subscribe request sent for %d symbols (batch %d/%d)", len(batch), batchNum, totalBatches)
+
+		// Brief pause between batches to avoid overwhelming the WebSocket
+		if end < len(symbols) {
+			time.Sleep(subscribeBatchWait)
+		}
 	}
-	log.Printf("stream: subscribed to %d symbols", len(symbols))
+	log.Printf("stream: subscribed to %d symbols (bars + dailyBars)", len(symbols))
 	return nil
 }
 
@@ -124,8 +220,9 @@ func (s *Stream) Unsubscribe(ctx context.Context, symbols []string) error {
 	}
 
 	msg := map[string]interface{}{
-		"action":      "unsubscribe",
-		"bars":        symbols,
+		"action":    "unsubscribe",
+		"bars":      symbols,
+		"dailyBars": symbols,
 	}
 	s.mu.Lock()
 	err := conn.WriteJSON(msg)
@@ -150,6 +247,8 @@ func (s *Stream) Close() error {
 }
 
 func (s *Stream) connect(ctx context.Context) error {
+	log.Printf("stream: connecting to %s", sipStreamURL)
+
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.DialContext(ctx, sipStreamURL, nil)
 	if err != nil {
@@ -250,29 +349,141 @@ func (s *Stream) readLoop(ctx context.Context) {
 func (s *Stream) processMessage(msg []byte) {
 	var messages []json.RawMessage
 	if err := json.Unmarshal(msg, &messages); err != nil {
+		log.Printf("stream: failed to parse message: %v (raw: %s)", err, truncate(msg, 200))
 		return
 	}
 
 	for _, raw := range messages {
-		var header struct {
-			T string `json:"T"`
-		}
-		if err := json.Unmarshal(raw, &header); err != nil {
+		// Use a map to extract the "T" key with exact case sensitivity.
+		// Go's json.Unmarshal struct matching is case-insensitive, which
+		// causes "t" (timestamp) to overwrite "T" (message type) since
+		// Alpaca messages contain both keys.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
 			continue
 		}
 
-		if header.T == "b" {
+		var msgType string
+		if tField, ok := fields["T"]; ok {
+			json.Unmarshal(tField, &msgType)
+		}
+
+		// Extract error fields if present
+		var errCode int
+		var errMsg string
+		if codeField, ok := fields["code"]; ok {
+			json.Unmarshal(codeField, &errCode)
+		}
+		if msgField, ok := fields["msg"]; ok {
+			json.Unmarshal(msgField, &errMsg)
+		}
+
+		switch msgType {
+		case "b": // Minute bar
 			var bar StreamBar
 			if err := json.Unmarshal(raw, &bar); err != nil {
+				log.Printf("stream: failed to parse bar: %v", err)
 				continue
 			}
+
+			// Log the very first bar received
+			s.stats.mu.Lock()
+			isFirst := s.stats.barsReceived == 0
+			s.stats.mu.Unlock()
+			if isFirst {
+				log.Printf("stream: first bar received — %s at %s price=%.2f vol=%d",
+					bar.Symbol, bar.Timestamp.Format("15:04:05"), bar.Close, bar.Volume)
+			}
+
 			select {
 			case s.bars <- bar:
 			default:
-				// Drop bar if pipeline is backed up
+				s.stats.recordDrop()
+			}
+			s.stats.recordBar(bar.Timestamp)
+
+		case "u": // Updated bar (late trade correction) — same schema as minute bar
+			var bar StreamBar
+			if err := json.Unmarshal(raw, &bar); err != nil {
+				log.Printf("stream: failed to parse updated bar: %v", err)
+				continue
+			}
+			select {
+			case s.bars <- bar: // Route to same channel — normalizer handles update
+			default:
+				s.stats.recordDrop()
+			}
+			s.stats.recordUpdatedBar()
+
+		case "d": // Daily bar
+			var bar StreamBar
+			if err := json.Unmarshal(raw, &bar); err != nil {
+				log.Printf("stream: failed to parse daily bar: %v", err)
+				continue
+			}
+			select {
+			case s.dailyBars <- bar:
+			default:
+				// Drop if dailyBars consumer is backed up
+			}
+			s.stats.recordDailyBar()
+
+		case "t": // Trade (if subscribed)
+			s.stats.recordTrade()
+			// For now, just count. Future: use for real-time price updates
+
+		case "subscription": // Subscription confirmation
+			var sub struct {
+				T           string   `json:"T"`
+				Trades      []string `json:"trades"`
+				Quotes      []string `json:"quotes"`
+				Bars        []string `json:"bars"`
+				UpdatedBars []string `json:"updatedBars"`
+				DailyBars   []string `json:"dailyBars"`
+				Statuses    []string `json:"statuses"`
+			}
+			if err := json.Unmarshal(raw, &sub); err == nil {
+				log.Printf("stream: subscription confirmed — bars=%d updatedBars=%d dailyBars=%d trades=%d",
+					len(sub.Bars), len(sub.UpdatedBars), len(sub.DailyBars), len(sub.Trades))
+			}
+			s.stats.recordSubscription()
+
+		case "error": // Error from Alpaca
+			log.Printf("stream: ERROR from Alpaca — code=%d msg=%s", errCode, errMsg)
+			s.stats.recordError(errMsg)
+
+		case "success": // Auth or other success
+			log.Printf("stream: success — %s", errMsg)
+
+		default:
+			log.Printf("stream: unknown message type %q: %s", msgType, truncate(raw, 200))
+		}
+	}
+}
+
+func (s *Stream) statsLoop(ctx context.Context) {
+	ticker := time.NewTicker(statsLogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			bars, updated, daily, trades, errors, subs, dropped, lastBar, lastErr := s.stats.snapshot()
+
+			lastBarAgo := "never"
+			if !lastBar.IsZero() {
+				lastBarAgo = time.Since(lastBar).Round(time.Second).String()
+			}
+
+			log.Printf("stream: stats — bars=%d updated=%d daily=%d trades=%d errors=%d subs=%d dropped=%d lastBar=%s",
+				bars, updated, daily, trades, errors, subs, dropped, lastBarAgo)
+			if lastErr != "" {
+				log.Printf("stream: last error — %s", lastErr)
 			}
 		}
-		// Ignore other message types (subscription confirmations, errors, etc.)
 	}
 }
 
@@ -346,4 +557,12 @@ func (s *Stream) pingLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// truncate shortens a byte slice for log display.
+func truncate(data []byte, maxLen int) string {
+	if len(data) <= maxLen {
+		return string(data)
+	}
+	return string(data[:maxLen]) + "..."
 }
