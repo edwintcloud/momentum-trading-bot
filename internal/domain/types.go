@@ -17,6 +17,12 @@ type TradeLoader interface {
 	LoadTodayClosedTrades() ([]ClosedTrade, error)
 }
 
+// HistoryLoader can load historical trade data.
+type HistoryLoader interface {
+	LoadClosedTradesByDate(date time.Time) ([]ClosedTrade, error)
+	ListTradeDates() ([]string, error)
+}
+
 // IndicatorSnapshot captures the raw mathematical state of indicators at a point in time.
 type IndicatorSnapshot struct {
 	Symbol     string             `json:"symbol"`

@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
@@ -52,6 +55,7 @@ type Server struct {
 	optimizerDir     string
 	cachedArtifact   optimizer.ArtifactStatus
 	cachedArtifactAt time.Time
+	historyLoader    interface{}
 }
 
 // NewServer creates an API server.
@@ -62,6 +66,7 @@ func NewServer(
 	appConfig config.AppConfig,
 	tradingConfig config.TradingConfig,
 	optimizerDir string,
+	historyLoader interface{},
 ) *Server {
 	return &Server{
 		portfolio:     portfolioManager,
@@ -71,6 +76,7 @@ func NewServer(
 		authToken:     strings.TrimSpace(appConfig.ControlPlaneAuthToken),
 		tradingConfig: tradingConfig,
 		optimizerDir:  optimizerDir,
+		historyLoader: historyLoader,
 	}
 }
 
@@ -114,6 +120,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/positions", s.requireAuth(s.handlePositions))
 	mux.HandleFunc("/api/candidates", s.requireAuth(s.handleCandidates))
 	mux.HandleFunc("/api/trades", s.requireAuth(s.handleTrades))
+	mux.HandleFunc("/api/trades/history", s.requireAuth(s.handleTradeHistory))
+	mux.HandleFunc("/api/trades/export", s.requireAuth(s.handleTradeExport))
+	mux.HandleFunc("/api/trades/dates", s.requireAuth(s.handleTradeDates))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("/api/dashboard", s.requireAuth(s.handleDashboard))
 	mux.HandleFunc("/api/performance", s.requireAuth(s.handlePerformance))
@@ -160,6 +169,97 @@ func (s *Server) handleCandidates(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleTrades(w http.ResponseWriter, _ *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.portfolio.GetClosedTrades())
+}
+
+func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
+	loc := markethours.Location()
+	dateStr := r.URL.Query().Get("date")
+	if dateStr == "" {
+		dateStr = time.Now().In(loc).Format("2006-01-02")
+	}
+	date, err := time.ParseInLocation("2006-01-02", dateStr, loc)
+	if err != nil {
+		http.Error(w, "invalid date format, use YYYY-MM-DD", http.StatusBadRequest)
+		return
+	}
+
+	loader, ok := s.historyLoader.(domain.HistoryLoader)
+	if !ok {
+		s.writeJSON(w, http.StatusOK, s.portfolio.GetClosedTrades())
+		return
+	}
+
+	trades, err := loader.LoadClosedTradesByDate(date)
+	if err != nil {
+		http.Error(w, "failed to load trades: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, trades)
+}
+
+func (s *Server) handleTradeExport(w http.ResponseWriter, r *http.Request) {
+	loc := markethours.Location()
+	dateStr := r.URL.Query().Get("date")
+	if dateStr == "" {
+		dateStr = time.Now().In(loc).Format("2006-01-02")
+	}
+	date, err := time.ParseInLocation("2006-01-02", dateStr, loc)
+	if err != nil {
+		http.Error(w, "invalid date format", http.StatusBadRequest)
+		return
+	}
+
+	var trades []domain.ClosedTrade
+	if loader, ok := s.historyLoader.(domain.HistoryLoader); ok {
+		trades, err = loader.LoadClosedTradesByDate(date)
+		if err != nil {
+			http.Error(w, "failed to load trades", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		trades = s.portfolio.GetClosedTrades()
+	}
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=trades_%s.csv", dateStr))
+
+	csvWriter := csv.NewWriter(w)
+	csvWriter.Write([]string{
+		"Symbol", "Side", "Quantity", "Entry Price", "Exit Price", "PnL", "R-Multiple",
+		"Setup Type", "Exit Reason", "Playbook", "Market Regime", "Sector",
+		"Opened At", "Closed At", "Duration",
+	})
+
+	for _, t := range trades {
+		dur := ""
+		if !t.OpenedAt.IsZero() && !t.ClosedAt.IsZero() {
+			dur = t.ClosedAt.Sub(t.OpenedAt).Round(time.Second).String()
+		}
+		csvWriter.Write([]string{
+			t.Symbol, t.Side, fmt.Sprintf("%d", t.Quantity),
+			fmt.Sprintf("%.2f", t.EntryPrice), fmt.Sprintf("%.2f", t.ExitPrice),
+			fmt.Sprintf("%.2f", t.PnL), fmt.Sprintf("%.4f", t.RMultiple),
+			t.SetupType, t.ExitReason, t.Playbook, t.MarketRegime, t.Sector,
+			t.OpenedAt.In(loc).Format("2006-01-02 15:04:05"),
+			t.ClosedAt.In(loc).Format("2006-01-02 15:04:05"),
+			dur,
+		})
+	}
+	csvWriter.Flush()
+}
+
+func (s *Server) handleTradeDates(w http.ResponseWriter, _ *http.Request) {
+	loader, ok := s.historyLoader.(domain.HistoryLoader)
+	if !ok {
+		s.writeJSON(w, http.StatusOK, []string{time.Now().In(markethours.Location()).Format("2006-01-02")})
+		return
+	}
+	dates, err := loader.ListTradeDates()
+	if err != nil {
+		http.Error(w, "failed to list dates", http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, dates)
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, _ *http.Request) {

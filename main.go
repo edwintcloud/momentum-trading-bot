@@ -273,7 +273,7 @@ func runLive() {
 
 	// Start API server
 	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst}
-	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg, optimizer.DefaultArtifactDir)
+	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg, optimizer.DefaultArtifactDir, eventRecorder)
 	for _, u := range configUpdaters {
 		apiServer.RegisterConfigUpdater(u)
 	}

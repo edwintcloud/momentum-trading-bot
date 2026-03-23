@@ -186,17 +186,23 @@ func (s *PostgresStore) RecordIndicatorState(snapshot domain.IndicatorSnapshot) 
 
 // LoadTodayClosedTrades returns all closed trades from today (ET timezone).
 func (s *PostgresStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) {
+	return s.LoadClosedTradesByDate(time.Now())
+}
+
+// LoadClosedTradesByDate returns all closed trades for a specific date (ET timezone).
+func (s *PostgresStore) LoadClosedTradesByDate(date time.Time) ([]domain.ClosedTrade, error) {
 	loc := markethours.Location()
-	now := time.Now().In(loc)
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	d := date.In(loc)
+	dayStart := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+	dayEnd := dayStart.AddDate(0, 0, 1)
 
 	rows, err := s.db.Query(`
 		SELECT symbol, side, quantity, entry_price, exit_price, pnl, r_multiple,
 		       exit_reason, data, opened_at, closed_at
 		FROM closed_trades
-		WHERE closed_at >= $1
+		WHERE closed_at >= $1 AND closed_at < $2
 		ORDER BY closed_at ASC
-	`, dayStart)
+	`, dayStart, dayEnd)
 	if err != nil {
 		return nil, fmt.Errorf("query closed trades: %w", err)
 	}
@@ -251,4 +257,28 @@ func (s *PostgresStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) {
 		trades = append(trades, t)
 	}
 	return trades, rows.Err()
+}
+
+// ListTradeDates returns all dates (ET) that have at least one closed trade.
+func (s *PostgresStore) ListTradeDates() ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT DATE(closed_at AT TIME ZONE 'America/New_York') as trade_date
+		FROM closed_trades
+		ORDER BY trade_date DESC
+		LIMIT 90
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list trade dates: %w", err)
+	}
+	defer rows.Close()
+
+	var dates []string
+	for rows.Next() {
+		var d time.Time
+		if err := rows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("scan trade date: %w", err)
+		}
+		dates = append(dates, d.Format("2006-01-02"))
+	}
+	return dates, rows.Err()
 }
