@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 )
 
 // FilesystemStore is a fallback event recorder that writes to local files.
@@ -78,6 +80,32 @@ func NewFilesystemRecorder(ctx context.Context, dir string) (domain.EventRecorde
 	return NewFilesystemStore(dir), nil
 }
 
-func init() {
-	_ = time.Now // keep time import
+// LoadTodayClosedTrades reads closed_trades.jsonl and returns trades from today (ET).
+func (f *FilesystemStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) {
+	loc := markethours.Location()
+	now := time.Now().In(loc)
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	path := filepath.Join(f.dir, "closed_trades.jsonl")
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // No trades file yet
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	var trades []domain.ClosedTrade
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var t domain.ClosedTrade
+		if err := json.Unmarshal(scanner.Bytes(), &t); err != nil {
+			continue
+		}
+		if !t.ClosedAt.IsZero() && t.ClosedAt.In(loc).After(dayStart) {
+			trades = append(trades, t)
+		}
+	}
+	return trades, scanner.Err()
 }

@@ -202,6 +202,20 @@ func (m *Manager) UpdatePrice(symbol string, price float64) {
 	m.positions[symbol] = pos
 }
 
+// SeedClosedTrades loads previously persisted trades into the in-memory slice.
+// Called at startup to restore trade history across restarts.
+func (m *Manager) SeedClosedTrades(trades []domain.ClosedTrade) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closedTrades = append(m.closedTrades, trades...)
+	// Recompute day PnL from all closed trades.
+	m.dayPnL = 0
+	for _, t := range m.closedTrades {
+		m.dayPnL += t.PnL
+	}
+	m.tradesToday = len(m.closedTrades)
+}
+
 // SeedBrokerPosition adds a position from the broker.
 func (m *Manager) SeedBrokerPosition(pos domain.Position) {
 	m.mu.Lock()

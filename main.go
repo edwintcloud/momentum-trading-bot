@@ -171,6 +171,17 @@ func runLive() {
 		}
 	}
 
+	// Restore today's closed trades from storage
+	if loader, ok := eventRecorder.(domain.TradeLoader); ok {
+		trades, err := loader.LoadTodayClosedTrades()
+		if err != nil {
+			log.Printf("trades: failed to load today's closed trades: %v", err)
+		} else if len(trades) > 0 {
+			portfolioMgr.SeedClosedTrades(trades)
+			log.Printf("trades: restored %d closed trades from storage (day PnL: %.2f)", len(trades), portfolioMgr.RealizedPnL())
+		}
+	}
+
 	// Pipeline channels
 	tickCh := make(chan domain.Tick, 1024)
 	candidateCh := make(chan domain.Candidate, 256)
