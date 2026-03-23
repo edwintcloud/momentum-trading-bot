@@ -10,6 +10,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 )
 
 // PostgresStore persists events to PostgreSQL.
@@ -181,4 +182,73 @@ func (s *PostgresStore) RecordIndicatorState(snapshot domain.IndicatorSnapshot) 
 	if err != nil {
 		log.Printf("storage: record indicator state error: %v", err)
 	}
+}
+
+// LoadTodayClosedTrades returns all closed trades from today (ET timezone).
+func (s *PostgresStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) {
+	loc := markethours.Location()
+	now := time.Now().In(loc)
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	rows, err := s.db.Query(`
+		SELECT symbol, side, quantity, entry_price, exit_price, pnl, r_multiple,
+		       exit_reason, data, opened_at, closed_at
+		FROM closed_trades
+		WHERE closed_at >= $1
+		ORDER BY closed_at ASC
+	`, dayStart)
+	if err != nil {
+		return nil, fmt.Errorf("query closed trades: %w", err)
+	}
+	defer rows.Close()
+
+	var trades []domain.ClosedTrade
+	for rows.Next() {
+		var t domain.ClosedTrade
+		var dataJSON []byte
+		var openedAt, closedAt sql.NullTime
+		var rMultiple sql.NullFloat64
+		var exitReason sql.NullString
+
+		if err := rows.Scan(
+			&t.Symbol, &t.Side, &t.Quantity, &t.EntryPrice, &t.ExitPrice,
+			&t.PnL, &rMultiple, &exitReason, &dataJSON, &openedAt, &closedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan closed trade: %w", err)
+		}
+
+		if rMultiple.Valid {
+			t.RMultiple = rMultiple.Float64
+		}
+		if exitReason.Valid {
+			t.ExitReason = exitReason.String
+		}
+		if openedAt.Valid {
+			t.OpenedAt = openedAt.Time
+		}
+		if closedAt.Valid {
+			t.ClosedAt = closedAt.Time
+		}
+
+		// Parse additional fields from the JSONB data column.
+		if len(dataJSON) > 0 {
+			var extra struct {
+				SetupType        string  `json:"setupType"`
+				MarketRegime     string  `json:"marketRegime"`
+				RegimeConfidence float64 `json:"regimeConfidence"`
+				Playbook         string  `json:"playbook"`
+				Sector           string  `json:"sector"`
+			}
+			if json.Unmarshal(dataJSON, &extra) == nil {
+				t.SetupType = extra.SetupType
+				t.MarketRegime = extra.MarketRegime
+				t.RegimeConfidence = extra.RegimeConfidence
+				t.Playbook = extra.Playbook
+				t.Sector = extra.Sector
+			}
+		}
+
+		trades = append(trades, t)
+	}
+	return trades, rows.Err()
 }

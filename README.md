@@ -208,6 +208,9 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 ### Sector Concentration Blocking Small-Cap Entries (Fixed)
 The `SectorForSymbol()` lookup uses a hardcoded map of ~100 large-cap tickers. Any stock not in the map gets sector `"unknown"`. With `MaxPositionsPerSector = 2`, after entering 2 small-cap momentum stocks (all `"unknown"` sector), every subsequent entry was blocked. The fix skips the sector concentration check when sector is `"unknown"` or empty. The check still applies for well-known stocks with known GICS sectors.
 
+### Closed Trades Lost on Restart (Fixed)
+The dashboard's "Trades" page was empty after a bot restart because closed trades were only held in-memory. The `closedTrades` slice in the portfolio manager started empty on each boot, even though trades had been written to Postgres (or the filesystem JSONL fallback) via `RecordClosedTrade()`. The fix adds `LoadTodayClosedTrades()` to both storage backends and `SeedClosedTrades()` to the portfolio manager. On startup, today's closed trades are loaded from storage and seeded into the portfolio manager, restoring the trade history, day PnL, and trade count. This is transparent — no configuration changes needed.
+
 ### Live Trading Normalizer Cold-Start (Fixed)
 On a fresh live/paper start the normalizer had no historical state: `previousClose=0`, `prevDayVolume=0`, `preMarketVol=0`. This caused `GapPercent=0`, `RelativeVolume=1.0`, and `PreMarketVolume=0` for every symbol, which meant ALL stocks failed the scanner's `MinGapPercent`, `MinRelativeVolume`, and `MinPremarketVolume` filters — producing zero trades. The fix seeds the normalizer from the Alpaca multi-symbol snapshot API (`/v2/stocks/snapshots`) on startup, providing yesterday's close/volume and today's open/high/volume before the first bar arrives. This is transparent — no configuration changes needed. The SIP data feed (paid Alpaca subscription) is required for snapshots.
 

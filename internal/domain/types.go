@@ -12,6 +12,11 @@ type EventRecorder interface {
 	RecordIndicatorState(IndicatorSnapshot)
 }
 
+// TradeLoader can load persisted trades from storage.
+type TradeLoader interface {
+	LoadTodayClosedTrades() ([]ClosedTrade, error)
+}
+
 // IndicatorSnapshot captures the raw mathematical state of indicators at a point in time.
 type IndicatorSnapshot struct {
 	Symbol     string             `json:"symbol"`

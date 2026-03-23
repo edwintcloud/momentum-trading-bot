@@ -140,6 +140,145 @@ func TestApplyExecution_CloseIntent_FullyCloses(t *testing.T) {
 	}
 }
 
+func TestSeedClosedTrades_RestoresTradesAndPnL(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	trades := []domain.ClosedTrade{
+		{
+			Symbol:           "AAPL",
+			Side:             "long",
+			Quantity:         100,
+			EntryPrice:       150.0,
+			ExitPrice:        155.0,
+			PnL:              500.0,
+			RMultiple:        2.0,
+			SetupType:        "breakout",
+			ExitReason:       "profit-target",
+			MarketRegime:     "trending",
+			RegimeConfidence: 0.85,
+			Playbook:         "breakout",
+			Sector:           "Technology",
+			OpenedAt:         time.Date(2026, 3, 23, 9, 35, 0, 0, time.UTC),
+			ClosedAt:         time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			Symbol:     "TSLA",
+			Side:       "long",
+			Quantity:   50,
+			EntryPrice: 200.0,
+			ExitPrice:  195.0,
+			PnL:        -250.0,
+			RMultiple:  -1.0,
+			ExitReason: "stop-loss",
+			OpenedAt:   time.Date(2026, 3, 23, 9, 40, 0, 0, time.UTC),
+			ClosedAt:   time.Date(2026, 3, 23, 10, 5, 0, 0, time.UTC),
+		},
+	}
+
+	m.SeedClosedTrades(trades)
+
+	// Verify trades are returned by GetClosedTrades
+	got := m.GetClosedTrades()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 closed trades, got %d", len(got))
+	}
+	if got[0].Symbol != "AAPL" {
+		t.Errorf("expected first trade AAPL, got %s", got[0].Symbol)
+	}
+	if got[1].Symbol != "TSLA" {
+		t.Errorf("expected second trade TSLA, got %s", got[1].Symbol)
+	}
+
+	// Verify day PnL is computed correctly: 500 + (-250) = 250
+	if m.DayPnL() != 250.0 {
+		t.Errorf("expected dayPnL 250.0, got %.2f", m.DayPnL())
+	}
+
+	// Verify RealizedPnL matches
+	if m.RealizedPnL() != 250.0 {
+		t.Errorf("expected RealizedPnL 250.0, got %.2f", m.RealizedPnL())
+	}
+}
+
+func TestSeedClosedTrades_EmptySlice(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	m.SeedClosedTrades(nil)
+
+	got := m.GetClosedTrades()
+	if len(got) != 0 {
+		t.Fatalf("expected 0 closed trades after seeding nil, got %d", len(got))
+	}
+	if m.DayPnL() != 0 {
+		t.Errorf("expected dayPnL 0, got %.2f", m.DayPnL())
+	}
+}
+
+func TestSeedClosedTrades_ThenNewTradeAppends(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	// Seed with one historical trade
+	m.SeedClosedTrades([]domain.ClosedTrade{
+		{
+			Symbol:     "AAPL",
+			Side:       "long",
+			Quantity:   100,
+			EntryPrice: 150.0,
+			ExitPrice:  155.0,
+			PnL:        500.0,
+			OpenedAt:   time.Date(2026, 3, 23, 9, 35, 0, 0, time.UTC),
+			ClosedAt:   time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC),
+		},
+	})
+
+	ts := time.Date(2026, 3, 23, 10, 30, 0, 0, time.UTC)
+
+	// Open and close a new position
+	m.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "NVDA",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        300.0,
+		Quantity:     50,
+		StopPrice:    290.0,
+		RiskPerShare: 10.0,
+		FilledAt:     ts,
+	})
+	m.ApplyExecution(domain.ExecutionReport{
+		Symbol:       "NVDA",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentClose,
+		PositionSide: domain.DirectionLong,
+		Price:        310.0,
+		Quantity:     50,
+		Reason:       "trailing-stop",
+		FilledAt:     ts.Add(5 * time.Minute),
+	})
+
+	got := m.GetClosedTrades()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 closed trades (1 seeded + 1 new), got %d", len(got))
+	}
+	if got[0].Symbol != "AAPL" {
+		t.Errorf("expected first trade AAPL (seeded), got %s", got[0].Symbol)
+	}
+	if got[1].Symbol != "NVDA" {
+		t.Errorf("expected second trade NVDA (new), got %s", got[1].Symbol)
+	}
+
+	// Day PnL: 500 (seeded) + 500 (new: (310-300)*50) = 1000
+	if m.DayPnL() != 1000.0 {
+		t.Errorf("expected dayPnL 1000.0, got %.2f", m.DayPnL())
+	}
+}
+
 func TestApplyExecution_PartialExitExceedingQty_FullyCloses(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.StartingCapital = 25000
