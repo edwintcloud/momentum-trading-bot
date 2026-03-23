@@ -14,17 +14,19 @@ import (
 type StrategyProfile string
 
 const (
-	StrategyProfileBaseline       StrategyProfile = "baseline_breakout"
-	StrategyProfileHighConviction StrategyProfile = "high_conviction_breakout"
-	StrategyProfileContinuation   StrategyProfile = "continuation_breakout"
+	StrategyProfileBaseline        StrategyProfile = "baseline_breakout"
+	StrategyProfileHighConviction  StrategyProfile = "high_conviction_breakout"
+	StrategyProfileContinuation    StrategyProfile = "continuation_breakout"
+	StrategyProfileMomentumCameron StrategyProfile = "momentum_cameron"
 )
 
 const bundledTradingProfileRelPath = "profiles/default.json"
 
 var supportedStrategyProfiles = map[StrategyProfile]struct{}{
-	StrategyProfileBaseline:       {},
-	StrategyProfileHighConviction: {},
-	StrategyProfileContinuation:   {},
+	StrategyProfileBaseline:        {},
+	StrategyProfileHighConviction:  {},
+	StrategyProfileContinuation:    {},
+	StrategyProfileMomentumCameron: {},
 }
 
 // IsSupportedStrategyProfile checks if a profile name is valid.
