@@ -526,12 +526,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			ThreeMinuteReturn:  c.ThreeMinuteReturnPct,
 			BreakoutPct:        c.BreakoutPct,
 			PriceVsVWAPPct:     c.PriceVsVWAPPct,
+			RSI:                c.RSI,
 			RSIMASlope:         c.RSIMASlope,
 			ATR:                c.ATR,
 			ConsolidationRange: c.ConsolidationRangePct,
 			PullbackDepth:      c.PullbackDepthPct,
 			RegimeProb:         c.RegimeConfidence,
 			VolumeLeaderPct:    c.VolumeLeaderPct,
+			MACDHistogram:      c.MACDHistogram,
 		}
 		if c.EMASlow > 0 {
 			features.EMAAlignment = (c.EMAFast - c.EMASlow) / c.EMASlow
@@ -551,10 +553,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			if mlScore < s.config.MLScoringThreshold {
 				return domain.TradeSignal{}, false, "ml-score-gated"
 			}
-			// Scale position by ML score (above threshold gets boost)
-			mlSizeMultiplier := 0.5 + mlScore
+			// Scale position by ML score using MLScoreWeight to control blend
+			w := s.config.MLScoreWeight
+			mlSizeMultiplier := (1.0 - w) + 2.0*w*mlScore
 			if mlSizeMultiplier > 1.5 {
 				mlSizeMultiplier = 1.5
+			}
+			if mlSizeMultiplier < 0.5 {
+				mlSizeMultiplier = 0.5
 			}
 			quantity = int64(math.Floor(float64(quantity) * mlSizeMultiplier))
 			if quantity <= 0 {

@@ -23,6 +23,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/market"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
@@ -195,7 +196,14 @@ func runLive() {
 	// Start components
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
 	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
-	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator)
+
+	// Create ML scorer if enabled
+	var mlScorer ml.Scorer
+	if tradingCfg.MLScoringEnabled {
+		mlScorer = ml.NewRuleBasedScorer()
+	}
+
+	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator, mlScorer)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
 
 	// Fan-out ticks to strategy and scanner

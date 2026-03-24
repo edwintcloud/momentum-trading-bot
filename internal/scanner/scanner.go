@@ -381,6 +381,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PriceVsEMA9Pct:        safePct(tick.Price-metrics.ema9, metrics.ema9) * 100,
 		EMAFast:               metrics.emaFast,
 		EMASlow:               metrics.emaSlow,
+		MACDHistogram:         metrics.macdHistogram,
 		IntradayReturnPct:     intradayReturnPct,
 		SetupType:             setupType,
 		Score:                 score,
@@ -446,6 +447,7 @@ type scanMetrics struct {
 	ema9                  float64
 	emaFast               float64
 	emaSlow               float64
+	macdHistogram              float64
 	adx                        float64
 	bbUpper                    float64
 	bbMiddle                   float64
@@ -489,6 +491,9 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	m.ema9 = computeEMA(bars, 9)
 	m.emaFast = computeEMA(bars, s.config.MarketRegimeEMAFastPeriod)
 	m.emaSlow = computeEMA(bars, s.config.MarketRegimeEMASlowPeriod)
+
+	// MACD histogram (fast EMA - slow EMA - signal EMA)
+	m.macdHistogram = computeMACDHistogram(bars, s.config.MarketRegimeEMAFastPeriod, s.config.MarketRegimeEMASlowPeriod, 9)
 
 	// RSI and RSI MA Slope (14-period Wilder RSI)
 	m.rsi = computeRSI(bars, 14)
@@ -723,6 +728,34 @@ func computeATR(bars []symbolBar, period int) float64 {
 		return 0
 	}
 	return sum / float64(count)
+}
+
+// computeMACDHistogram returns the MACD histogram (MACD line - signal line).
+func computeMACDHistogram(bars []symbolBar, fastPeriod, slowPeriod, signalPeriod int) float64 {
+	n := len(bars)
+	if n == 0 || fastPeriod <= 0 || slowPeriod <= 0 || signalPeriod <= 0 {
+		return 0
+	}
+	// Compute running fast and slow EMAs, then MACD line at each bar
+	fastMult := 2.0 / float64(fastPeriod+1)
+	slowMult := 2.0 / float64(slowPeriod+1)
+	emaFast := bars[0].close
+	emaSlow := bars[0].close
+	macdValues := make([]float64, n)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			emaFast = (bars[i].close-emaFast)*fastMult + emaFast
+			emaSlow = (bars[i].close-emaSlow)*slowMult + emaSlow
+		}
+		macdValues[i] = emaFast - emaSlow
+	}
+	// Signal line = EMA of MACD values
+	sigMult := 2.0 / float64(signalPeriod+1)
+	signal := macdValues[0]
+	for i := 1; i < n; i++ {
+		signal = (macdValues[i]-signal)*sigMult + signal
+	}
+	return macdValues[n-1] - signal
 }
 
 func computeEMA(bars []symbolBar, period int) float64 {
