@@ -197,13 +197,23 @@ func runLive() {
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
 	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
 
-	// Create ML scorer if enabled
+	// Create ML scorer and drift detector if enabled
 	var mlScorer ml.Scorer
+	var driftDetector *ml.DriftDetector
 	if tradingCfg.MLScoringEnabled {
 		mlScorer = ml.NewRuleBasedScorer()
+		if tradingCfg.ConceptDriftEnabled {
+			// Uniform training distribution (no trained model yet); performance drift is primary signal
+			uniformDist := make([]float64, 10)
+			for i := range uniformDist {
+				uniformDist[i] = 0.1
+			}
+			driftDetector = ml.NewDriftDetector(uniformDist, 0.95)
+			portfolioMgr.SetDriftDetector(driftDetector)
+		}
 	}
 
-	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator, mlScorer)
+	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator, mlScorer, driftDetector)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
 
 	// Fan-out ticks to strategy and scanner
