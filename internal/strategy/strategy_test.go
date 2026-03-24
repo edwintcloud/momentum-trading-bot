@@ -926,8 +926,8 @@ func TestPositionSizeFloorBumpsUp(t *testing.T) {
 		t.Fatal("expected signal for ANNA candidate")
 	}
 
-	// Floor: 77000 * 0.02 / 6.18 = ceil(249.2) = 250 shares minimum
-	minQty := int64(250) // ceil(1540 / 6.18)
+	// Floor: 77000 * 0.02 / 6.18 = floor(249.19) = 249 shares minimum
+	minQty := int64(249) // floor(1540 / 6.18)
 	if signal.Quantity < minQty {
 		t.Errorf("quantity %d should be >= min floor %d ($1540 notional)", signal.Quantity, minQty)
 	}

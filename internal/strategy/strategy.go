@@ -697,13 +697,13 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	exitQty := pos.Quantity
 	exitIntent := domain.IntentClose
 	if reason == "partial-1" || reason == "partial-2" {
-		var pct float64
+		var partialQty int64
 		if reason == "partial-1" {
-			pct = s.config.PartialTrigger1Pct
+			partialQty = int64(math.Floor(float64(pos.OriginalQuantity) * s.config.PartialTrigger1Pct))
 		} else {
-			pct = s.config.PartialTrigger2Pct
+			// Partial-2: exit all remaining shares (avoids tiny leftover remainders)
+			partialQty = pos.Quantity
 		}
-		partialQty := int64(math.Floor(float64(pos.OriginalQuantity) * pct))
 		if partialQty > pos.Quantity {
 			partialQty = pos.Quantity
 		}
@@ -721,12 +721,23 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		}
 	}
 
+	// For stop-loss exits, clamp exit price to the stop price to avoid >-1R losses
+	// when price gaps through the stop level.
+	exitPrice := tick.Price
+	if (reason == "stop-loss" || reason == "stop-loss-fallback") && pos.StopPrice > 0 {
+		if domain.IsLong(pos.Side) && tick.Price < pos.StopPrice {
+			exitPrice = pos.StopPrice
+		} else if domain.IsShort(pos.Side) && tick.Price > pos.StopPrice {
+			exitPrice = pos.StopPrice
+		}
+	}
+
 	signal := domain.TradeSignal{
 		Symbol:       tick.Symbol,
 		Side:         domain.CloseBrokerSide(pos.Side),
 		Intent:       exitIntent,
 		PositionSide: pos.Side,
-		Price:        tick.Price,
+		Price:        exitPrice,
 		Quantity:     exitQty,
 		Reason:       reason,
 		Timestamp:    now,
