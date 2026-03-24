@@ -133,6 +133,42 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 			cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
 			e.broker.CancelOrder(cancelCtx, orderID)
 			cancelFn()
+
+			// Final status check: the order may have filled between the last poll and the cancel.
+			finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			finalStatus, finalPrice, finalErr := e.broker.PollOrderStatus(finalCtx, orderID)
+			finalCancel()
+			if finalErr == nil && finalStatus == "filled" {
+				e.runtime.RecordLog("info", "execution",
+					fmt.Sprintf("order %s %s filled during cancel race — processing fill", order.Symbol, order.Side))
+				report := domain.ExecutionReport{
+					Symbol:           order.Symbol,
+					Side:             order.Side,
+					Intent:           order.Intent,
+					PositionSide:     order.PositionSide,
+					Price:            finalPrice,
+					Quantity:         order.Quantity,
+					StopPrice:        order.StopPrice,
+					RiskPerShare:     order.RiskPerShare,
+					EntryATR:         order.EntryATR,
+					SetupType:        order.SetupType,
+					Reason:           order.Reason,
+					MarketRegime:     order.MarketRegime,
+					RegimeConfidence: order.RegimeConfidence,
+					Playbook:         order.Playbook,
+					BrokerOrderID:    orderID,
+					BrokerStatus:     finalStatus,
+					FilledAt:         time.Now(),
+				}
+				if e.recorder != nil {
+					e.recorder.RecordExecution(report)
+				}
+				select {
+				case fills <- report:
+				case <-ctx.Done():
+				}
+				return true
+			}
 			return false
 		case <-ticker.C:
 			status, fillPrice, err := e.broker.PollOrderStatus(pollCtx, orderID)
