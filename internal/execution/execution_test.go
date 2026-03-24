@@ -376,3 +376,75 @@ func TestExitOrderRetry_NeverUsesMarketType(t *testing.T) {
 		t.Errorf("attempt 5: expected 12x slippage, got %.0f", submitted[4].SlippageMultiplier)
 	}
 }
+
+// raceFillBroker simulates an order that fills at the broker during the cancel race window.
+// PollOrderStatus returns "new" during normal polling, but returns "filled" after CancelOrder is called.
+type raceFillBroker struct {
+	mu           sync.Mutex
+	submitOrders []domain.OrderRequest
+	cancelled    int32 // atomically set when CancelOrder is called
+}
+
+func (m *raceFillBroker) SubmitOrder(_ context.Context, order domain.OrderRequest) (string, error) {
+	m.mu.Lock()
+	m.submitOrders = append(m.submitOrders, order)
+	count := len(m.submitOrders)
+	m.mu.Unlock()
+	return fmt.Sprintf("order-%d", count), nil
+}
+
+func (m *raceFillBroker) PollOrderStatus(_ context.Context, _ string) (string, float64, error) {
+	// After cancel was attempted, report the order as filled (simulating the race)
+	if atomic.LoadInt32(&m.cancelled) > 0 {
+		return "filled", 51.25, nil
+	}
+	// During normal polling, always return "new" so the poll loop times out
+	return "new", 0, nil
+}
+
+func (m *raceFillBroker) CancelOrder(_ context.Context, _ string) error {
+	atomic.StoreInt32(&m.cancelled, 1)
+	return fmt.Errorf("order already filled") // cancel fails because it filled
+}
+
+func (m *raceFillBroker) IsShortable(_ string) bool {
+	return true
+}
+
+func TestSubmitAndPoll_RaceFillOnCancel(t *testing.T) {
+	broker := &raceFillBroker{}
+	rt := runtime.NewState()
+	engine := NewEngine(broker, rt, nil)
+	fills := make(chan domain.ExecutionReport, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	order := domain.OrderRequest{
+		Symbol:       "RACE",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentClose,
+		PositionSide: domain.DirectionLong,
+		Price:        50.0,
+		Quantity:     100,
+	}
+
+	// submitAndPoll should detect the fill during the post-cancel check
+	filled := engine.submitAndPoll(ctx, order, fills, 1)
+
+	if !filled {
+		t.Fatal("expected submitAndPoll to return true when order fills during cancel race")
+	}
+
+	select {
+	case report := <-fills:
+		if report.Symbol != "RACE" {
+			t.Errorf("expected fill for RACE, got %s", report.Symbol)
+		}
+		if report.Price != 51.25 {
+			t.Errorf("expected fill price 51.25, got %.2f", report.Price)
+		}
+	default:
+		t.Error("expected fill report but channel was empty")
+	}
+}

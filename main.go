@@ -423,9 +423,10 @@ func runLive() {
 					}
 				}
 				for _, p := range pmPositions {
-					if !brokerSymbols[p.Symbol] && !p.BrokerSeeded {
-						runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("portfolio manager has position %s not at broker", p.Symbol))
-						log.Printf("reconcile: WARNING portfolio manager has position %s not at broker", p.Symbol)
+					if !brokerSymbols[p.Symbol] {
+						runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("reconcile: removing stale position %s (closed at broker)", p.Symbol))
+						log.Printf("reconcile: removing stale position %s (closed at broker)", p.Symbol)
+						portfolioMgr.RemoveStalePosition(p.Symbol)
 					}
 				}
 			}

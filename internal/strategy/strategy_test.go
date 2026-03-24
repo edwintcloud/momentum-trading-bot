@@ -926,8 +926,8 @@ func TestPositionSizeFloorBumpsUp(t *testing.T) {
 		t.Fatal("expected signal for ANNA candidate")
 	}
 
-	// Floor: 77000 * 0.02 / 6.18 = ceil(249.2) = 250 shares minimum
-	minQty := int64(250) // ceil(1540 / 6.18)
+	// Floor: 77000 * 0.02 / 6.18 = floor(249.19) = 249 shares minimum
+	minQty := int64(249) // floor(1540 / 6.18)
 	if signal.Quantity < minQty {
 		t.Errorf("quantity %d should be >= min floor %d ($1540 notional)", signal.Quantity, minQty)
 	}
@@ -1510,5 +1510,142 @@ func TestPartialExitClosesEntireWhenRemainderTiny(t *testing.T) {
 	}
 	if signal.Quantity != 30 {
 		t.Errorf("expected quantity 30 (close all), got %d", signal.Quantity)
+	}
+}
+
+func TestBlockLosingTickerReentry(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	cfg.RiskPerTradePct = 0.005
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+	cfg.BlockLosingTickerReentry = true
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	re := risk.NewEngine(cfg, pm, runtimeState)
+	s := NewStrategy(cfg, pm, runtimeState, re)
+
+	ts := marketOpenTime()
+
+	// Open and close a losing trade on LOSER
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol:       "LOSER",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        50.0,
+		Quantity:     100,
+		StopPrice:    48.0,
+		RiskPerShare: 2.0,
+		FilledAt:     ts.Add(-10 * time.Minute),
+	})
+	pm.ClosePosition(domain.ExecutionReport{
+		Symbol:       "LOSER",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentClose,
+		PositionSide: domain.DirectionLong,
+		Price:        47.0, // loss of $300
+		Quantity:     100,
+		FilledAt:     ts.Add(-5 * time.Minute),
+	})
+
+	// Try to enter LOSER again — should be blocked
+	candidate := domain.Candidate{
+		Symbol:          "LOSER",
+		Direction:       domain.DirectionLong,
+		Price:           52.0,
+		ATR:             1.0,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+	_, ok := s.EvaluateCandidate(candidate)
+	if ok {
+		t.Error("expected entry to be blocked for losing ticker")
+	}
+
+	decision := s.EvaluateCandidateDecision(candidate)
+	if decision.Reason != "losing-ticker-blocked" {
+		t.Errorf("expected reason losing-ticker-blocked, got %q", decision.Reason)
+	}
+
+	// A different symbol with no losing trade should still be allowed
+	winner := domain.Candidate{
+		Symbol:          "WINNER",
+		Direction:       domain.DirectionLong,
+		Price:           50.0,
+		ATR:             1.0,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+	_, ok = s.EvaluateCandidate(winner)
+	if !ok {
+		t.Error("expected entry to be allowed for symbol with no losing trade")
+	}
+}
+
+func TestBlockLosingTickerReentry_Disabled(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	cfg.RiskPerTradePct = 0.005
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+	cfg.BlockLosingTickerReentry = false
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	re := risk.NewEngine(cfg, pm, runtimeState)
+	s := NewStrategy(cfg, pm, runtimeState, re)
+
+	ts := marketOpenTime()
+
+	// Open and close a losing trade on LOSER
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol:       "LOSER",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        50.0,
+		Quantity:     100,
+		StopPrice:    48.0,
+		RiskPerShare: 2.0,
+		FilledAt:     ts.Add(-10 * time.Minute),
+	})
+	pm.ClosePosition(domain.ExecutionReport{
+		Symbol:       "LOSER",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentClose,
+		PositionSide: domain.DirectionLong,
+		Price:        47.0,
+		Quantity:     100,
+		FilledAt:     ts.Add(-5 * time.Minute),
+	})
+
+	// With the flag disabled, re-entry should be allowed
+	candidate := domain.Candidate{
+		Symbol:          "LOSER",
+		Direction:       domain.DirectionLong,
+		Price:           52.0,
+		ATR:             1.0,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+	_, ok := s.EvaluateCandidate(candidate)
+	if !ok {
+		t.Error("expected entry to be allowed when BlockLosingTickerReentry is disabled")
 	}
 }

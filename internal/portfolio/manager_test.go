@@ -467,3 +467,115 @@ func TestApplyExecution_PartialExitExceedingQty_FullyCloses(t *testing.T) {
 		t.Error("position should be closed when partial exit qty equals position qty")
 	}
 }
+
+func TestRemoveStalePosition(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC)
+
+	// Open a long position
+	m.OpenPosition(domain.ExecutionReport{
+		Symbol:       "STALE",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        50.0,
+		Quantity:     100,
+		StopPrice:    48.0,
+		RiskPerShare: 2.0,
+		FilledAt:     ts,
+	})
+
+	// Simulate price update
+	m.UpdatePrice("STALE", 52.0)
+
+	// Remove stale position (broker no longer has it)
+	m.RemoveStalePosition("STALE")
+
+	// Position should be gone
+	if m.HasPosition("STALE") {
+		t.Fatal("position should be removed after RemoveStalePosition")
+	}
+
+	// Should have a closed trade recorded
+	trades := m.GetClosedTrades()
+	if len(trades) != 1 {
+		t.Fatalf("expected 1 closed trade, got %d", len(trades))
+	}
+
+	trade := trades[0]
+	if trade.Symbol != "STALE" {
+		t.Errorf("expected trade for STALE, got %s", trade.Symbol)
+	}
+	if trade.ExitReason != "reconcile-stale" {
+		t.Errorf("expected exit reason reconcile-stale, got %s", trade.ExitReason)
+	}
+	// ExitPrice should be LastPrice (52.0), PnL = (52-50)*100 = 200
+	if trade.ExitPrice != 52.0 {
+		t.Errorf("expected exit price 52.0, got %.2f", trade.ExitPrice)
+	}
+	if trade.PnL != 200.0 {
+		t.Errorf("expected PnL 200.0, got %.2f", trade.PnL)
+	}
+}
+
+func TestRemoveStalePosition_Nonexistent(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	// Should not panic when removing a position that doesn't exist
+	m.RemoveStalePosition("NOPE")
+}
+
+func TestSymbolHadLossToday(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC)
+
+	// No trades yet — should return false
+	if m.SymbolHadLossToday("LOSER") {
+		t.Error("expected false when no trades exist")
+	}
+
+	// Open and close a winning trade
+	m.OpenPosition(domain.ExecutionReport{
+		Symbol: "WINNER", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 50.0, Quantity: 100,
+		StopPrice: 48.0, RiskPerShare: 2.0, FilledAt: ts,
+	})
+	m.ClosePosition(domain.ExecutionReport{
+		Symbol: "WINNER", Side: domain.SideSell, Intent: domain.IntentClose,
+		PositionSide: domain.DirectionLong, Price: 55.0, Quantity: 100,
+		FilledAt: ts.Add(5 * time.Minute),
+	})
+
+	if m.SymbolHadLossToday("WINNER") {
+		t.Error("expected false for a winning trade")
+	}
+
+	// Open and close a losing trade
+	m.OpenPosition(domain.ExecutionReport{
+		Symbol: "LOSER", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 50.0, Quantity: 100,
+		StopPrice: 48.0, RiskPerShare: 2.0, FilledAt: ts,
+	})
+	m.ClosePosition(domain.ExecutionReport{
+		Symbol: "LOSER", Side: domain.SideSell, Intent: domain.IntentClose,
+		PositionSide: domain.DirectionLong, Price: 47.0, Quantity: 100,
+		FilledAt: ts.Add(5 * time.Minute),
+	})
+
+	if !m.SymbolHadLossToday("LOSER") {
+		t.Error("expected true for a losing trade")
+	}
+
+	// Different symbol unaffected
+	if m.SymbolHadLossToday("OTHER") {
+		t.Error("expected false for unrelated symbol")
+	}
+}

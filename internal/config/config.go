@@ -352,6 +352,9 @@ type TradingConfig struct {
 
 	// Volatility estimator cap
 	MaxVolEstimate float64 // max annualized vol estimate (default 5.0 = 500%)
+
+	// Block re-entry on tickers that had a losing trade today
+	BlockLosingTickerReentry bool
 }
 
 // PlaybookExitConfig holds exit parameters for a single playbook.

@@ -528,6 +528,75 @@ func (m *Manager) HasPosition(symbol string) bool {
 	return ok
 }
 
+// SymbolHadLossToday returns true if the symbol has any closed trade with negative PnL today.
+func (m *Manager) SymbolHadLossToday(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, t := range m.closedTrades {
+		if t.Symbol == symbol && t.PnL < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveStalePosition removes a position that no longer exists at the broker,
+// recording it as a closed trade with the last known price.
+func (m *Manager) RemoveStalePosition(symbol string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetDayIfNeeded()
+
+	pos, ok := m.positions[symbol]
+	if !ok {
+		return
+	}
+
+	exitPrice := pos.LastPrice
+	if exitPrice == 0 {
+		exitPrice = pos.AvgPrice
+	}
+
+	var pnl float64
+	if domain.IsLong(pos.Side) {
+		pnl = (exitPrice - pos.AvgPrice) * float64(pos.Quantity)
+	} else {
+		pnl = (pos.AvgPrice - exitPrice) * float64(pos.Quantity)
+	}
+
+	rMultiple := 0.0
+	if pos.RiskPerShare > 0 {
+		rMultiple = pnl / (pos.RiskPerShare * float64(pos.Quantity))
+	}
+
+	trade := domain.ClosedTrade{
+		Symbol:           pos.Symbol,
+		Side:             pos.Side,
+		Quantity:         pos.Quantity,
+		EntryPrice:       pos.AvgPrice,
+		ExitPrice:        exitPrice,
+		PnL:              pnl,
+		RMultiple:        rMultiple,
+		SetupType:        pos.SetupType,
+		OpenedAt:         pos.OpenedAt,
+		ClosedAt:         time.Now(),
+		ExitReason:       "reconcile-stale",
+		MarketRegime:     pos.MarketRegime,
+		RegimeConfidence: pos.RegimeConfidence,
+		Playbook:         pos.Playbook,
+		Sector:           pos.Sector,
+	}
+
+	m.closedTrades = append(m.closedTrades, trade)
+	m.dayPnL += pnl
+	m.tradesToday++
+	delete(m.positions, symbol)
+
+	if m.recorder != nil {
+		m.recorder.RecordClosedTrade(trade)
+	}
+}
+
 // MarkPriceAt updates the position's price tracking at a specific time.
 func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 	m.mu.Lock()

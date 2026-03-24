@@ -386,7 +386,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		Score:                 score,
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
-		Playbook:              s.selectPlaybook(direction, metrics),
+		Playbook:              s.selectPlaybookFromSetupType(direction, setupType),
 		Float:                 tick.Float,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
@@ -522,6 +522,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	m.bbUpper, m.bbMiddle, m.bbLower = computeBollingerBands(bars, bbPeriod, bbK)
 
 	// Setup detection
+	m.setupType = "early" // default when insufficient bars
 	if n >= 5 {
 		high5 := bars[n-5].high
 		low5 := bars[n-5].low
@@ -685,18 +686,14 @@ func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction stri
 	return score
 }
 
-func (s *Scanner) selectPlaybook(direction string, m scanMetrics) string {
-	if m.setupType == "hod_breakout" {
+func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string) string {
+	switch setupType {
+	case "hod_breakout", "breakout", "breakdown":
 		return "breakout"
-	}
-	if m.setupType == "hod_pullback" {
+	case "hod_pullback", "pullback":
 		return "pullback"
-	}
-	if m.setupType == "breakout" || m.setupType == "breakdown" {
-		return "breakout"
-	}
-	if m.pullbackDepthPct > 30 && m.pullbackDepthPct < 70 {
-		return "pullback"
+	case "mean_reversion_long", "mean_reversion_short":
+		return "reversal"
 	}
 	if direction == domain.DirectionLong {
 		return "continuation"
