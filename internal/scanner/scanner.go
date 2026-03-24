@@ -181,6 +181,9 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 	if cfg.MinFloat > 0 && tick.Float > 0 && tick.Float < cfg.MinFloat {
 		return "float-too-low"
 	}
+	if cfg.MinPrevDayVolume > 0 && tick.PrevDayVolume > 0 && tick.PrevDayVolume < cfg.MinPrevDayVolume {
+		return "daily-volume"
+	}
 	return "other-filter"
 }
 
@@ -249,6 +252,11 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		return domain.Candidate{}, false
 	}
 	if cfg.MinFloat > 0 && tick.Float > 0 && tick.Float < cfg.MinFloat {
+		return domain.Candidate{}, false
+	}
+
+	// Minimum daily volume filter — reject thinly traded stocks
+	if cfg.MinPrevDayVolume > 0 && tick.PrevDayVolume > 0 && tick.PrevDayVolume < cfg.MinPrevDayVolume {
 		return domain.Candidate{}, false
 	}
 

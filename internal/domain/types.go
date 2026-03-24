@@ -46,7 +46,8 @@ type Tick struct {
 	GapPercent      float64   `json:"gapPercent"`
 	PreMarketVolume int64     `json:"premarketVolume"`
 	VolumeSpike     bool      `json:"volumeSpike"`
-	Float           int64     `json:"float"`       // shares available to trade (0 = unknown)
+	Float           int64     `json:"float"`         // shares available to trade (0 = unknown)
+	PrevDayVolume   int64     `json:"prevDayVolume"` // previous day's total volume (0 = unknown)
 	Catalyst        string    `json:"catalyst"`
 	CatalystURL     string    `json:"catalystUrl"`
 	Timestamp       time.Time `json:"timestamp"`
@@ -114,6 +115,7 @@ type TradeSignal struct {
 	SetupType        string    `json:"setupType"`
 	Reason           string    `json:"reason"`
 	Confidence       float64   `json:"confidence"`
+	OrderType        string    `json:"orderType"` // "market" or "" (default=limit)
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`

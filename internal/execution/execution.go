@@ -48,20 +48,65 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, fills
 	}
 }
 
+const defaultExitMaxAttempts = 3
+
 func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport) {
+	isExit := domain.IsClosingIntent(order.Intent) || domain.IsPartialIntent(order.Intent)
+	maxAttempts := 1
+	if isExit {
+		maxAttempts = defaultExitMaxAttempts
+	}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt == maxAttempts && isExit && maxAttempts > 1 {
+			order.OrderType = "market"
+			e.runtime.RecordLog("warn", "execution",
+				fmt.Sprintf("escalating %s %s to market order (attempt %d/%d)",
+					order.Symbol, order.Side, attempt, maxAttempts))
+		} else if attempt > 1 && isExit {
+			e.runtime.RecordLog("warn", "execution",
+				fmt.Sprintf("retrying %s %s exit (attempt %d/%d)",
+					order.Symbol, order.Side, attempt, maxAttempts))
+		}
+
+		filled := e.submitAndPoll(ctx, order, fills, attempt)
+		if filled {
+			return
+		}
+
+		if !isExit {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	e.runtime.RecordLog("error", "execution",
+		fmt.Sprintf("FAILED to exit %s %s after %d attempts", order.Symbol, order.Side, maxAttempts))
+}
+
+func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport, attempt int) bool {
 	e.runtime.RecordLog("info", "execution",
-		fmt.Sprintf("submitting %s %s %s qty=%d price=%.2f",
-			order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price))
+		fmt.Sprintf("submitting %s %s %s qty=%d price=%.2f type=%s (attempt %d)",
+			order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price,
+			orderTypeLabel(order.OrderType), attempt))
 
 	orderID, err := e.broker.SubmitOrder(ctx, order)
 	if err != nil {
 		e.runtime.RecordLog("error", "execution",
 			fmt.Sprintf("submit failed %s %s: %v", order.Symbol, order.Side, err))
-		return
+		return false
 	}
 
-	// Poll for fill with timeout
-	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	pollTimeout := 30 * time.Second
+	if order.OrderType == "market" {
+		pollTimeout = 15 * time.Second
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -73,12 +118,9 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 			e.runtime.RecordLog("warn", "execution",
 				fmt.Sprintf("order timeout %s %s orderID=%s — cancelling", order.Symbol, order.Side, orderID))
 			cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := e.broker.CancelOrder(cancelCtx, orderID); err != nil {
-				e.runtime.RecordLog("error", "execution",
-					fmt.Sprintf("cancel failed %s orderID=%s: %v", order.Symbol, orderID, err))
-			}
+			e.broker.CancelOrder(cancelCtx, orderID)
 			cancelFn()
-			return
+			return false
 		case <-ticker.C:
 			status, fillPrice, err := e.broker.PollOrderStatus(pollCtx, orderID)
 			if err != nil {
@@ -113,13 +155,20 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 				case fills <- report:
 				case <-ctx.Done():
 				}
-				return
+				return true
 
 			case "rejected", "canceled", "expired":
 				e.runtime.RecordLog("warn", "execution",
 					fmt.Sprintf("order %s %s %s: %s", status, order.Symbol, order.Side, orderID))
-				return
+				return false
 			}
 		}
 	}
+}
+
+func orderTypeLabel(t string) string {
+	if t == "market" {
+		return "market"
+	}
+	return "limit"
 }

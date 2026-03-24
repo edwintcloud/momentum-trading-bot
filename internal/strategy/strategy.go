@@ -720,6 +720,11 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		Timestamp:    now,
 	}
 
+	// Use market orders for urgent exits to guarantee fill
+	if reason == "stop-loss" || reason == "stop-loss-fallback" || reason == "failed-breakout" || reason == "end-of-day" {
+		signal.OrderType = "market"
+	}
+
 	s.lastExitAt[tick.Symbol] = now
 
 	// Track losses (only for full close)

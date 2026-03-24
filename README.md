@@ -87,7 +87,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
   - New `hod_breakout` setup type when price is within 1% of session high with strong intraday move
   - New `hod_pullback` setup type when price is between `HODMomoMaxDistFromHigh` and `HODMomoPullbackMaxDist` of HOD — catches pullback entries on momentum runners (e.g., ANNA 7.3% below HOD)
   - HOD momo qualified stocks bypass the general `MaxDistanceFromHighPct` filter
-- **Scanner Filters** — price, float (`MaxFloat`/`MinFloat`), HOD proximity, RSI overbought/oversold
+- **Scanner Filters** — price, float (`MaxFloat`/`MinFloat`), minimum daily volume (`MinPrevDayVolume`), HOD proximity, RSI overbought/oversold
 - **Dual-Direction Strategy** — long breakouts/pullbacks, short breakdowns
 - **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
 - **Market Regime Detection** — threshold-based (default) and HMM regime detector
@@ -119,6 +119,8 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - **Long-Short balancing** (dollar-neutral, beta-neutral, sector-neutral)
 
 ### Execution Optimization
+- **Exit order retry with escalation** — exit orders (close/partial) retry up to 3 times on timeout. Attempts 1-2 use limit orders; attempt 3 escalates to a market order to guarantee fill. Entry orders are not retried (missing an entry is acceptable).
+- **Market orders for urgent exits** — stop-loss, stop-loss-fallback, failed-breakout, and end-of-day exits automatically use market orders to guarantee immediate fills instead of limit orders that may go stale as the stock drops
 - **VWAP execution** — volume-profile-weighted order slicing
 - **TWAP execution** — equal time-slice distribution
 - **Adaptive limit pricing** — auto-widening with max slippage control
@@ -205,6 +207,12 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - `GET  /readyz` — Readiness probe (public)
 
 ## Bugfixes
+
+### Exit Orders Not Retried on Timeout (Fixed)
+When selling to exit a losing position, if the 30-second poll timeout fired, the order was cancelled and the function returned — no retry. The position stayed open and continued losing. The fix implements a 3-attempt retry with escalating aggressiveness for all exit orders (close and partial intents): attempts 1-2 use limit orders, attempt 3 escalates to a market order to guarantee fill. Entry orders remain single-attempt (missing an entry is acceptable). Additionally, stop-loss, stop-loss-fallback, failed-breakout, and end-of-day exits now use market orders from the first attempt to guarantee immediate fills instead of limit orders that go stale as the stock drops.
+
+### Thinly Traded Stocks Passing Scanner (Fixed)
+The scanner had `MinRelativeVolume` and `MinPremarketVolume` filters but no absolute daily volume floor. A stock with 10,000 shares/day average but 5x relative volume (50,000 shares) would pass — but it's far too thinly traded for momentum trading (wide spreads, no liquidity, can't exit). The fix adds `MinPrevDayVolume` config field (`0` = disabled in default profile, `500000` in momentum_cameron) and filters in the scanner's `evaluate()` and `classifyTickRejection()`. Previous day volume of 0 (unknown) is passed through, not blocked.
 
 ### Broker-Seeded Positions Missing Stop Prices (Fixed)
 When the bot restarts, existing broker positions are seeded via `SeedBrokerPosition()` but had `StopPrice=0`, `RiskPerShare=0`, `EntryATR=0`, `OriginalQuantity=0`, and `Playbook=""`. This meant after a restart, positions were unprotected — no stop-losses, no trailing stops, no partial exits — until the end-of-day forced exit at 3:45 PM. The fix runs two passes after broker position seeding: first, a snapshot-based pass uses the previous day's low/high as natural support/resistance for stop placement; second, a percentage-based fallback (`EntryATRPercentFallback` or 2% default) ensures every position gets a stop. The strategy also gained a defensive `stop-loss-fallback` check that fires if a position somehow reaches exit evaluation with `StopPrice=0`. This is transparent — no configuration changes needed.
@@ -444,7 +452,7 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Four strateg
 
 **Core Risk** — `RiskPerTradePct`, `DailyLossLimitPct`, `MaxTradesPerDay`, `MaxOpenPositions`, `MaxExposurePct`, `MaxEntriesPerMinute`
 
-**Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`, `MaxFloat`, `MinFloat`, `FloatOverrideURL`
+**Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`, `MaxFloat`, `MinFloat`, `MinPrevDayVolume`, `FloatOverrideURL`
 
 **Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`, `EntryDeadlineMinutesAfterOpen`, `MinRiskRewardRatio`, `MidDayScoreMultiplier`
 
@@ -465,7 +473,7 @@ See `profiles/default.json` for the complete field reference.
 The `momentum_cameron` profile implements Ross Cameron's momentum day trading methodology combined with the bot's quant infrastructure. It is designed for small accounts ($25k) focused on high-probability intraday momentum trades.
 
 **Key differences from `baseline_breakout`:**
-- **Strict stock selection** — MaxPrice $20 (vs $200), MinRelativeVolume 5x (vs 2x), MinGapPercent 5% (vs 3%), float filter (500k–20M shares)
+- **Strict stock selection** — MaxPrice $20 (vs $200), MinRelativeVolume 5x (vs 2x), MinGapPercent 5% (vs 3%), float filter (500k–20M shares), MinPrevDayVolume 500K (rejects thinly traded stocks)
 - **Long-only** — shorts disabled; Cameron's edge is exclusively long-biased
 - **Morning-only** — entry deadline 120 minutes after open; midday score multiplier 2x
 - **Conservative risk** — 1% risk per trade, max 6 trades/day, max 3 open positions, 2:1 minimum R:R requirement

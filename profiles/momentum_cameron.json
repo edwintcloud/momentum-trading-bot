@@ -36,6 +36,7 @@
     "ScannerVWAPTolerancePct": 2.0,
     "MaxFloat": 20000000,
     "MinFloat": 500000,
+    "MinPrevDayVolume": 500000,
     "MaxDistanceFromHighPct": 5.0,
     "VolumeOnPullbackEnabled": true,
 
