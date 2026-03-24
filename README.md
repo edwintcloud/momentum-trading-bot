@@ -92,7 +92,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
 - **Market Regime Detection** — threshold-based (default) and HMM regime detector
 - **Confidence-Based Entry Scoring** — with regime gating and ML score integration
-- **Improved Diagnostics** — candidate rejection reasons include `market-closed`, `regime-gated`, `past-entry-deadline`, `cooldown`, `same-side-today`, `loss-cooldown` (replaces generic `no-signal`)
+- **Improved Diagnostics** — candidate rejection reasons include `market-closed`, `regime-gated`, `past-entry-deadline`, `cooldown`, `existing-position`, `loss-cooldown` (replaces generic `no-signal`)
 
 ### Risk Management
 - Portfolio heat tracking with alert thresholds
@@ -227,6 +227,15 @@ The dashboard's "Trades" page was empty after a bot restart because closed trade
 
 ### Live Trading Normalizer Cold-Start (Fixed)
 On a fresh live/paper start the normalizer had no historical state: `previousClose=0`, `prevDayVolume=0`, `preMarketVol=0`. This caused `GapPercent=0`, `RelativeVolume=1.0`, and `PreMarketVolume=0` for every symbol, which meant ALL stocks failed the scanner's `MinGapPercent`, `MinRelativeVolume`, and `MinPremarketVolume` filters — producing zero trades. The fix seeds the normalizer from the Alpaca multi-symbol snapshot API (`/v2/stocks/snapshots`) on startup, providing yesterday's close/volume and today's open/high/volume before the first bar arrives. This is transparent — no configuration changes needed. The SIP data feed (paid Alpaca subscription) is required for snapshots.
+
+### Same-Side-Today Blocking Entries After Unfilled Orders (Fixed)
+The `entrySides` tracker in the strategy marked a direction as "used" when the entry signal was emitted — before the order was sent to the broker. If the order timed out or was cancelled, the side was permanently blocked for the rest of the day, preventing any re-entry attempts with the "same-side-today" rejection. The fix removes the `entrySides` tracking entirely. The existing `GetPosition()` check already prevents double-entering an open position, and the `lastEntryAt` cooldown prevents rapid re-entry after exits.
+
+### Position Sizing Too Small for Low-Priced Stocks (Fixed)
+Multiple sizing caps (DynamicRiskBudget, VaR) compounded to crush position sizes for volatile low-priced momentum stocks. The fix adds a `MinShareCount` config field (minimum shares per position, default 0 = disabled). For the `momentum_cameron` profile, `MinShareCount=100` ensures at least 100 shares per position. Additionally, `DynamicRiskBudgetEnabled` and `VaREnabled` are disabled in the momentum profile — these portfolio-level risk features are designed for diversified strategies, not concentrated momentum day trading where ATR-based stops and risk-per-trade percentage already control risk.
+
+### Partial Exit Remainder Shares Left Unsold (Fixed)
+After partial-1 (50%) and partial-2 (25%) exits, 25% of original shares remained. If the stock stopped streaming bars or the remaining quantity was too small, these shares could be stranded. Two fixes: (1) When computing partial exit quantity, if the remaining shares would be less than 5% of the original position, the partial is converted to a full close. (2) In exit evaluation, positions with fewer than 5 shares or less than 5% of original quantity are force-closed with reason "cleanup-remainder", preventing stale tiny positions from accumulating.
 
 ### WebSocket Streaming (Fixed)
 The live bot previously only handled `b` (minute bar) messages from the Alpaca WebSocket, silently ignoring subscription confirmations, errors, updated bars, and daily bars. This caused zero visibility into streaming health and missed data corrections.
@@ -459,7 +468,7 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Four strateg
 
 **HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range), `HODMomoMinMinutesSinceOpen` (5 min). Enabled in `momentum_cameron` profile.
 
-**Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor), `MaxVolEstimate` (5.0 = cap annualized vol at 500%)
+**Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor), `MinShareCount` (0 = disabled, 100 = minimum 100 shares per position), `MaxVolEstimate` (5.0 = cap annualized vol at 500%)
 
 **Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
 
@@ -479,7 +488,8 @@ The `momentum_cameron` profile implements Ross Cameron's momentum day trading me
 - **Tighter exits** — Breakout target 2.5R (vs 4.0R), faster trailing stops, partial exits at 1R (50%) and 2R (25%)
 - **HOD Momo scanner enabled** — catches intraday momentum runners that gap small but run 50-100%+ from open (e.g., ANNA 2026-03-20), with pullback entries up to 10% from HOD
 - **Vol-target sizing disabled** — momentum trading IS about volatile stocks; risk-per-trade % and ATR stops control risk instead
-- **Position size floor** — `MinPositionNotionalPct=2%` prevents vol estimates from crushing position sizes to near-zero
+- **Position size floor** — `MinPositionNotionalPct=2%` prevents vol estimates from crushing position sizes to near-zero; `MinShareCount=100` ensures at least 100 shares per position
+- **DynamicRiskBudget & VaR disabled** — these portfolio-level risk features fight against momentum's inherent volatility; ATR-based stops and risk-per-trade % control risk instead
 - **Momentum signals enabled** — OFI, VPIN, ORB, OBV divergence for order flow confirmation
 - **Portfolio construction disabled** — MVO, risk parity, factor-neutral off (not applicable for 1–3 position momentum)
 - **ML disabled** — until models are trained on momentum-specific data

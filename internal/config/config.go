@@ -349,6 +349,7 @@ type TradingConfig struct {
 
 	// Position sizing floor
 	MinPositionNotionalPct float64 // minimum position as % of equity (0 = no floor)
+	MinShareCount          int     // minimum shares per position (0 = no floor)
 
 	// Volatility estimator cap
 	MaxVolEstimate float64 // max annualized vol estimate (default 5.0 = 500%)

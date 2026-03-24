@@ -283,6 +283,7 @@
     "HODMomoPullbackMaxDist": 0,
     "HODMomoMinMinutesSinceOpen": 5,
     "MinPositionNotionalPct": 0,
+    "MinShareCount": 0,
     "MaxVolEstimate": 0
   },
   "promotion": {

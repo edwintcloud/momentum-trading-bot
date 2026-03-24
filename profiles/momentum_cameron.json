@@ -227,7 +227,7 @@
     "MHTCorrectionMethod": "none",
     "MHTAlpha": 0.05,
 
-    "VaREnabled": true,
+    "VaREnabled": false,
     "VaRConfidenceLevel": 0.95,
     "VaRDailyLimitPct": 0.02,
     "VaRMethod": "parametric",
@@ -238,7 +238,7 @@
     "GARCHBeta": 0.85,
     "GARCHLongRunVar": 0.0004,
 
-    "DynamicRiskBudgetEnabled": true,
+    "DynamicRiskBudgetEnabled": false,
     "TargetVolAnnualized": 0.1,
     "DailyRiskBudgetPct": 0.01,
 
@@ -318,6 +318,7 @@
     "HODMomoMinMinutesSinceOpen": 5,
 
     "MinPositionNotionalPct": 0.02,
+    "MinShareCount": 100,
     "MaxVolEstimate": 5.0
   },
   "promotion": {
