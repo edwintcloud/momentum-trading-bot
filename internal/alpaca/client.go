@@ -95,6 +95,7 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 		"side":          order.Side,
 		"type":          orderType,
 		"time_in_force": "day",
+		"extended_hours": true,
 	}
 	if orderType == "limit" {
 		limitPrice := order.Price
