@@ -100,12 +100,6 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 	if slippage < 0.01 {
 		slippage = 0.05 // minimum slippage floor
 	}
-	if order.Side == domain.SideBuy {
-		limitPrice += slippage
-	} else {
-		limitPrice -= slippage
-	}
-	body["limit_price"] = fmt.Sprintf("%.2f", limitPrice)
 
 	// Apply slippage multiplier for retry attempts
 	multiplier := order.SlippageMultiplier

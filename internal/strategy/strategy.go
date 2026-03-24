@@ -511,20 +511,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
-	// Position size floor: enforce minimum notional position
-	if s.config.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
-		minNotional := currentEquity * s.config.MinPositionNotionalPct
-		minQty := int64(math.Ceil(minNotional / c.Price))
-		if quantity < minQty {
-			quantity = minQty
-		}
-	}
-
-	// Minimum share count floor
-	if s.config.MinShareCount > 0 && quantity < int64(s.config.MinShareCount) {
-		quantity = int64(s.config.MinShareCount)
-	}
-
 	// ML Scoring gate: skip trade if ML score below threshold
 	if s.config.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
 		features := ml.ScorerFeatures{
@@ -595,6 +581,16 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	candidateSector := c.Sector
 	if candidateSector == "" {
 		candidateSector = sector.SectorForSymbol(c.Symbol)
+	}
+
+	// Position size floor: enforce minimum notional position
+	if s.config.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
+		minNotional := currentEquity * s.config.MinPositionNotionalPct
+		minQty := int64(math.Floor(minNotional / c.Price))
+		minQty = max(minQty, 0)
+		if quantity < minQty {
+			quantity = minQty
+		}
 	}
 
 	signal := domain.TradeSignal{
