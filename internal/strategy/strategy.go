@@ -248,7 +248,7 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 	reason := "no-signal"
 	if ok {
 		reason = signal.Reason
-	} else if !markethours.IsMarketOpen(candidate.Timestamp) {
+	} else if !markethours.IsTradableSessionAt(candidate.Timestamp) {
 		reason = "market-closed"
 	} else if candidate.Score < s.config.MinEntryScore {
 		reason = "low-score"
@@ -304,7 +304,7 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 
 func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bool, string) {
 	now := c.Timestamp
-	if !markethours.IsMarketOpen(now) {
+	if !markethours.IsTradableSessionAt(now) {
 		return domain.TradeSignal{}, false, "market-closed"
 	}
 
