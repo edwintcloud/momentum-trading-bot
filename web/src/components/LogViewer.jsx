@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 
-const levels = ['all', 'info', 'warn', 'error'];
+const levels = ['all', 'debug', 'info', 'warn', 'error'];
 
 export function LogViewer({ logs }) {
   const [filter, setFilter] = useState('all');
