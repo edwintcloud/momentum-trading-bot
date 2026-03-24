@@ -418,11 +418,13 @@ func runLive() {
 				for _, bp := range bPositions {
 					brokerSymbols[bp.Symbol] = true
 					if !pmSymbols[bp.Symbol] {
+						runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker has position %s not in portfolio manager", bp.Symbol))
 						log.Printf("reconcile: WARNING broker has position %s not in portfolio manager", bp.Symbol)
 					}
 				}
 				for _, p := range pmPositions {
 					if !brokerSymbols[p.Symbol] && !p.BrokerSeeded {
+						runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("portfolio manager has position %s not at broker", p.Symbol))
 						log.Printf("reconcile: WARNING portfolio manager has position %s not at broker", p.Symbol)
 					}
 				}
