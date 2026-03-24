@@ -82,36 +82,44 @@ func (c *Client) GetPositions(ctx context.Context) ([]AlpacaPosition, error) {
 	return positions, err
 }
 
-// SubmitOrder submits an order to Alpaca.
+// SubmitOrder submits an order to Alpaca. Always uses limit orders — never market.
 func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (string, error) {
-	orderType := "limit"
-	if order.OrderType == "market" {
-		orderType = "market"
-	}
-
 	body := map[string]interface{}{
-		"symbol":        order.Symbol,
-		"qty":           fmt.Sprintf("%d", order.Quantity),
-		"side":          order.Side,
-		"type":          orderType,
-		"time_in_force": "day",
+		"symbol":         order.Symbol,
+		"qty":            fmt.Sprintf("%d", order.Quantity),
+		"side":           order.Side,
+		"type":           "limit",
+		"time_in_force":  "day",
 		"extended_hours": true,
 	}
-	if orderType == "limit" {
-		limitPrice := order.Price
-		// Phase 3 Change 7: Percentage-based slippage by liquidity tier
-		slippage := scanner.ComputeSlippage(order.Price, order.AvgDailyVolume,
-			5.0, 10.0, 20.0) // liquid, mid, illiquid bps
-		if slippage < 0.01 {
-			slippage = 0.05 // minimum slippage floor
-		}
-		if order.Side == domain.SideBuy {
-			limitPrice += slippage
-		} else {
-			limitPrice -= slippage
-		}
-		body["limit_price"] = fmt.Sprintf("%.2f", limitPrice)
+
+	limitPrice := order.Price
+	// Percentage-based slippage by liquidity tier
+	slippage := scanner.ComputeSlippage(order.Price, order.AvgDailyVolume,
+		5.0, 10.0, 20.0) // liquid, mid, illiquid bps
+	if slippage < 0.01 {
+		slippage = 0.05 // minimum slippage floor
 	}
+
+	// Apply slippage multiplier for retry attempts
+	multiplier := order.SlippageMultiplier
+	if multiplier <= 0 {
+		multiplier = 1.0
+	}
+	slippage *= multiplier
+
+	if order.Side == domain.SideBuy {
+		limitPrice += slippage
+	} else {
+		limitPrice -= slippage
+	}
+
+	// Ensure limit price doesn't go below $0.01 for sells
+	if limitPrice < 0.01 {
+		limitPrice = 0.01
+	}
+
+	body["limit_price"] = fmt.Sprintf("%.2f", limitPrice)
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {

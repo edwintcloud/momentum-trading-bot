@@ -156,8 +156,8 @@ func (m *neverFillBroker) getSubmittedOrders() []domain.OrderRequest {
 	return out
 }
 
-func TestExitOrderRetry_FillsOnThirdAttempt(t *testing.T) {
-	broker := &fillBroker{fillOnAttempt: 3}
+func TestExitOrderRetry_FillsOnFifthAttempt(t *testing.T) {
+	broker := &fillBroker{fillOnAttempt: 5}
 	rt := runtime.NewState()
 	engine := NewEngine(broker, rt, nil)
 	fills := make(chan domain.ExecutionReport, 1)
@@ -177,21 +177,41 @@ func TestExitOrderRetry_FillsOnThirdAttempt(t *testing.T) {
 	engine.executeOrder(ctx, order, fills)
 
 	submitted := broker.getSubmittedOrders()
-	if len(submitted) != 3 {
-		t.Fatalf("expected 3 submit calls, got %d", len(submitted))
+	if len(submitted) != 5 {
+		t.Fatalf("expected 5 submit calls, got %d", len(submitted))
 	}
 
-	// Final attempt should be market order
-	if submitted[2].OrderType != "market" {
-		t.Errorf("expected final attempt to be market order, got %q", submitted[2].OrderType)
+	// Verify slippage multipliers on each attempt
+	// Attempt 1: no slippage multiplier (0 or 1)
+	if submitted[0].SlippageMultiplier > 1 {
+		t.Errorf("attempt 1: expected no slippage multiplier, got %.0f", submitted[0].SlippageMultiplier)
 	}
 
-	// First two attempts should not be market
-	if submitted[0].OrderType == "market" {
-		t.Error("expected first attempt to not be market order")
+	// Attempt 2: 3x slippage
+	if submitted[1].SlippageMultiplier != 3.0 {
+		t.Errorf("attempt 2: expected 3x slippage, got %.0f", submitted[1].SlippageMultiplier)
 	}
-	if submitted[1].OrderType == "market" {
-		t.Error("expected second attempt to not be market order")
+
+	// Attempt 3: 5x slippage
+	if submitted[2].SlippageMultiplier != 5.0 {
+		t.Errorf("attempt 3: expected 5x slippage, got %.0f", submitted[2].SlippageMultiplier)
+	}
+
+	// Attempt 4: 8x slippage
+	if submitted[3].SlippageMultiplier != 8.0 {
+		t.Errorf("attempt 4: expected 8x slippage, got %.0f", submitted[3].SlippageMultiplier)
+	}
+
+	// Attempt 5: 12x slippage
+	if submitted[4].SlippageMultiplier != 12.0 {
+		t.Errorf("attempt 5: expected 12x slippage, got %.0f", submitted[4].SlippageMultiplier)
+	}
+
+	// No attempt should use market order type
+	for i, sub := range submitted {
+		if sub.OrderType == "market" {
+			t.Errorf("attempt %d: should never use market order type, got %q", i+1, sub.OrderType)
+		}
 	}
 
 	// Should have received a fill
@@ -256,10 +276,14 @@ func TestExitOrderRetry_PartialIntent(t *testing.T) {
 		t.Fatalf("expected %d submit calls for partial exit, got %d", defaultExitMaxAttempts, count)
 	}
 
-	// Last submit should be market order
+	// Last submit should have 12x slippage (attempt 5), not market order
 	submitted := broker.getSubmittedOrders()
-	if submitted[len(submitted)-1].OrderType != "market" {
-		t.Errorf("expected final attempt to be market order, got %q", submitted[len(submitted)-1].OrderType)
+	lastOrder := submitted[len(submitted)-1]
+	if lastOrder.SlippageMultiplier != 12.0 {
+		t.Errorf("expected final attempt to have 12x slippage, got %.0f", lastOrder.SlippageMultiplier)
+	}
+	if lastOrder.OrderType == "market" {
+		t.Error("expected final attempt to NOT use market order type")
 	}
 }
 
@@ -283,7 +307,7 @@ func TestExitOrderRetry_AllAttemptsFail(t *testing.T) {
 
 	engine.executeOrder(ctx, order, fills)
 
-	// Should have tried all 3 attempts
+	// Should have tried all 5 attempts
 	if count := broker.getSubmitCount(); count != defaultExitMaxAttempts {
 		t.Fatalf("expected %d submit calls, got %d", defaultExitMaxAttempts, count)
 	}
@@ -297,14 +321,58 @@ func TestExitOrderRetry_AllAttemptsFail(t *testing.T) {
 	}
 }
 
-func TestOrderTypeLabel(t *testing.T) {
-	if got := orderTypeLabel("market"); got != "market" {
-		t.Errorf("orderTypeLabel(market) = %q, want market", got)
+func TestSlippageForAttempt(t *testing.T) {
+	cases := []struct {
+		attempt  int
+		expected float64
+	}{
+		{2, 3.0},
+		{3, 5.0},
+		{4, 8.0},
+		{5, 12.0},
+		{6, 18.0}, // default: attempt * 3
 	}
-	if got := orderTypeLabel(""); got != "limit" {
-		t.Errorf("orderTypeLabel('') = %q, want limit", got)
+	for _, tc := range cases {
+		got := slippageForAttempt(tc.attempt)
+		if got != tc.expected {
+			t.Errorf("slippageForAttempt(%d) = %.1f, want %.1f", tc.attempt, got, tc.expected)
+		}
 	}
-	if got := orderTypeLabel("limit"); got != "limit" {
-		t.Errorf("orderTypeLabel(limit) = %q, want limit", got)
+}
+
+func TestExitOrderRetry_NeverUsesMarketType(t *testing.T) {
+	broker := &neverFillBroker{}
+	rt := runtime.NewState()
+	engine := NewEngine(broker, rt, nil)
+	fills := make(chan domain.ExecutionReport, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Test with an order that has OrderType pre-set to "market" — should still not matter
+	order := domain.OrderRequest{
+		Symbol:       "TEST",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentClose,
+		PositionSide: domain.DirectionLong,
+		Price:        50.0,
+		Quantity:     100,
+		OrderType:    "market", // pre-set — execution engine should not care
+	}
+
+	engine.executeOrder(ctx, order, fills)
+
+	// Verify widening slippage was applied on retries
+	submitted := broker.getSubmittedOrders()
+	if len(submitted) != defaultExitMaxAttempts {
+		t.Fatalf("expected %d attempts, got %d", defaultExitMaxAttempts, len(submitted))
+	}
+
+	// Verify slippage progresses correctly even when OrderType was set to "market"
+	if submitted[1].SlippageMultiplier != 3.0 {
+		t.Errorf("attempt 2: expected 3x slippage, got %.0f", submitted[1].SlippageMultiplier)
+	}
+	if submitted[4].SlippageMultiplier != 12.0 {
+		t.Errorf("attempt 5: expected 12x slippage, got %.0f", submitted[4].SlippageMultiplier)
 	}
 }

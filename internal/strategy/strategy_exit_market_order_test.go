@@ -32,7 +32,9 @@ func openPosition(pm *portfolio.Manager, symbol string, side string, price, stop
 	})
 }
 
-func TestStopLossExitUsesMarketOrder(t *testing.T) {
+// TestStopLossExitUsesLimitOrder verifies stop-loss exits use limit orders (not market).
+// The execution engine handles fill aggressiveness via widening slippage retries.
+func TestStopLossExitUsesLimitOrder(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.MinEntryScore = 0
 	cfg.ConfidenceSizingEnabled = false
@@ -66,12 +68,13 @@ func TestStopLossExitUsesMarketOrder(t *testing.T) {
 	if signal.Reason != "stop-loss" {
 		t.Fatalf("expected reason stop-loss, got %q", signal.Reason)
 	}
-	if signal.OrderType != "market" {
-		t.Errorf("expected market order for stop-loss exit, got %q", signal.OrderType)
+	if signal.OrderType == "market" {
+		t.Error("stop-loss exit should not use market order — widening slippage handles fill aggressiveness")
 	}
 }
 
-func TestStopLossFallbackExitUsesMarketOrder(t *testing.T) {
+// TestStopLossFallbackExitUsesLimitOrder verifies fallback stops use limit orders.
+func TestStopLossFallbackExitUsesLimitOrder(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.MinEntryScore = 0
 	cfg.ConfidenceSizingEnabled = false
@@ -119,12 +122,13 @@ func TestStopLossFallbackExitUsesMarketOrder(t *testing.T) {
 	if signal.Reason != "stop-loss-fallback" {
 		t.Fatalf("expected reason stop-loss-fallback, got %q", signal.Reason)
 	}
-	if signal.OrderType != "market" {
-		t.Errorf("expected market order for stop-loss-fallback exit, got %q", signal.OrderType)
+	if signal.OrderType == "market" {
+		t.Error("stop-loss-fallback exit should not use market order — widening slippage handles fill aggressiveness")
 	}
 }
 
-func TestEndOfDayExitUsesMarketOrder(t *testing.T) {
+// TestEndOfDayExitUsesLimitOrder verifies end-of-day exits use limit orders.
+func TestEndOfDayExitUsesLimitOrder(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.MinEntryScore = 0
 	cfg.ConfidenceSizingEnabled = false
@@ -159,12 +163,13 @@ func TestEndOfDayExitUsesMarketOrder(t *testing.T) {
 	if signal.Reason != "end-of-day" {
 		t.Fatalf("expected reason end-of-day, got %q", signal.Reason)
 	}
-	if signal.OrderType != "market" {
-		t.Errorf("expected market order for end-of-day exit, got %q", signal.OrderType)
+	if signal.OrderType == "market" {
+		t.Error("end-of-day exit should not use market order — widening slippage handles fill aggressiveness")
 	}
 }
 
-func TestFailedBreakoutExitUsesMarketOrder(t *testing.T) {
+// TestFailedBreakoutExitUsesLimitOrder verifies failed breakout exits use limit orders.
+func TestFailedBreakoutExitUsesLimitOrder(t *testing.T) {
 	cfg := config.DefaultTradingConfig()
 	cfg.MinEntryScore = 0
 	cfg.ConfidenceSizingEnabled = false
@@ -179,8 +184,6 @@ func TestFailedBreakoutExitUsesMarketOrder(t *testing.T) {
 	openPosition(pm, "FAIL", domain.DirectionLong, 50.0, 48.0, entryTime)
 
 	// Tick shortly after entry with price at negative R (failed breakout)
-	// FailedBreakoutCutR is -0.5 for breakout playbook, RiskPerShare=1.0
-	// -0.5R means price at 49.5 (entry - 0.5*riskPerShare)
 	failTime := entryTime.Add(2 * time.Minute) // within breakout failure window
 	tick := domain.Tick{
 		Symbol:    "FAIL",
@@ -201,8 +204,8 @@ func TestFailedBreakoutExitUsesMarketOrder(t *testing.T) {
 	if signal.Reason != "failed-breakout" {
 		t.Fatalf("expected reason failed-breakout, got %q", signal.Reason)
 	}
-	if signal.OrderType != "market" {
-		t.Errorf("expected market order for failed-breakout exit, got %q", signal.OrderType)
+	if signal.OrderType == "market" {
+		t.Error("failed-breakout exit should not use market order — widening slippage handles fill aggressiveness")
 	}
 }
 
@@ -244,5 +247,42 @@ func TestProfitTargetExitUsesLimitOrder(t *testing.T) {
 	// Profit targets should NOT be market orders
 	if signal.OrderType == "market" {
 		t.Error("profit-target exit should not use market order")
+	}
+}
+
+// TestNoExitSignalSetsMarketOrder verifies that no exit signal ever sets OrderType to "market".
+func TestNoExitSignalSetsMarketOrder(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.MinEntryScore = 0
+	cfg.ConfidenceSizingEnabled = false
+
+	rt := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, rt)
+
+	loc := markethours.Location()
+	ts := time.Date(2026, 3, 23, 10, 30, 0, 0, loc)
+
+	openPosition(pm, "NOMARKET", domain.DirectionLong, 50.0, 48.0, ts)
+
+	// Trigger stop-loss
+	tick := domain.Tick{
+		Symbol:    "NOMARKET",
+		Price:     47.50,
+		BarOpen:   49.0,
+		BarHigh:   49.5,
+		BarLow:    47.0,
+		Open:      50.0,
+		HighOfDay: 51.0,
+		Volume:    100000,
+		Timestamp: ts.Add(5 * time.Minute),
+	}
+
+	signal, ok := s.EvaluateExit(tick)
+	if !ok {
+		t.Fatal("expected exit signal")
+	}
+	if signal.OrderType == "market" {
+		t.Errorf("exit signal for %q should never set OrderType to market (got %q)", signal.Reason, signal.OrderType)
 	}
 }

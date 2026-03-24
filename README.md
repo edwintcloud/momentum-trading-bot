@@ -119,8 +119,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - **Long-Short balancing** (dollar-neutral, beta-neutral, sector-neutral)
 
 ### Execution Optimization
-- **Exit order retry with escalation** — exit orders (close/partial) retry up to 3 times on timeout. Attempts 1-2 use limit orders; attempt 3 escalates to a market order to guarantee fill. Entry orders are not retried (missing an entry is acceptable).
-- **Market orders for urgent exits** — stop-loss, stop-loss-fallback, failed-breakout, and end-of-day exits automatically use market orders to guarantee immediate fills instead of limit orders that may go stale as the stock drops
+- **Exit order retry with widening slippage** — exit orders (close/partial) retry up to 5 times with progressively wider limit price slippage (1x → 3x → 5x → 8x → 12x). Market orders are never used — limit-only for pre/post-market compatibility and price control. Entry orders are not retried (missing an entry is acceptable).
 - **VWAP execution** — volume-profile-weighted order slicing
 - **TWAP execution** — equal time-slice distribution
 - **Adaptive limit pricing** — auto-widening with max slippage control
@@ -209,7 +208,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 ## Bugfixes
 
 ### Exit Orders Not Retried on Timeout (Fixed)
-When selling to exit a losing position, if the 30-second poll timeout fired, the order was cancelled and the function returned — no retry. The position stayed open and continued losing. The fix implements a 3-attempt retry with escalating aggressiveness for all exit orders (close and partial intents): attempts 1-2 use limit orders, attempt 3 escalates to a market order to guarantee fill. Entry orders remain single-attempt (missing an entry is acceptable). Additionally, stop-loss, stop-loss-fallback, failed-breakout, and end-of-day exits now use market orders from the first attempt to guarantee immediate fills instead of limit orders that go stale as the stock drops.
+When selling to exit a losing position, if the 30-second poll timeout fired, the order was cancelled and the function returned — no retry. The position stayed open and continued losing. The fix implements a 5-attempt retry with progressively wider limit price slippage for all exit orders (close and partial intents): attempt 1 uses normal slippage, then 3x → 5x → 8x → 12x on subsequent retries. Market orders are never used — aggressive limit orders guarantee fills while maintaining price control and working during pre/post-market hours. Entry orders remain single-attempt (missing an entry is acceptable).
 
 ### Thinly Traded Stocks Passing Scanner (Fixed)
 The scanner had `MinRelativeVolume` and `MinPremarketVolume` filters but no absolute daily volume floor. A stock with 10,000 shares/day average but 5x relative volume (50,000 shares) would pass — but it's far too thinly traded for momentum trading (wide spreads, no liquidity, can't exit). The fix adds `MinPrevDayVolume` config field (`0` = disabled in default profile, `500000` in momentum_cameron) and filters in the scanner's `evaluate()` and `classifyTickRejection()`. Previous day volume of 0 (unknown) is passed through, not blocked.

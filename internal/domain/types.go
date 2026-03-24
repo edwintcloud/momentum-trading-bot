@@ -136,8 +136,9 @@ type OrderRequest struct {
 	EntryATR         float64   `json:"entryAtr"`
 	SetupType        string    `json:"setupType"`
 	Reason           string    `json:"reason"`
-	OrderType        string    `json:"orderType"` // "limit" (default) or "market"
-	MarketRegime     string    `json:"marketRegime"`
+	OrderType          string  `json:"orderType"` // "limit" (default) or "market"
+	SlippageMultiplier float64 `json:"slippageMultiplier"` // multiplier for limit price slippage (1.0 = normal, 2.0 = 2x wider, etc.)
+	MarketRegime       string  `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`

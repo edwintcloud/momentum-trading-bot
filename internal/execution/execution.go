@@ -48,7 +48,7 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, fills
 	}
 }
 
-const defaultExitMaxAttempts = 3
+const defaultExitMaxAttempts = 5
 
 func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport) {
 	isExit := domain.IsClosingIntent(order.Intent) || domain.IsPartialIntent(order.Intent)
@@ -58,15 +58,12 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 	}
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if attempt == maxAttempts && isExit && maxAttempts > 1 {
-			order.OrderType = "market"
+		// Widen slippage on each retry attempt
+		if attempt > 1 && isExit {
+			order.SlippageMultiplier = slippageForAttempt(attempt)
 			e.runtime.RecordLog("warn", "execution",
-				fmt.Sprintf("escalating %s %s to market order (attempt %d/%d)",
-					order.Symbol, order.Side, attempt, maxAttempts))
-		} else if attempt > 1 && isExit {
-			e.runtime.RecordLog("warn", "execution",
-				fmt.Sprintf("retrying %s %s exit (attempt %d/%d)",
-					order.Symbol, order.Side, attempt, maxAttempts))
+				fmt.Sprintf("retrying %s %s exit with %.0fx slippage (attempt %d/%d)",
+					order.Symbol, order.Side, order.SlippageMultiplier, attempt, maxAttempts))
 		}
 
 		filled := e.submitAndPoll(ctx, order, fills, attempt)
@@ -89,11 +86,30 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 		fmt.Sprintf("FAILED to exit %s %s after %d attempts", order.Symbol, order.Side, maxAttempts))
 }
 
+func slippageForAttempt(attempt int) float64 {
+	switch attempt {
+	case 2:
+		return 3.0
+	case 3:
+		return 5.0
+	case 4:
+		return 8.0
+	case 5:
+		return 12.0
+	default:
+		return float64(attempt) * 3.0
+	}
+}
+
 func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport, attempt int) bool {
+	slippageLabel := ""
+	if order.SlippageMultiplier > 1 {
+		slippageLabel = fmt.Sprintf(" slippage=%.0fx", order.SlippageMultiplier)
+	}
 	e.runtime.RecordLog("info", "execution",
-		fmt.Sprintf("submitting %s %s %s qty=%d price=%.2f type=%s (attempt %d)",
+		fmt.Sprintf("submitting %s %s %s qty=%d price=%.2f type=limit%s (attempt %d)",
 			order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price,
-			orderTypeLabel(order.OrderType), attempt))
+			slippageLabel, attempt))
 
 	orderID, err := e.broker.SubmitOrder(ctx, order)
 	if err != nil {
@@ -103,9 +119,6 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 	}
 
 	pollTimeout := 30 * time.Second
-	if order.OrderType == "market" {
-		pollTimeout = 15 * time.Second
-	}
 	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
 
@@ -166,9 +179,3 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 	}
 }
 
-func orderTypeLabel(t string) string {
-	if t == "market" {
-		return "market"
-	}
-	return "limit"
-}
