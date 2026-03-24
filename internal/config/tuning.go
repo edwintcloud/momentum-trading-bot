@@ -691,6 +691,11 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 		cfg.HODMomoMinMinutesSinceOpen = 5
 	}
 
+	// Block re-entry on losing tickers (enabled by default)
+	if !cfg.BlockLosingTickerReentry {
+		cfg.BlockLosingTickerReentry = true
+	}
+
 	// Playbook exit defaults
 	cfg.PlaybookExits = defaultPlaybookExits(cfg.PlaybookExits)
 

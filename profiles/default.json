@@ -284,7 +284,8 @@
     "HODMomoPullbackMaxDist": 0,
     "HODMomoMinMinutesSinceOpen": 5,
     "MinPositionNotionalPct": 0.2,
-    "MaxVolEstimate": 5.0
+    "MaxVolEstimate": 5.0,
+    "BlockLosingTickerReentry": true
   },
   "promotion": {
     "deploymentMode": "paper",

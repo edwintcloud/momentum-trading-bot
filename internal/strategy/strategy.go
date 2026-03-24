@@ -328,6 +328,11 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	dayKey := markethours.TradingDay(now)
 	state := s.getSymbolState(c.Symbol, dayKey)
 
+	// Block re-entry on any ticker that had a losing trade today
+	if s.config.BlockLosingTickerReentry && s.portfolio.SymbolHadLossToday(c.Symbol) {
+		return domain.TradeSignal{}, false, "losing-ticker-blocked"
+	}
+
 	// Too many losses on this symbol today
 	if state.lossExits >= 2 && now.Sub(state.lastLossAt) < 30*time.Minute {
 		return domain.TradeSignal{}, false, "loss-cooldown"

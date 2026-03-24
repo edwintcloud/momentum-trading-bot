@@ -528,6 +528,18 @@ func (m *Manager) HasPosition(symbol string) bool {
 	return ok
 }
 
+// SymbolHadLossToday returns true if the symbol has any closed trade with negative PnL today.
+func (m *Manager) SymbolHadLossToday(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, t := range m.closedTrades {
+		if t.Symbol == symbol && t.PnL < 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveStalePosition removes a position that no longer exists at the broker,
 // recording it as a closed trade with the last known price.
 func (m *Manager) RemoveStalePosition(symbol string) {

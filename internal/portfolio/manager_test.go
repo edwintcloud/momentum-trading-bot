@@ -529,3 +529,53 @@ func TestRemoveStalePosition_Nonexistent(t *testing.T) {
 	// Should not panic when removing a position that doesn't exist
 	m.RemoveStalePosition("NOPE")
 }
+
+func TestSymbolHadLossToday(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	m := NewManager(cfg)
+
+	ts := time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC)
+
+	// No trades yet — should return false
+	if m.SymbolHadLossToday("LOSER") {
+		t.Error("expected false when no trades exist")
+	}
+
+	// Open and close a winning trade
+	m.OpenPosition(domain.ExecutionReport{
+		Symbol: "WINNER", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 50.0, Quantity: 100,
+		StopPrice: 48.0, RiskPerShare: 2.0, FilledAt: ts,
+	})
+	m.ClosePosition(domain.ExecutionReport{
+		Symbol: "WINNER", Side: domain.SideSell, Intent: domain.IntentClose,
+		PositionSide: domain.DirectionLong, Price: 55.0, Quantity: 100,
+		FilledAt: ts.Add(5 * time.Minute),
+	})
+
+	if m.SymbolHadLossToday("WINNER") {
+		t.Error("expected false for a winning trade")
+	}
+
+	// Open and close a losing trade
+	m.OpenPosition(domain.ExecutionReport{
+		Symbol: "LOSER", Side: domain.SideBuy, Intent: domain.IntentOpen,
+		PositionSide: domain.DirectionLong, Price: 50.0, Quantity: 100,
+		StopPrice: 48.0, RiskPerShare: 2.0, FilledAt: ts,
+	})
+	m.ClosePosition(domain.ExecutionReport{
+		Symbol: "LOSER", Side: domain.SideSell, Intent: domain.IntentClose,
+		PositionSide: domain.DirectionLong, Price: 47.0, Quantity: 100,
+		FilledAt: ts.Add(5 * time.Minute),
+	})
+
+	if !m.SymbolHadLossToday("LOSER") {
+		t.Error("expected true for a losing trade")
+	}
+
+	// Different symbol unaffected
+	if m.SymbolHadLossToday("OTHER") {
+		t.Error("expected false for unrelated symbol")
+	}
+}
