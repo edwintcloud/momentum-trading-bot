@@ -35,6 +35,7 @@ type TradingConfig struct {
 	ScannerVWAPTolerancePct            float64
 	MaxFloat                           int64   // 0 = disabled; max outstanding shares for momentum filtering
 	MinFloat                           int64   // 0 = disabled; min outstanding shares
+	MinPrevDayVolume                   int64   // minimum previous day volume (0 = disabled)
 	MarketRegimeBenchmarkSymbols       []string
 	MarketRegimeMinBenchmarks          int
 	MarketRegimeEMAFastPeriod          int

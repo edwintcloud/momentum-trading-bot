@@ -128,6 +128,7 @@ func (n *Normalizer) Normalize(bar alpaca.StreamBar) domain.Tick {
 		GapPercent:      round2(gapPercent),
 		PreMarketVolume: state.preMarketVol,
 		VolumeSpike:     volumeSpike,
+		PrevDayVolume:   state.prevDayVolume,
 		Timestamp:       bar.Timestamp,
 	}
 }

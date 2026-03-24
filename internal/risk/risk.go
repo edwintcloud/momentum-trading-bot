@@ -387,6 +387,7 @@ func (e *Engine) toOrderRequest(signal domain.TradeSignal) domain.OrderRequest {
 		EntryATR:         signal.EntryATR,
 		SetupType:        signal.SetupType,
 		Reason:           signal.Reason,
+		OrderType:        signal.OrderType,
 		MarketRegime:     signal.MarketRegime,
 		RegimeConfidence: signal.RegimeConfidence,
 		Playbook:         signal.Playbook,

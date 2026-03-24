@@ -37,6 +37,7 @@
     "ScannerVWAPTolerancePct": 2.0,
     "MaxFloat": 0,
     "MinFloat": 0,
+    "MinPrevDayVolume": 0,
 
     "MarketRegimeBenchmarkSymbols": ["SPY", "QQQ", "IWM"],
     "MarketRegimeMinBenchmarks": 2,
