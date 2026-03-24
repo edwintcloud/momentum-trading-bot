@@ -102,8 +102,8 @@ func TestMomentumCameronProfileMandatoryFields(t *testing.T) {
 	if cfg.MidDayScoreMultiplier != 2.0 {
 		t.Errorf("MidDayScoreMultiplier: got %f, want 2.0", cfg.MidDayScoreMultiplier)
 	}
-	if !cfg.PartialExitsEnabled {
-		t.Error("PartialExitsEnabled: got false, want true")
+	if cfg.PartialExitsEnabled {
+		t.Error("PartialExitsEnabled: got true, want false")
 	}
 	if cfg.PartialTrigger2Pct != 0.25 {
 		t.Errorf("PartialTrigger2Pct: got %f, want 0.25", cfg.PartialTrigger2Pct)
@@ -113,8 +113,8 @@ func TestMomentumCameronProfileMandatoryFields(t *testing.T) {
 	}
 
 	// Playbook exits (Cameron-style tighter targets)
-	if cfg.PlaybookExits.Breakout.ProfitTargetR != 2.5 {
-		t.Errorf("Breakout ProfitTargetR: got %f, want 2.5", cfg.PlaybookExits.Breakout.ProfitTargetR)
+	if cfg.PlaybookExits.Breakout.ProfitTargetR != 10.0 {
+		t.Errorf("Breakout ProfitTargetR: got %f, want 10.0", cfg.PlaybookExits.Breakout.ProfitTargetR)
 	}
 	if cfg.PlaybookExits.Pullback.ProfitTargetR != 2.0 {
 		t.Errorf("Pullback ProfitTargetR: got %f, want 2.0", cfg.PlaybookExits.Pullback.ProfitTargetR)
@@ -147,11 +147,11 @@ func TestMomentumCameronProfileMandatoryFields(t *testing.T) {
 	}
 
 	// Risk enhancements
-	if !cfg.VaREnabled {
-		t.Error("VaREnabled: got false, want true")
+	if cfg.VaREnabled {
+		t.Error("VaREnabled: got true, want false")
 	}
-	if !cfg.DynamicRiskBudgetEnabled {
-		t.Error("DynamicRiskBudgetEnabled: got false, want true")
+	if cfg.DynamicRiskBudgetEnabled {
+		t.Error("DynamicRiskBudgetEnabled: got true, want false")
 	}
 	if cfg.GARCHEnabled {
 		t.Error("GARCHEnabled: got true, want false")

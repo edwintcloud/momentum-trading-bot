@@ -1,14 +1,15 @@
 {
   "name": "baseline_breakout",
-  "version": "2.0.0",
-  "generatedAt": "2026-03-22T00:00:00-04:00",
-  "asOf": "2026-03-22T00:00:00-04:00",
+  "version": "opt-20260323-bayes-8",
+  "generatedAt": "2026-03-23T02:39:10.046986167-04:00",
+  "asOf": "2026-03-23T02:22:32.807646803-04:00",
   "config": {
     "StartingCapital": 25000,
+    "StrategyProfileName": "baseline_breakout",
+    "StrategyProfileVersion": "opt-20260323-bayes-8",
     "EnableMarketRegime": true,
-    "EnableShorts": true,
-
-    "RiskPerTradePct": 0.005,
+    "EnableShorts": false,
+    "RiskPerTradePct": 0.006938263148203671,
     "DailyLossLimitPct": 0.02,
     "MaxTradesPerDay": 20,
     "MaxOpenPositions": 5,
@@ -17,91 +18,87 @@
     "MaxShortExposurePct": 0.3,
     "EntryCooldownSec": 30,
     "ExitCooldownSec": 10,
-    "MinEntryScore": 2.0,
-    "ShortMinEntryScore": 3.0,
+    "MinEntryScore": 3.733094736979072,
+    "ShortMinEntryScore": 2.234128083464872,
     "MinOneMinuteReturnPct": 0.2,
     "MinThreeMinuteReturnPct": 0.5,
     "MinVolumeRate": 1.5,
     "BreakoutFailureWindowMin": 5,
     "StagnationWindowMin": 15,
-
     "ScannerWorkers": 4,
-    "MinPrice": 2.0,
-    "MaxPrice": 200.0,
-    "MinGapPercent": 3.0,
-    "MinRelativeVolume": 2.0,
+    "MinPrice": 2,
+    "MaxPrice": 200,
+    "MinGapPercent": 2.8789343601701867,
+    "MinRelativeVolume": 1.908407393077954,
     "MinPremarketVolume": 50000,
     "FloatOverrideURL": "",
     "ScannerMinSetupVolumeRateOffset": 0.5,
     "ScannerMinSetupRelativeVolumeExtra": 0.5,
-    "ScannerVWAPTolerancePct": 2.0,
+    "ScannerVWAPTolerancePct": 2,
     "MaxFloat": 0,
     "MinFloat": 0,
-    "MinPrevDayVolume": 0,
-
-    "MarketRegimeBenchmarkSymbols": ["SPY", "QQQ", "IWM"],
+    "MinPrevDayVolume": 500000,
+    "MarketRegimeBenchmarkSymbols": [
+      "SPY",
+      "QQQ",
+      "IWM"
+    ],
     "MarketRegimeMinBenchmarks": 2,
     "MarketRegimeEMAFastPeriod": 9,
     "MarketRegimeEMASlowPeriod": 21,
     "MarketRegimeReturnLookbackMin": 30,
-
     "HydrationRequestsPerMin": 150,
     "HydrationRetrySec": 5,
     "HydrationQueueSize": 500,
-
     "LimitOrderSlippageDollars": 0.05,
-    "EntryATRPercentFallback": 2.0,
+    "EntryATRPercentFallback": 2,
     "EntryStopATRMultiplier": 1.5,
-    "MaxRiskATRMultiplier": 3.0,
-
+    "MaxRiskATRMultiplier": 3,
     "BreakEvenMinR": 0.5,
-    "TrailActivationR": 1.0,
-    "TrailATRMultiplier": 2.0,
+    "TrailActivationR": 1.5112982016377803,
+    "TrailATRMultiplier": 1.7303072355705116,
     "TightTrailTriggerR": 2.5,
-    "TightTrailATRMultiplier": 1.0,
-    "ProfitTargetR": 4.0,
+    "TightTrailATRMultiplier": 1,
+    "ProfitTargetR": 3.676952359127867,
     "FailedBreakoutCutR": -0.5,
-
-    "ShortPeakExtensionMinPct": 5.0,
-    "ShortVWAPBreakMinPct": 1.0,
-    "ShortStopATRMultiplier": 2.0,
-
+    "ShortPeakExtensionMinPct": 5,
+    "ShortVWAPBreakMinPct": 1,
+    "ShortStopATRMultiplier": 2,
     "RegimeGatingEnabled": true,
     "RegimeMixedScoreBoost": 1.25,
     "RegimeNeutralScoreBoost": 1.1,
-
     "PlaybookExits": {
       "Breakout": {
-        "ProfitTargetR": 4.0,
+        "ProfitTargetR": 4,
         "FailedBreakoutCutR": -0.5,
         "BreakoutFailureWindowMin": 5,
         "StagnationWindowMin": 15,
         "StagnationMinPeakR": 0.3,
-        "TrailActivationR": 1.0,
-        "TrailATRMultiplier": 2.0,
+        "TrailActivationR": 1,
+        "TrailATRMultiplier": 2,
         "TightTrailTriggerR": 2.5,
-        "TightTrailATRMultiplier": 1.0
+        "TightTrailATRMultiplier": 1
       },
       "Pullback": {
-        "ProfitTargetR": 3.0,
+        "ProfitTargetR": 3,
         "FailedBreakoutCutR": -0.3,
         "BreakoutFailureWindowMin": 10,
         "StagnationWindowMin": 20,
         "StagnationMinPeakR": 0.2,
         "TrailActivationR": 0.75,
         "TrailATRMultiplier": 1.5,
-        "TightTrailTriggerR": 2.0,
+        "TightTrailTriggerR": 2,
         "TightTrailATRMultiplier": 0.8
       },
       "Continuation": {
-        "ProfitTargetR": 5.0,
+        "ProfitTargetR": 5,
         "FailedBreakoutCutR": -0.5,
         "BreakoutFailureWindowMin": 5,
         "StagnationWindowMin": 15,
         "StagnationMinPeakR": 0.3,
-        "TrailActivationR": 1.0,
+        "TrailActivationR": 1,
         "TrailATRMultiplier": 2.5,
-        "TightTrailTriggerR": 3.0,
+        "TightTrailTriggerR": 3,
         "TightTrailATRMultiplier": 1.2
       },
       "Reversal": {
@@ -116,214 +113,185 @@
         "TightTrailATRMultiplier": 0.8
       }
     },
-
     "ConfidenceSizingEnabled": true,
     "ConfidenceSizingFloor": 0.5,
-
     "StagnationMinPeakR": 0.3,
-
     "PortfolioHeatEnabled": true,
     "MaxPortfolioHeatPct": 0.05,
     "PortfolioHeatAlertPct": 0.03,
-
     "DailyLossModeratePct": 0.01,
     "DailyLossSeverePct": 0.015,
     "DailyLossHaltPct": 0.02,
-
     "SectorConcentrationEnabled": true,
     "MaxPositionsPerSector": 2,
     "MaxSectorExposurePct": 0.25,
-
     "CorrelationCheckEnabled": true,
     "CorrelationWindowSize": 20,
     "MaxAvgCorrelation": 0.7,
-
     "KellySizingEnabled": true,
     "KellyWindowSize": 200,
     "KellyMinTrades": 30,
     "KellyFraction": 0.25,
     "MaxKellyRiskPct": 0.02,
-
-    "VolTargetSizingEnabled": true,
+    "VolTargetSizingEnabled": false,
     "TargetVolPerPosition": 0.02,
     "DefaultVolatility": 0.3,
-
     "DrawdownRiskEnabled": true,
     "MaxAcceptableDrawdown": 0.15,
-
     "RSIFilterEnabled": true,
-    "RSIOverboughtThreshold": 80.0,
-    "RSIOversoldThreshold": 20.0,
-
+    "RSIOverboughtThreshold": 80,
+    "RSIOversoldThreshold": 20,
     "TimeOfDayEnabled": true,
-
     "PartialExitsEnabled": true,
-    "PartialTrigger1R": 1.0,
+    "PartialTrigger1R": 1,
     "PartialTrigger1Pct": 0.5,
-    "PartialTrigger2R": 2.0,
+    "PartialTrigger2R": 2,
     "PartialTrigger2Pct": 0.5,
     "MoveStopAfterPartial": true,
-
     "AdaptiveTrailEnabled": true,
-
     "MeanReversionEnabled": true,
-    "MeanReversionMaxADX": 20.0,
+    "MeanReversionMaxADX": 20,
     "BollingerPeriod": 20,
-    "BollingerK": 2.0,
-
-    "SlippageLiquidBps": 5.0,
-    "SlippageMidBps": 10.0,
-    "SlippageIlliquidBps": 20.0,
-
+    "BollingerK": 2,
+    "SlippageLiquidBps": 5,
+    "SlippageMidBps": 10,
+    "SlippageIlliquidBps": 20,
     "MonteCarloEnabled": true,
     "MonteCarloSims": 10000,
-
     "TransactionCostsEnabled": true,
     "CommissionPerShare": 0.005,
-    "DefaultSpreadBps": 10.0,
-
+    "DefaultSpreadBps": 10,
     "BootstrapEnabled": true,
     "BootstrapResamples": 10000,
-
     "OptimizerSamples": 500,
     "OptimizerUseLHS": true,
     "OptimizerTimeSplit": true,
-
     "WalkForwardEnabled": true,
     "WFISWindowDays": 60,
     "WFOOSWindowDays": 20,
     "WFPurgeGapDays": 5,
     "WFStepDays": 20,
-
     "HMMRegimeEnabled": true,
     "HMMConfidenceMin": 0.7,
-
+    "HMMParamsFile": "",
     "BayesianOptEnabled": true,
     "BayesianExploration": 20,
-
     "FactorAnalysisEnabled": true,
-
+    "MaxEntriesPerMinute": 3,
+    "MinATRBars": 5,
     "ImpactModelEnabled": true,
     "MaxAcceptableImpactPct": 0.005,
-
     "MLScoringEnabled": false,
+    "MLModelPath": "",
     "MLScoreWeight": 0.5,
-
     "MetaLabelEnabled": false,
+    "MetaLabelModelPath": "",
     "MetaLabelMinProb": 0.4,
-
     "CPCVEnabled": true,
     "CPCVGroups": 6,
     "CPCVPurgeGap": 60,
-
-    "MaxEntriesPerMinute": 3,
-    "MinATRBars": 5,
-
     "MHTCorrectionMethod": "none",
     "MHTAlpha": 0.05,
-
     "VaREnabled": false,
     "VaRConfidenceLevel": 0.95,
     "VaRDailyLimitPct": 0.02,
     "VaRMethod": "parametric",
     "CVaRPositionSizing": false,
-
     "GARCHEnabled": false,
     "GARCHAlpha": 0.1,
     "GARCHBeta": 0.85,
     "GARCHLongRunVar": 0.0004,
-
     "DynamicRiskBudgetEnabled": false,
     "TargetVolAnnualized": 0.1,
     "DailyRiskBudgetPct": 0.01,
-
     "OFIEnabled": false,
     "OFIWindowBars": 60,
-    "OFIThresholdSigma": 3.0,
+    "OFIThresholdSigma": 3,
     "OFIPersistenceMin": 3,
-
     "VPINEnabled": false,
     "VPINBucketDivisor": 50,
     "VPINLookbackBuckets": 50,
     "VPINHighThreshold": 0.7,
     "VPINLowThreshold": 0.3,
-
     "OBVDivergenceEnabled": false,
     "OBVLookbackBars": 20,
-
     "DollarBarsEnabled": false,
     "DollarBarThreshold": 500000,
-
     "VolumeBarsEnabled": false,
     "VolumeBarThreshold": 50000,
-
     "ORBEnabled": false,
     "ORBWindowMinutes": 15,
     "ORBBufferPct": 0.001,
     "ORBVolumeMultiplier": 1.5,
     "ORBMaxGapPct": 0.02,
     "ORBTargetMultiplier": 1.5,
-
     "NewsSentimentEnabled": false,
     "UOAEnabled": false,
-
     "VWAPExecutionEnabled": false,
     "VWAPMinOrderADVPct": 0.005,
-
     "TWAPExecutionEnabled": false,
     "TWAPSlices": 10,
     "TWAPWindowSeconds": 300,
-
     "AdaptiveLimitEnabled": false,
-    "AdaptiveLimitToleranceBps": 5.0,
+    "AdaptiveLimitToleranceBps": 5,
     "AdaptiveLimitWidenStepBps": 0.5,
     "AdaptiveLimitWidenIntervalSec": 5,
-    "AdaptiveLimitMaxSlippageBps": 20.0,
-
+    "AdaptiveLimitMaxSlippageBps": 20,
     "MVOEnabled": false,
-    "MVORiskAversion": 1.0,
+    "MVORiskAversion": 1,
     "MVOMaxPositionPct": 0.05,
     "MVOMaxSectorPct": 0.25,
     "LedoitWolfShrinkage": 0.5,
-
     "RiskParityEnabled": false,
     "RiskParityEWMALambda": 0.94,
     "RiskParityRebalanceMinutes": 30,
-    "RiskParityDeviationThreshold": 0.20,
-
+    "RiskParityDeviationThreshold": 0.2,
     "FactorNeutralEnabled": false,
     "FactorBetaWindow": 60,
-    "MaxNetBeta": 0.30,
-
+    "MaxNetBeta": 0.3,
     "HHIEnabled": false,
-    "HHIMaxTarget": 0.10,
+    "HHIMaxTarget": 0.1,
     "HHIAlertThreshold": 0.15,
-
     "LongShortBalancingEnabled": false,
     "DollarNeutralTolerance": 0.05,
-    "BetaNeutralThreshold": 0.30,
-    "MaxGrossLeverage": 2.0,
-    "SectorNeutralTolerance": 0.10,
-
+    "BetaNeutralThreshold": 0.3,
+    "MaxGrossLeverage": 2,
+    "SectorNeutralTolerance": 0.1,
+    "FracDiffEnabled": false,
+    "FracDiffMinD": 0.3,
+    "FracDiffMaxD": 0.5,
+    "MLTrainingEnabled": false,
+    "MLRetrainIntervalDays": 7,
+    "MLFeatureHorizonBars": 15,
+    "ConceptDriftEnabled": false,
+    "PSIThreshold": 0.2,
+    "SharpeDecayThreshold": 0.5,
+    "MetaLabelConfidenceThreshold": 0.5,
+    "EnsembleEnabled": false,
+    "EnsembleMethod": "equal",
+    "EnsembleDiversityThreshold": 0.6,
+    "MLScoringThreshold": 0.5,
+    "MLScoringWeightInEnsemble": 1,
     "EntryDeadlineMinutesAfterOpen": 0,
     "MinRiskRewardRatio": 0,
     "MaxDistanceFromHighPct": 0,
     "VolumeOnPullbackEnabled": false,
     "MidDayScoreMultiplier": 0,
-
     "HODMomoEnabled": false,
-    "HODMomoMinIntradayPct": 10.0,
-    "HODMomoMinRelativeVolume": 5.0,
-    "HODMomoMaxDistFromHigh": 5.0,
-    "HODMomoPullbackMaxDist": 10.0,
+    "HODMomoMinIntradayPct": 10,
+    "HODMomoMinRelativeVolume": 5,
+    "HODMomoMaxDistFromHigh": 5,
+    "HODMomoPullbackMaxDist": 0,
     "HODMomoMinMinutesSinceOpen": 5,
-
-    "MinPositionNotionalPct": 0,
+    "MinPositionNotionalPct": 0.2,
     "MaxVolEstimate": 5.0
   },
   "promotion": {
     "deploymentMode": "paper",
-    "status": "approved",
-    "lastPaperValidationResult": "passed"
+    "status": "auto-promoted",
+    "lastPaperValidationResult": "",
+    "lastPaperValidationAt": "0001-01-01T00:00:00Z",
+    "approvedAt": "2026-03-23T02:39:10.474372708-04:00",
+    "approvedBy": "auto-optimizer"
   }
 }

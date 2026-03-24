@@ -87,7 +87,6 @@ type symbolTradeState struct {
 	entrySignals int
 	lossExits    int
 	lastLossAt   time.Time
-	entrySides   map[string]bool
 }
 
 // NewStrategy creates a strategy instance.
@@ -277,14 +276,6 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 		}
 	}
 	if reason == "no-signal" {
-		// Check same-side-today
-		dayKey := markethours.TradingDay(candidate.Timestamp)
-		state := s.getSymbolState(candidate.Symbol, dayKey)
-		if state.entrySides[candidate.Direction] {
-			reason = "same-side-today"
-		}
-	}
-	if reason == "no-signal" {
 		// Check loss cooldown
 		dayKey := markethours.TradingDay(candidate.Timestamp)
 		state := s.getSymbolState(candidate.Symbol, dayKey)
@@ -336,11 +327,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	// Day state
 	dayKey := markethours.TradingDay(now)
 	state := s.getSymbolState(c.Symbol, dayKey)
-
-	// Check if already entered this side today
-	if state.entrySides[c.Direction] {
-		return domain.TradeSignal{}, false, "same-side-today"
-	}
 
 	// Too many losses on this symbol today
 	if state.lossExits >= 2 && now.Sub(state.lastLossAt) < 30*time.Minute {
@@ -525,15 +511,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
-	// Position size floor: enforce minimum notional position
-	if s.config.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
-		minNotional := currentEquity * s.config.MinPositionNotionalPct
-		minQty := int64(math.Ceil(minNotional / c.Price))
-		if quantity < minQty {
-			quantity = minQty
-		}
-	}
-
 	// ML Scoring gate: skip trade if ML score below threshold
 	if s.config.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
 		features := ml.ScorerFeatures{
@@ -606,6 +583,16 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		candidateSector = sector.SectorForSymbol(c.Symbol)
 	}
 
+	// Position size floor: enforce minimum notional position
+	if s.config.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
+		minNotional := currentEquity * s.config.MinPositionNotionalPct
+		minQty := int64(math.Floor(minNotional / c.Price))
+		minQty = max(minQty, 0)
+		if quantity < minQty {
+			quantity = minQty
+		}
+	}
+
 	signal := domain.TradeSignal{
 		Symbol:           c.Symbol,
 		Side:             domain.OpenBrokerSide(c.Direction),
@@ -628,7 +615,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 
 	s.lastEntryAt[c.Symbol] = now
 	state.entrySignals++
-	state.entrySides[c.Direction] = true
 	s.symbolStates[c.Symbol] = state
 
 	return signal, true, ""
@@ -641,6 +627,22 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	}
 
 	now := tick.Timestamp
+
+	// Force close tiny positions (leftover from partial fills)
+	if pos.Quantity > 0 && pos.OriginalQuantity > 0 {
+		if pos.Quantity <= int64(math.Max(1, float64(pos.OriginalQuantity)*0.05)) || pos.Quantity < 5 {
+			return domain.TradeSignal{
+				Symbol:       tick.Symbol,
+				Side:         domain.CloseBrokerSide(pos.Side),
+				Intent:       domain.IntentClose,
+				PositionSide: pos.Side,
+				Price:        tick.Price,
+				Quantity:     pos.Quantity,
+				Reason:       "cleanup-remainder",
+				Timestamp:    now,
+			}, true
+		}
+	}
 
 	// Cooldown
 	if last, ok := s.lastExitAt[tick.Symbol]; ok {
@@ -698,6 +700,11 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		}
 		partialQty := int64(math.Floor(float64(pos.OriginalQuantity) * pct))
 		if partialQty > pos.Quantity {
+			partialQty = pos.Quantity
+		}
+		// If selling this partial would leave a tiny remainder, close the whole position
+		remainingAfterPartial := pos.Quantity - partialQty
+		if remainingAfterPartial > 0 && remainingAfterPartial <= int64(math.Max(1, float64(pos.OriginalQuantity)*0.05)) {
 			partialQty = pos.Quantity
 		}
 		if partialQty > 0 {
@@ -992,8 +999,7 @@ func (s *Strategy) getSymbolState(symbol, dayKey string) symbolTradeState {
 	state, ok := s.symbolStates[symbol]
 	if !ok || state.dayKey != dayKey {
 		state = symbolTradeState{
-			dayKey:     dayKey,
-			entrySides: make(map[string]bool),
+			dayKey: dayKey,
 		}
 	}
 	return state

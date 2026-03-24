@@ -711,8 +711,8 @@ func TestDiagnosticMarketClosed(t *testing.T) {
 	s := NewStrategy(cfg, pm, runtimeState)
 
 	loc := markethours.Location()
-	// Premarket time (8:00 AM ET) — market not open
-	premarketTime := time.Date(2026, 3, 23, 8, 0, 0, 0, loc)
+	// Overnight time (3:00 AM ET) — outside all sessions (pre/regular/post)
+	premarketTime := time.Date(2026, 3, 23, 3, 0, 0, 0, loc)
 
 	candidate := domain.Candidate{
 		Symbol:          "PREMARKET",
@@ -1200,5 +1200,315 @@ func TestVolTargetSizingDisabledNoVolCap(t *testing.T) {
 	// With vol disabled, should be large
 	if signal.Quantity < 1000 {
 		t.Errorf("with VolTargetSizing disabled, quantity (%d) should be large", signal.Quantity)
+	}
+}
+
+// Bug 1: same-side-today removed — re-entry on same side after unfilled order should not be blocked
+
+func TestSameSideNotBlockedAfterFirstEntry(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	cfg.RiskPerTradePct = 0.01
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+	cfg.EntryCooldownSec = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// First candidate — long on TICKER
+	c1 := domain.Candidate{
+		Symbol:          "TICKER",
+		Direction:       domain.DirectionLong,
+		Price:           10.0,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+	_, ok := s.EvaluateCandidate(c1)
+	if !ok {
+		t.Fatal("expected first long entry signal")
+	}
+
+	// Simulate: the order was sent but never filled, no position exists.
+	// Previously this would block with "same-side-today".
+	// Second candidate — same symbol, same side, 2 minutes later
+	c2 := c1
+	c2.Timestamp = ts.Add(2 * time.Minute)
+	_, ok = s.EvaluateCandidate(c2)
+	// Should be blocked by existing-position only if position exists.
+	// Since no position was opened, it should NOT be blocked.
+	// However, lastEntryAt cooldown may block. Use different symbol for clean test.
+	// Actually, let's use a new symbol to isolate same-side-today removal.
+	c3 := c1
+	c3.Symbol = "TICKER2"
+	c3.Timestamp = ts.Add(2 * time.Minute)
+	_, ok = s.EvaluateCandidate(c3)
+	if !ok {
+		t.Fatal("expected second long entry on different symbol to pass (same-side-today removed)")
+	}
+}
+
+func TestSameSideReentryAfterUnfilledOrder(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.StartingCapital = 25000
+	cfg.RiskPerTradePct = 0.01
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+	cfg.EntryCooldownSec = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// First entry signal on ALPHA
+	c1 := domain.Candidate{
+		Symbol:          "ALPHA",
+		Direction:       domain.DirectionLong,
+		Price:           5.0,
+		ATR:             0.3,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts,
+	}
+	_, ok := s.EvaluateCandidate(c1)
+	if !ok {
+		t.Fatal("expected first entry signal on ALPHA")
+	}
+
+	// Simulate order timeout — no fill, no position opened.
+	// Clear the cooldown to isolate the test.
+	delete(s.lastEntryAt, "ALPHA")
+
+	// Re-enter same symbol, same side — should work now
+	c2 := c1
+	c2.Timestamp = ts.Add(5 * time.Minute)
+	_, ok = s.EvaluateCandidate(c2)
+	if !ok {
+		t.Error("expected re-entry on ALPHA long after unfilled order (same-side-today removed)")
+	}
+}
+
+func TestExistingPositionStillBlocks(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.RegimeGatingEnabled = false
+	cfg.ConfidenceSizingEnabled = false
+	cfg.MinEntryScore = 0
+	cfg.EntryCooldownSec = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Open a position
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol:       "HELD",
+		Side:         domain.SideBuy,
+		Intent:       domain.IntentOpen,
+		PositionSide: domain.DirectionLong,
+		Price:        10.0,
+		Quantity:     100,
+		StopPrice:    9.0,
+		RiskPerShare: 1.0,
+		FilledAt:     ts,
+	})
+
+	// Try to enter same symbol — should be blocked by existing-position
+	c := domain.Candidate{
+		Symbol:          "HELD",
+		Direction:       domain.DirectionLong,
+		Price:           10.5,
+		ATR:             0.5,
+		Score:           5.0,
+		Playbook:        "breakout",
+		GapPercent:      5.0,
+		RelativeVolume:  3.0,
+		PreMarketVolume: 60000,
+		Timestamp:       ts.Add(time.Minute),
+	}
+	decision := s.EvaluateCandidateDecision(c)
+	if decision.Emit {
+		t.Fatal("expected entry to be blocked by existing position")
+	}
+	if decision.Reason != "existing-position" {
+		t.Errorf("expected reason 'existing-position', got %q", decision.Reason)
+	}
+}
+
+// Bug 3: Partial exit remainder cleanup
+
+func TestCleanupRemainderForcesClose(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.PartialExitsEnabled = true
+	cfg.ExitCooldownSec = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Create a position with tiny remainder (1 share left of original 100)
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol:           "REMNANT",
+		Side:             domain.SideBuy,
+		Intent:           domain.IntentOpen,
+		PositionSide:     domain.DirectionLong,
+		Price:            10.0,
+		Quantity:         100,
+		StopPrice:        9.0,
+		RiskPerShare:     1.0,
+		FilledAt: ts.Add(-10 * time.Minute),
+	})
+
+	// Simulate partial fills reducing to 1 share
+	pm.ReducePosition(domain.ExecutionReport{
+		Symbol:       "REMNANT",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentPartial,
+		PositionSide: domain.DirectionLong,
+		Price:        11.0,
+		Quantity:     99,
+		FilledAt:     ts.Add(-5 * time.Minute),
+	})
+
+	// Verify position has 1 share remaining
+	pos, exists := pm.GetPosition("REMNANT")
+	if !exists {
+		t.Fatal("expected REMNANT position to still exist")
+	}
+	if pos.Quantity != 1 {
+		t.Fatalf("expected 1 share remaining, got %d", pos.Quantity)
+	}
+
+	tick := domain.Tick{
+		Symbol:    "REMNANT",
+		Price:     11.5,
+		Timestamp: ts,
+	}
+
+	signal, shouldExit := s.EvaluateExit(tick)
+	if !shouldExit {
+		t.Fatal("expected cleanup-remainder exit for 1-share position")
+	}
+	if signal.Reason != "cleanup-remainder" {
+		t.Errorf("expected reason 'cleanup-remainder', got %q", signal.Reason)
+	}
+	if signal.Intent != domain.IntentClose {
+		t.Errorf("expected IntentClose, got %q", signal.Intent)
+	}
+	if signal.Quantity != 1 {
+		t.Errorf("expected quantity 1, got %d", signal.Quantity)
+	}
+}
+
+func TestPartialExitClosesEntireWhenRemainderTiny(t *testing.T) {
+	cfg := config.DefaultTradingConfig()
+	cfg.PartialExitsEnabled = true
+	cfg.PartialTrigger1R = 1.0
+	cfg.PartialTrigger1Pct = 0.50
+	cfg.PartialTrigger2R = 2.0
+	cfg.PartialTrigger2Pct = 0.25
+	cfg.ExitCooldownSec = 0
+
+	runtimeState := runtime.NewState()
+	pm := portfolio.NewManager(cfg)
+	s := NewStrategy(cfg, pm, runtimeState)
+
+	ts := marketOpenTime()
+
+	// Position: 7 shares remaining, original 100 shares, partial-2 would sell 25 leaving 7-25=-18
+	// But test: if partial would leave <= 5% of original (5 shares), close all.
+	// 7 shares, partial-2 sells floor(100*0.25)=25 -> but partialQty capped to pos.Quantity=7
+	// remaining = 7 - 7 = 0. That's already a full close.
+	// Better test: 30 shares remaining, partial-2 sells 25, leaving 5 shares (5% of 100).
+	pos := domain.Position{
+		Symbol:           "TINY",
+		Side:             domain.DirectionLong,
+		Quantity:         30,
+		OriginalQuantity: 100,
+		PartialsExecuted: 1, // partial-1 done
+		AvgPrice:         10.0,
+		StopPrice:        8.5,
+		RiskPerShare:     1.5,
+		EntryATR:         1.0,
+		Playbook:         "breakout",
+		HighestPrice:     13.0,
+		LowestPrice:      9.5,
+		OpenedAt:         ts.Add(-10 * time.Minute),
+	}
+
+	// Price at 2R = 10.0 + 2*1.5 = 13.0 -> triggers partial-2
+	tick := domain.Tick{
+		Symbol:    "TINY",
+		Price:     13.0,
+		Timestamp: ts,
+	}
+
+	reason, shouldExit := s.checkExitConditions(pos, tick)
+	if !shouldExit {
+		t.Fatal("expected exit at 2R")
+	}
+	if reason != "partial-2" {
+		t.Fatalf("expected partial-2, got %q", reason)
+	}
+
+	// Now simulate the partial exit flow in evaluateExit
+	// partialQty = floor(100 * 0.25) = 25
+	// remaining = 30 - 25 = 5
+	// 5 <= max(1, 100*0.05) = 5 -> close all 30
+	pm.OpenPosition(domain.ExecutionReport{
+		Symbol:           "TINY",
+		Side:             domain.SideBuy,
+		Intent:           domain.IntentOpen,
+		PositionSide:     domain.DirectionLong,
+		Price:            10.0,
+		Quantity:         100,
+		StopPrice:        8.5,
+		RiskPerShare:     1.5,
+		FilledAt: ts.Add(-10 * time.Minute),
+	})
+	// Simulate partial-1 already executed
+	pm.ReducePosition(domain.ExecutionReport{
+		Symbol:       "TINY",
+		Side:         domain.SideSell,
+		Intent:       domain.IntentPartial,
+		PositionSide: domain.DirectionLong,
+		Price:        11.5,
+		Quantity:     70,
+		FilledAt:     ts.Add(-5 * time.Minute),
+	})
+
+	posNow, _ := pm.GetPosition("TINY")
+	if posNow.Quantity != 30 {
+		t.Fatalf("expected 30 shares, got %d", posNow.Quantity)
+	}
+
+	signal, shouldEmit := s.EvaluateExit(tick)
+	if !shouldEmit {
+		t.Fatal("expected exit signal")
+	}
+	// remainder would be 5 shares (5% of 100) — should close all 30
+	if signal.Intent != domain.IntentClose {
+		t.Errorf("expected IntentClose (close all when remainder tiny), got %q", signal.Intent)
+	}
+	if signal.Quantity != 30 {
+		t.Errorf("expected quantity 30 (close all), got %d", signal.Quantity)
 	}
 }

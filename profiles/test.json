@@ -176,8 +176,8 @@
     "BayesianOptEnabled": true,
     "BayesianExploration": 20,
     "FactorAnalysisEnabled": true,
-    "max_entries_per_minute": 3,
-    "min_atr_bars": 5,
+    "MaxEntriesPerMinute": 3,
+    "MinATRBars": 5,
     "ImpactModelEnabled": true,
     "MaxAcceptableImpactPct": 0.005,
     "MLScoringEnabled": false,
@@ -282,7 +282,7 @@
     "HODMomoMaxDistFromHigh": 5,
     "HODMomoPullbackMaxDist": 0,
     "HODMomoMinMinutesSinceOpen": 5,
-    "MinPositionNotionalPct": 0,
+    "MinPositionNotionalPct": 0.2,
     "MaxVolEstimate": 0
   },
   "promotion": {
