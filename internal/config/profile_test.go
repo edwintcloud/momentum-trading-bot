@@ -191,9 +191,9 @@ func TestMomentumCameronProfileMandatoryFields(t *testing.T) {
 		t.Error("AdaptiveLimitEnabled: got true, want false")
 	}
 
-	// ML (disabled)
-	if cfg.MLScoringEnabled {
-		t.Error("MLScoringEnabled: got true, want false")
+	// ML (enabled)
+	if !cfg.MLScoringEnabled {
+		t.Error("MLScoringEnabled: got false, want true")
 	}
 	if cfg.MetaLabelEnabled {
 		t.Error("MetaLabelEnabled: got true, want false")

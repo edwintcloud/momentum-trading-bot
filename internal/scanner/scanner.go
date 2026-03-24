@@ -492,8 +492,9 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	m.emaFast = computeEMA(bars, s.config.MarketRegimeEMAFastPeriod)
 	m.emaSlow = computeEMA(bars, s.config.MarketRegimeEMASlowPeriod)
 
-	// MACD histogram (fast EMA - slow EMA - signal EMA)
-	m.macdHistogram = computeMACDHistogram(bars, s.config.MarketRegimeEMAFastPeriod, s.config.MarketRegimeEMASlowPeriod, 9)
+	// MACD histogram (standard 12, 26, 9 on 5-minute candles)
+	bars5 := aggregate5MinBars(bars)
+	m.macdHistogram = computeMACDHistogram(bars5, s.config.MACDFastPeriod, s.config.MACDSlowPeriod, s.config.MACDSignalPeriod)
 
 	// RSI and RSI MA Slope (14-period Wilder RSI)
 	m.rsi = computeRSI(bars, 14)
@@ -728,6 +729,40 @@ func computeATR(bars []symbolBar, period int) float64 {
 		return 0
 	}
 	return sum / float64(count)
+}
+
+// aggregate5MinBars collapses 1-minute bars into 5-minute OHLCV candles.
+func aggregate5MinBars(bars []symbolBar) []symbolBar {
+	if len(bars) == 0 {
+		return nil
+	}
+	out := make([]symbolBar, 0, len(bars)/5+1)
+	for i := 0; i < len(bars); i += 5 {
+		end := i + 5
+		if end > len(bars) {
+			end = len(bars)
+		}
+		chunk := bars[i:end]
+		agg := symbolBar{
+			timestamp: chunk[0].timestamp,
+			open:      chunk[0].open,
+			high:      chunk[0].high,
+			low:       chunk[0].low,
+			close:     chunk[len(chunk)-1].close,
+			volume:    0,
+		}
+		for _, b := range chunk {
+			if b.high > agg.high {
+				agg.high = b.high
+			}
+			if b.low < agg.low || agg.low == 0 {
+				agg.low = b.low
+			}
+			agg.volume += b.volume
+		}
+		out = append(out, agg)
+	}
+	return out
 }
 
 // computeMACDHistogram returns the MACD histogram (MACD line - signal line).

@@ -123,7 +123,10 @@ func runBacktest(args []string) error {
 		if err != nil {
 			return err
 		}
-		prevDayStart := start.AddDate(0, 0, -1)
+		// Go back 3 calendar days so the warmup window includes at least one
+		// prior trading day even when the backtest starts on Monday (−1 only
+		// reaches Sunday, which the weekend filter skips).
+		prevDayStart := start.AddDate(0, 0, -3)
 		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
 		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(prevDayStart), formatLogTime(end))
