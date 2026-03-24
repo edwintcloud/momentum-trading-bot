@@ -211,7 +211,10 @@
     "ImpactModelEnabled": true,
     "MaxAcceptableImpactPct": 0.005,
 
-    "MLScoringEnabled": false,
+    "MACDFastPeriod": 12,
+    "MACDSlowPeriod": 26,
+    "MACDSignalPeriod": 9,
+    "MLScoringEnabled": true,
     "MLScoreWeight": 0.5,
 
     "MetaLabelEnabled": false,
@@ -310,7 +313,7 @@
     "MaxGrossLeverage": 2.0,
     "SectorNeutralTolerance": 0.10,
 
-    "HODMomoEnabled": true,
+    "HODMomoEnabled": false,
     "HODMomoMinIntradayPct": 10.0,
     "HODMomoMinRelativeVolume": 5.0,
     "HODMomoMaxDistFromHigh": 5.0,

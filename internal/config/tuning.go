@@ -103,6 +103,18 @@ func TuneTradingConfig(base TradingConfig, equity float64, brokerDayPnL float64)
 	if cfg.MarketRegimeEMASlowPeriod == 0 {
 		cfg.MarketRegimeEMASlowPeriod = 21
 	}
+
+	// MACD defaults (standard 12, 26, 9 for 5-minute bars)
+	if cfg.MACDFastPeriod == 0 {
+		cfg.MACDFastPeriod = 12
+	}
+	if cfg.MACDSlowPeriod == 0 {
+		cfg.MACDSlowPeriod = 26
+	}
+	if cfg.MACDSignalPeriod == 0 {
+		cfg.MACDSignalPeriod = 9
+	}
+
 	if cfg.MarketRegimeReturnLookbackMin == 0 {
 		cfg.MarketRegimeReturnLookbackMin = 30
 	}

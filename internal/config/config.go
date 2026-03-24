@@ -185,6 +185,11 @@ type TradingConfig struct {
 	ImpactModelEnabled     bool
 	MaxAcceptableImpactPct float64
 
+	// MACD indicator periods (standard: 12, 26, 9)
+	MACDFastPeriod   int
+	MACDSlowPeriod   int
+	MACDSignalPeriod int
+
 	// Phase 5: ML scoring (Change 5)
 	MLScoringEnabled bool
 	MLModelPath      string

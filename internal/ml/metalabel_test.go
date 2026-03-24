@@ -130,8 +130,8 @@ func TestScorerFeaturesToSlice(t *testing.T) {
 		VolumeRate:     2.0,
 	}
 	slice := f.ToSlice()
-	if len(slice) != 16 {
-		t.Errorf("expected 16 features, got %d", len(slice))
+	if len(slice) != 17 {
+		t.Errorf("expected 17 features, got %d", len(slice))
 	}
 	if slice[0] != 3.0 {
 		t.Errorf("expected RelativeVolume=3.0, got %f", slice[0])

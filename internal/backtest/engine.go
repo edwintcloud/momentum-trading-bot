@@ -12,6 +12,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
@@ -223,7 +224,14 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	scan := scanner.NewScanner(cfg, runtimeState)
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
-	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
+
+	// Create ML scorer for backtest if enabled
+	var mlScorer ml.Scorer
+	if cfg.MLScoringEnabled {
+		mlScorer = ml.NewRuleBasedScorer()
+	}
+
+	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator, mlScorer)
 	pendingEntries := make(map[string]pendingEntry)
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)

@@ -71,8 +71,9 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 			if !ok {
 				return fmt.Errorf("risk signal channel closed")
 			}
-			order, approved, _ := e.Evaluate(signal)
+			order, approved, reason := e.Evaluate(signal)
 			if !approved {
+				e.runtime.RecordLog("info", "risk", fmt.Sprintf("signal for %s risk blocked: %s", signal.Symbol, reason))
 				continue
 			}
 			select {

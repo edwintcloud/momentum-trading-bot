@@ -8,6 +8,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 )
 
 // Manager tracks positions, exposure, and PnL.
@@ -22,6 +23,7 @@ type Manager struct {
 	tradesToday   int
 	entriesToday  int
 	recorder      domain.EventRecorder
+	driftDetector *ml.DriftDetector
 	highWaterMark float64
 	maxDrawdown   float64
 }
@@ -40,6 +42,22 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 		dayKey:        markethours.TradingDay(time.Now()),
 		recorder:      recorder,
 		highWaterMark: cfg.StartingCapital,
+	}
+}
+
+// SetDriftDetector sets the drift detector for recording trade returns.
+func (m *Manager) SetDriftDetector(dd *ml.DriftDetector) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.driftDetector = dd
+}
+
+// recordDriftReturn feeds a closed trade's return to the drift detector.
+// Must be called with m.mu held.
+func (m *Manager) recordDriftReturn(pnl, entryPrice float64, quantity int64) {
+	if m.driftDetector != nil && entryPrice > 0 && quantity > 0 {
+		returnPct := pnl / (entryPrice * float64(quantity))
+		m.driftDetector.RecordReturn(returnPct)
 	}
 }
 
@@ -172,6 +190,7 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 	m.tradesToday++
 	delete(m.positions, report.Symbol)
 
+	m.recordDriftReturn(pnl, pos.AvgPrice, pos.Quantity)
 	if m.recorder != nil {
 		m.recorder.RecordClosedTrade(trade)
 	}
@@ -504,6 +523,7 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 	pos.UpdatedAt = report.FilledAt
 	m.positions[report.Symbol] = pos
 
+	m.recordDriftReturn(pnl, pos.AvgPrice, exitQty)
 	if m.recorder != nil {
 		m.recorder.RecordClosedTrade(trade)
 	}
@@ -592,6 +612,7 @@ func (m *Manager) RemoveStalePosition(symbol string) {
 	m.tradesToday++
 	delete(m.positions, symbol)
 
+	m.recordDriftReturn(pnl, pos.AvgPrice, pos.Quantity)
 	if m.recorder != nil {
 		m.recorder.RecordClosedTrade(trade)
 	}

@@ -381,6 +381,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PriceVsEMA9Pct:        safePct(tick.Price-metrics.ema9, metrics.ema9) * 100,
 		EMAFast:               metrics.emaFast,
 		EMASlow:               metrics.emaSlow,
+		MACDHistogram:         metrics.macdHistogram,
 		IntradayReturnPct:     intradayReturnPct,
 		SetupType:             setupType,
 		Score:                 score,
@@ -446,6 +447,7 @@ type scanMetrics struct {
 	ema9                  float64
 	emaFast               float64
 	emaSlow               float64
+	macdHistogram              float64
 	adx                        float64
 	bbUpper                    float64
 	bbMiddle                   float64
@@ -489,6 +491,10 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	m.ema9 = computeEMA(bars, 9)
 	m.emaFast = computeEMA(bars, s.config.MarketRegimeEMAFastPeriod)
 	m.emaSlow = computeEMA(bars, s.config.MarketRegimeEMASlowPeriod)
+
+	// MACD histogram (standard 12, 26, 9 on 5-minute candles)
+	bars5 := aggregate5MinBars(bars)
+	m.macdHistogram = computeMACDHistogram(bars5, s.config.MACDFastPeriod, s.config.MACDSlowPeriod, s.config.MACDSignalPeriod)
 
 	// RSI and RSI MA Slope (14-period Wilder RSI)
 	m.rsi = computeRSI(bars, 14)
@@ -723,6 +729,68 @@ func computeATR(bars []symbolBar, period int) float64 {
 		return 0
 	}
 	return sum / float64(count)
+}
+
+// aggregate5MinBars collapses 1-minute bars into 5-minute OHLCV candles.
+func aggregate5MinBars(bars []symbolBar) []symbolBar {
+	if len(bars) == 0 {
+		return nil
+	}
+	out := make([]symbolBar, 0, len(bars)/5+1)
+	for i := 0; i < len(bars); i += 5 {
+		end := i + 5
+		if end > len(bars) {
+			end = len(bars)
+		}
+		chunk := bars[i:end]
+		agg := symbolBar{
+			timestamp: chunk[0].timestamp,
+			open:      chunk[0].open,
+			high:      chunk[0].high,
+			low:       chunk[0].low,
+			close:     chunk[len(chunk)-1].close,
+			volume:    0,
+		}
+		for _, b := range chunk {
+			if b.high > agg.high {
+				agg.high = b.high
+			}
+			if b.low < agg.low || agg.low == 0 {
+				agg.low = b.low
+			}
+			agg.volume += b.volume
+		}
+		out = append(out, agg)
+	}
+	return out
+}
+
+// computeMACDHistogram returns the MACD histogram (MACD line - signal line).
+func computeMACDHistogram(bars []symbolBar, fastPeriod, slowPeriod, signalPeriod int) float64 {
+	n := len(bars)
+	if n == 0 || fastPeriod <= 0 || slowPeriod <= 0 || signalPeriod <= 0 {
+		return 0
+	}
+	// Compute running fast and slow EMAs, then MACD line at each bar
+	fastMult := 2.0 / float64(fastPeriod+1)
+	slowMult := 2.0 / float64(slowPeriod+1)
+	emaFast := bars[0].close
+	emaSlow := bars[0].close
+	macdValues := make([]float64, n)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			emaFast = (bars[i].close-emaFast)*fastMult + emaFast
+			emaSlow = (bars[i].close-emaSlow)*slowMult + emaSlow
+		}
+		macdValues[i] = emaFast - emaSlow
+	}
+	// Signal line = EMA of MACD values
+	sigMult := 2.0 / float64(signalPeriod+1)
+	signal := macdValues[0]
+	for i := 1; i < n; i++ {
+		signal = (macdValues[i]-signal)*sigMult + signal
+	}
+	return macdValues[n-1] - signal
 }
 
 func computeEMA(bars []symbolBar, period int) float64 {

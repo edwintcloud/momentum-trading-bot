@@ -163,7 +163,7 @@ func TestLoadModel_UnknownType(t *testing.T) {
 }
 
 func TestModelScorer_ImplementsInterface(t *testing.T) {
-	lm := &LinearModel{Weights: []float64{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1}, Bias: 0}
+	lm := &LinearModel{Weights: []float64{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1}, Bias: 0}
 	ms := NewModelScorer(lm)
 
 	if !ms.Enabled() {

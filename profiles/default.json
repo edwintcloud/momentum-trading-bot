@@ -11,7 +11,7 @@
     "EnableShorts": false,
     "RiskPerTradePct": 0.006938263148203671,
     "DailyLossLimitPct": 0.02,
-    "MaxTradesPerDay": 20,
+    "MaxTradesPerDay": 40,
     "MaxOpenPositions": 5,
     "MaxExposurePct": 0.8,
     "MaxShortOpenPositions": 3,
@@ -69,7 +69,7 @@
     "RegimeNeutralScoreBoost": 1.1,
     "PlaybookExits": {
       "Breakout": {
-        "ProfitTargetR": 4,
+        "ProfitTargetR": 10,
         "FailedBreakoutCutR": -0.5,
         "BreakoutFailureWindowMin": 5,
         "StagnationWindowMin": 15,
@@ -80,7 +80,7 @@
         "TightTrailATRMultiplier": 1
       },
       "Pullback": {
-        "ProfitTargetR": 3,
+        "ProfitTargetR": 10,
         "FailedBreakoutCutR": -0.3,
         "BreakoutFailureWindowMin": 10,
         "StagnationWindowMin": 20,
@@ -91,7 +91,7 @@
         "TightTrailATRMultiplier": 0.8
       },
       "Continuation": {
-        "ProfitTargetR": 5,
+        "ProfitTargetR": 10,
         "FailedBreakoutCutR": -0.5,
         "BreakoutFailureWindowMin": 5,
         "StagnationWindowMin": 15,
@@ -102,7 +102,7 @@
         "TightTrailATRMultiplier": 1.2
       },
       "Reversal": {
-        "ProfitTargetR": 2.5,
+        "ProfitTargetR": 10,
         "FailedBreakoutCutR": -0.3,
         "BreakoutFailureWindowMin": 5,
         "StagnationWindowMin": 10,
@@ -142,7 +142,7 @@
     "RSIOverboughtThreshold": 80,
     "RSIOversoldThreshold": 20,
     "TimeOfDayEnabled": true,
-    "PartialExitsEnabled": true,
+    "PartialExitsEnabled": false,
     "PartialTrigger1R": 1,
     "PartialTrigger1Pct": 0.5,
     "PartialTrigger2R": 2,
@@ -181,9 +181,12 @@
     "MinATRBars": 5,
     "ImpactModelEnabled": true,
     "MaxAcceptableImpactPct": 0.005,
-    "MLScoringEnabled": false,
+    "MACDFastPeriod": 12,
+    "MACDSlowPeriod": 26,
+    "MACDSignalPeriod": 9,
+    "MLScoringEnabled": true,
     "MLModelPath": "",
-    "MLScoreWeight": 0.5,
+    "MLScoreWeight": 1.2,
     "MetaLabelEnabled": false,
     "MetaLabelModelPath": "",
     "MetaLabelMinProb": 0.4,
@@ -270,10 +273,10 @@
     "EnsembleEnabled": false,
     "EnsembleMethod": "equal",
     "EnsembleDiversityThreshold": 0.6,
-    "MLScoringThreshold": 0.5,
+    "MLScoringThreshold": 0.9,
     "MLScoringWeightInEnsemble": 1,
-    "EntryDeadlineMinutesAfterOpen": 210,
-    "MinRiskRewardRatio": 0,
+    "EntryDeadlineMinutesAfterOpen": 0,
+    "MinRiskRewardRatio": 1,
     "MaxDistanceFromHighPct": 0,
     "VolumeOnPullbackEnabled": false,
     "MidDayScoreMultiplier": 1.5,
@@ -285,7 +288,7 @@
     "HODMomoMinMinutesSinceOpen": 5,
     "MinPositionNotionalPct": 0.2,
     "MaxVolEstimate": 5.0,
-    "BlockLosingTickerReentry": true
+    "BlockLosingTickerReentry": false
   },
   "promotion": {
     "deploymentMode": "paper",
