@@ -105,7 +105,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{}, false, "system-paused"
 	}
 
-	if !markethours.IsMarketOpen(signal.Timestamp) {
+	if !markethours.IsTradableSessionAt(signal.Timestamp) {
 		return domain.OrderRequest{}, false, "market-closed"
 	}
 

@@ -25,9 +25,9 @@ func Location() *time.Location {
 }
 
 // IsTradableSessionAt reports whether US equities can be traded at the given time
-// (includes premarket and regular hours).
+// (includes premarket, postmarket and regular hours).
 func IsTradableSessionAt(at time.Time) bool {
-	return IsMarketOpen(at) || IsPreMarket(at)
+	return IsMarketOpen(at) || IsPreMarket(at) || IsPostMarket(at)
 }
 
 // MarketOpen returns 9:30 AM ET for the given date.
@@ -70,6 +70,21 @@ func IsPreMarket(t time.Time) bool {
 	preOpen := time.Date(ny.Year(), ny.Month(), ny.Day(), 4, 0, 0, 0, nyLoc)
 	open := MarketOpen(t)
 	return !ny.Before(preOpen) && ny.Before(open)
+}
+
+// IsPostMarket returns true if the time is between 4:00 PM and 8:00 PM ET on a market day.
+func IsPostMarket(t time.Time) bool {
+	ny := t.In(nyLoc)
+	weekday := ny.Weekday()
+	if weekday == time.Saturday || weekday == time.Sunday {
+		return false
+	}
+	if IsMarketHoliday(ny) {
+		return false
+	}
+	postClose := time.Date(ny.Year(), ny.Month(), ny.Day(), 20, 0, 0, 0, nyLoc)
+	close := MarketClose(t)
+	return !ny.Before(close) && ny.Before(postClose)
 }
 
 // IsMarketHoliday returns true if the given date is a US stock market holiday.
