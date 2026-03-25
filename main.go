@@ -233,8 +233,21 @@ func runLive() {
 		}
 	}()
 
+	// Tap candidates for the UI dashboard before forwarding to strategy.
+	strategyCandidates := make(chan domain.Candidate, 256)
 	go func() {
-		if err := strategyInst.Start(ctx, candidateCh, strategyTicks, signalCh); err != nil {
+		for c := range candidateCh {
+			runtimeState.AddCandidate(c)
+			select {
+			case strategyCandidates <- c:
+			default:
+			}
+		}
+		close(strategyCandidates)
+	}()
+
+	go func() {
+		if err := strategyInst.Start(ctx, strategyCandidates, strategyTicks, signalCh); err != nil {
 			log.Printf("strategy: %v", err)
 		}
 	}()
