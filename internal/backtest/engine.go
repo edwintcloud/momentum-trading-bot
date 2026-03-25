@@ -31,7 +31,7 @@ type RunConfig struct {
 	Start        time.Time
 	End          time.Time
 	Recorder     domain.EventRecorder
-	DebugSymbols []string // symbols to trace per-bar through scanner/strategy
+	DebugSymbols []string           // symbols to trace per-bar through scanner/strategy
 	FloatStore   *alpaca.FloatStore // optional float data for tick enrichment
 }
 
@@ -75,17 +75,17 @@ type Result struct {
 	ClosedTrades        []domain.ClosedTrade
 
 	// Phase 4: Statistical rigor
-	MonteCarlo          *MonteCarloResult              `json:"monteCarlo,omitempty"`
-	Bootstrap           *BootstrapResult               `json:"bootstrap,omitempty"`
-	WalkForward         *WalkForwardResult             `json:"walkForward,omitempty"`
-	CPCV                *CPCVResult                    `json:"cpcv,omitempty"`
-	FactorDecomposition *analytics.FactorDecomposition `json:"factorDecomposition,omitempty"`
-	TotalCommissions    float64                        `json:"totalCommissions,omitempty"`
-	TotalSECFees        float64                        `json:"totalSECFees,omitempty"`
-	TotalTAFFees        float64                        `json:"totalTAFFees,omitempty"`
-	TotalSpreadCosts    float64                        `json:"totalSpreadCosts,omitempty"`
-	TotalTransactionCosts float64                      `json:"totalTransactionCosts,omitempty"`
-	ImplementationShortfall float64                    `json:"implementationShortfall,omitempty"`
+	MonteCarlo              *MonteCarloResult              `json:"monteCarlo,omitempty"`
+	Bootstrap               *BootstrapResult               `json:"bootstrap,omitempty"`
+	WalkForward             *WalkForwardResult             `json:"walkForward,omitempty"`
+	CPCV                    *CPCVResult                    `json:"cpcv,omitempty"`
+	FactorDecomposition     *analytics.FactorDecomposition `json:"factorDecomposition,omitempty"`
+	TotalCommissions        float64                        `json:"totalCommissions,omitempty"`
+	TotalSECFees            float64                        `json:"totalSECFees,omitempty"`
+	TotalTAFFees            float64                        `json:"totalTAFFees,omitempty"`
+	TotalSpreadCosts        float64                        `json:"totalSpreadCosts,omitempty"`
+	TotalTransactionCosts   float64                        `json:"totalTransactionCosts,omitempty"`
+	ImplementationShortfall float64                        `json:"implementationShortfall,omitempty"`
 }
 
 type TradeBreakdown struct {
@@ -142,6 +142,7 @@ type EntrySample struct {
 	SetupType              string
 	Score                  float64
 	StrongSqueeze          bool
+	Volume                 int64
 }
 
 // RiskRejectSample captures when a strategy-approved signal is blocked by risk.
@@ -365,7 +366,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					tick.Symbol, et.Format("15:04"), tick.Price, tick.RelativeVolume, tick.VolumeSpike, tick.GapPercent, tick.PreMarketVolume, scanReason)
 			}
 		}
-		
+
 		if ok {
 			// runtimeState.RecordLog("info", "scanner", "candidate "+candidate.Symbol+" at "+candidate.Timestamp.Format(time.RFC3339))
 			diagnostics.EntryCandidates++
@@ -615,21 +616,21 @@ func estimateTradingDays(trades []domain.ClosedTrade) int {
 
 func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.Time) {
 	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:       order.Symbol,
-		Side:         order.Side,
-		Intent:       order.Intent,
-		PositionSide: order.PositionSide,
-		Price:        order.Price,
-		Quantity:     order.Quantity,
-		StopPrice:    order.StopPrice,
-		RiskPerShare: order.RiskPerShare,
-		EntryATR:     order.EntryATR,
-		SetupType:    order.SetupType,
-		Reason:       order.Reason,
-		MarketRegime: order.MarketRegime,
+		Symbol:           order.Symbol,
+		Side:             order.Side,
+		Intent:           order.Intent,
+		PositionSide:     order.PositionSide,
+		Price:            order.Price,
+		Quantity:         order.Quantity,
+		StopPrice:        order.StopPrice,
+		RiskPerShare:     order.RiskPerShare,
+		EntryATR:         order.EntryATR,
+		SetupType:        order.SetupType,
+		Reason:           order.Reason,
+		MarketRegime:     order.MarketRegime,
 		RegimeConfidence: order.RegimeConfidence,
-		Playbook:     order.Playbook,
-		FilledAt:     at,
+		Playbook:         order.Playbook,
+		FilledAt:         at,
 	})
 }
 
@@ -675,21 +676,21 @@ func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionR
 		}
 
 		return domain.ExecutionReport{
-			Symbol:       pending.order.Symbol,
-			Side:         pending.order.Side,
-			Intent:       pending.order.Intent,
-			PositionSide: pending.order.PositionSide,
-			Price:        round2(fillPrice),
-			Quantity:     pending.order.Quantity,
-			StopPrice:    pending.order.StopPrice,
-			RiskPerShare: pending.order.RiskPerShare,
-			EntryATR:     pending.order.EntryATR,
-			SetupType:    pending.order.SetupType,
-			Reason:       pending.order.Reason,
-			MarketRegime: pending.order.MarketRegime,
+			Symbol:           pending.order.Symbol,
+			Side:             pending.order.Side,
+			Intent:           pending.order.Intent,
+			PositionSide:     pending.order.PositionSide,
+			Price:            round2(fillPrice),
+			Quantity:         pending.order.Quantity,
+			StopPrice:        pending.order.StopPrice,
+			RiskPerShare:     pending.order.RiskPerShare,
+			EntryATR:         pending.order.EntryATR,
+			SetupType:        pending.order.SetupType,
+			Reason:           pending.order.Reason,
+			MarketRegime:     pending.order.MarketRegime,
 			RegimeConfidence: pending.order.RegimeConfidence,
-			Playbook:     pending.order.Playbook,
-			FilledAt:     current.Timestamp,
+			Playbook:         pending.order.Playbook,
+			FilledAt:         current.Timestamp,
 		}, pending, true, true
 	}
 	pending.barsRemaining--
@@ -871,6 +872,7 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		SetupType:              candidate.SetupType,
 		Score:                  round2(candidate.Score),
 		StrongSqueeze:          decision.StrongSqueeze,
+		Volume:                 candidate.Volume,
 	}
 }
 

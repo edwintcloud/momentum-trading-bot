@@ -210,7 +210,6 @@ type TradingConfig struct {
 	VaRConfidenceLevel float64 // e.g. 0.95
 	VaRDailyLimitPct   float64 // max daily VaR as pct of account
 	VaRMethod          string  // "parametric" or "historical"
-	CVaRPositionSizing bool    // use CVaR for position sizing
 
 	// Risk enhancements: GARCH(1,1) volatility forecasting (Section 2.5)
 	GARCHEnabled    bool

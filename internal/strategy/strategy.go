@@ -429,7 +429,8 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 				estimatedReward = c.ATR * 2.0
 			}
 		} else {
-			estimatedReward = c.Price - c.Open
+			// For shorts, use distance to setup low (breakdown target) or ATR fallback
+			estimatedReward = c.Price - c.SetupLow
 			if estimatedReward <= 0 {
 				estimatedReward = c.ATR * 2.0
 			}
@@ -534,6 +535,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			RegimeProb:         c.RegimeConfidence,
 			VolumeLeaderPct:    c.VolumeLeaderPct,
 			MACDHistogram:      c.MACDHistogram,
+			Direction:          c.Direction,
 		}
 		if c.EMASlow > 0 {
 			features.EMAAlignment = (c.EMAFast - c.EMASlow) / c.EMASlow

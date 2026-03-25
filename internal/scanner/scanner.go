@@ -166,15 +166,12 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 		return "gap-filter"
 	}
 
-	if gapQualified {
-		if tick.RelativeVolume < cfg.MinRelativeVolume {
-			return "relative-volume"
-		}
-		if tick.PreMarketVolume < cfg.MinPremarketVolume {
-			return "premarket-volume"
-		}
+	if tick.RelativeVolume < cfg.MinRelativeVolume {
+		return "relative-volume"
 	}
-
+	if tick.PreMarketVolume < cfg.MinPremarketVolume {
+		return "premarket-volume"
+	}
 	if cfg.MaxFloat > 0 && tick.Float > 0 && tick.Float > cfg.MaxFloat {
 		return "float-too-high"
 	}
@@ -269,9 +266,8 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Determine direction
 	direction := domain.DirectionLong
-	priceVsOpenPct := safePct(tick.Price, tick.Open)
 	priceVsVWAPPct := safePct(tick.Price-metrics.vwap, metrics.vwap) * 100
-	if cfg.EnableShorts && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, priceVsVWAPPct, metrics) {
+	if s.qualifiesShortMomentumProfile(tick, priceVsVWAPPct, metrics) {
 		direction = domain.DirectionShort
 	}
 	// HOD momo qualified stocks with positive intraday return are always long
@@ -361,7 +357,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PreMarketVolume:       tick.PreMarketVolume,
 		Volume:                tick.Volume,
 		HighOfDay:             tick.HighOfDay,
-		PriceVsOpenPct:        priceVsOpenPct,
+		PriceVsOpenPct:        safePct(tick.Price, tick.Open),
 		DistanceFromHighPct:   safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100,
 		OneMinuteReturnPct:    metrics.oneMinuteReturn,
 		ThreeMinuteReturnPct:  metrics.threeMinuteReturn,
@@ -399,11 +395,17 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	return candidate, true
 }
 
-func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct float64, priceVsVWAPPCT float64, metrics scanMetrics) bool {
+func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT float64, metrics scanMetrics) bool {
+	if !s.config.EnableShorts {
+		return false
+	}
+	if metrics.setupType != "parabolic-failed-reclaim-short" {
+		return false
+	}
 	if tick.RelativeVolume < s.config.MinRelativeVolume {
 		return false
 	}
-	vwapLimit := s.config.ShortVWAPBreakMinPct
+	vwapLimit := 2.0 // parabolic-failed-reclaim uses fixed VWAP tolerance
 	if priceVsVWAPPCT > vwapLimit {
 		return false
 	}
@@ -426,7 +428,12 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct
 	if tick.GapPercent < s.config.MinGapPercent {
 		return false
 	}
-	return priceVsOpenPct >= max(2.0, s.config.MinGapPercent*0.5)
+	// priceVsOpenPct from caller is a ratio (price/open), convert to pct change for threshold
+	pctAboveOpen := 0.0
+	if tick.Open > 0 {
+		pctAboveOpen = (tick.Price - tick.Open) / tick.Open * 100
+	}
+	return pctAboveOpen >= max(2.0, s.config.MinGapPercent*0.5)
 }
 
 func (s *Scanner) getOrCreateState(tick domain.Tick) *symbolState {
@@ -595,6 +602,38 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 			m.closeOffHighPct = (high5 - tick.Price) / high5 * 100
 		}
 
+		// Parabolic-failed-reclaim-short detection (old repo used len(bars) >= 4; lastNBars handles short slices)
+		{
+			completed := bars[:n-1]
+			peakHigh := maxBarHigh(lastNBars(completed, 12))
+			peakExtensionPct := 0.0
+			if bars[0].open > 0 {
+				peakExtensionPct = (peakHigh - bars[0].open) / bars[0].open * 100
+			}
+			reclaimFailureHigh := maxBarHigh(lastNBars(completed, 3))
+			breakdownLow := minBarLow(lastNBars(completed, 3))
+			current := bars[n-1]
+			barCloseOffHigh := 0.0
+			if current.high > current.low {
+				barCloseOffHigh = (current.high - current.close) / (current.high - current.low) * 100
+			}
+			weakClose := barCloseOffHigh >= 60
+
+			if peakExtensionPct >= s.config.ShortPeakExtensionMinPct &&
+				m.oneMinuteReturn <= -0.35 &&
+				m.threeMinuteReturn <= -0.75 &&
+				weakClose &&
+				breakdownLow > 0 &&
+				current.close < breakdownLow &&
+				reclaimFailureHigh > current.close &&
+				reclaimFailureHigh < peakHigh {
+				m.setupType = "parabolic-failed-reclaim-short"
+				m.setupHigh = reclaimFailureHigh
+				m.setupLow = breakdownLow
+				m.breakoutPct = safePct(current.close-breakdownLow, breakdownLow) * 100
+			}
+		}
+
 		// Volume-on-pullback: check if recent bars have decreasing volume
 		if m.setupType == "pullback" && n >= 5 {
 			peakVolIdx := n - 5
@@ -721,6 +760,11 @@ func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction stri
 		}
 	}
 
+	// Parabolic-failed-reclaim-short setup bonus
+	if m.setupType == "parabolic-failed-reclaim-short" {
+		score += 8.5
+	}
+
 	return score
 }
 
@@ -731,6 +775,8 @@ func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string
 	case "hod_pullback", "pullback":
 		return "pullback"
 	case "mean_reversion_long", "mean_reversion_short":
+		return "reversal"
+	case "parabolic-failed-reclaim-short":
 		return "reversal"
 	}
 	if direction == domain.DirectionLong {
@@ -1062,5 +1108,38 @@ func safePct(numerator, denominator float64) float64 {
 		return 0
 	}
 	return numerator / denominator
+}
+
+func lastNBars(bars []symbolBar, n int) []symbolBar {
+	if len(bars) <= n {
+		return bars
+	}
+	return bars[len(bars)-n:]
+}
+
+func maxBarHigh(bars []symbolBar) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	h := bars[0].high
+	for _, b := range bars[1:] {
+		if b.high > h {
+			h = b.high
+		}
+	}
+	return h
+}
+
+func minBarLow(bars []symbolBar) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	l := bars[0].low
+	for _, b := range bars[1:] {
+		if b.low > 0 && b.low < l {
+			l = b.low
+		}
+	}
+	return l
 }
 
