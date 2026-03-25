@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
@@ -35,6 +36,8 @@ func NewEngine(broker BrokerClient, runtimeState *runtime.State, recorder domain
 
 // Start processes order requests from the pipeline.
 func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, fills chan<- domain.ExecutionReport) error {
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	for {
 		select {
 		case <-ctx.Done():
@@ -43,7 +46,11 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, fills
 			if !ok {
 				return fmt.Errorf("execution order channel closed")
 			}
-			go e.executeOrder(ctx, order, fills)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				e.executeOrder(ctx, order, fills)
+			}()
 		}
 	}
 }

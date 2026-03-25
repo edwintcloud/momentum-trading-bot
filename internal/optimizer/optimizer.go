@@ -781,7 +781,7 @@ func simpleMeanStd(data []float64) (float64, float64) {
 		sumSq += v * v
 	}
 	mean := sum / n
-	vari := sumSq/n - mean*mean
+	vari := (sumSq - n*mean*mean) / (n - 1)
 	return mean, math.Sqrt(math.Max(0, vari))
 }
 

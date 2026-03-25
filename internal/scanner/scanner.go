@@ -117,7 +117,10 @@ func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if ok {
 		return candidate, true, ""
 	}
-	reason := classifyTickRejection(tick, s.config)
+	s.mu.Lock()
+	cfg := s.config
+	s.mu.Unlock()
+	reason := classifyTickRejection(tick, cfg)
 	return candidate, false, reason
 }
 
@@ -189,7 +192,9 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		return domain.Candidate{}, false
 	}
 
+	s.mu.Lock()
 	cfg := s.config
+	s.mu.Unlock()
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
 		return domain.Candidate{}, false
 	}
@@ -397,6 +402,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		RegimeConfidence:      regime.Confidence,
 		Playbook:              s.selectPlaybookFromSetupType(direction, setupType),
 		Float:                 tick.Float,
+		PrevDayVolume:         tick.PrevDayVolume,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
@@ -967,7 +973,7 @@ func RankCandidates(candidates []domain.Candidate) {
 
 // computeBollingerBands computes upper, middle, and lower Bollinger Bands.
 func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, middle, lower float64) {
-	if len(bars) < period {
+	if len(bars) < period || period < 2 {
 		return 0, 0, 0
 	}
 
@@ -984,7 +990,7 @@ func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, midd
 		diff := b.close - middle
 		sumSq += diff * diff
 	}
-	stddev := math.Sqrt(sumSq / float64(period))
+	stddev := math.Sqrt(sumSq / float64(period-1))
 
 	upper = middle + k*stddev
 	lower = middle - k*stddev
@@ -993,7 +999,7 @@ func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, midd
 
 // ComputeBollingerBandsFromPrices computes Bollinger Bands from a slice of prices (exported for strategy use).
 func ComputeBollingerBandsFromPrices(prices []float64, period int, k float64) (upper, middle, lower float64) {
-	if len(prices) < period {
+	if len(prices) < period || period < 2 {
 		return 0, 0, 0
 	}
 
@@ -1010,7 +1016,7 @@ func ComputeBollingerBandsFromPrices(prices []float64, period int, k float64) (u
 		diff := p - middle
 		sumSq += diff * diff
 	}
-	stddev := math.Sqrt(sumSq / float64(period))
+	stddev := math.Sqrt(sumSq / float64(period-1))
 
 	upper = middle + k*stddev
 	lower = middle - k*stddev

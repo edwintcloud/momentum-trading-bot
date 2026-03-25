@@ -3,7 +3,6 @@ package backtest
 import (
 	"context"
 	"sort"
-	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 )
@@ -31,19 +30,6 @@ func RunCPCV(bars []InputBar, numGroups int, purgeGap int, tradingCfg config.Tra
 	for testIdx := 0; testIdx < len(groups); testIdx++ {
 		testBars := groups[testIdx]
 		if len(testBars) == 0 {
-			continue
-		}
-
-		var trainBars []InputBar
-		for i, g := range groups {
-			if i == testIdx {
-				continue
-			}
-			purged := purgeBars(g, testBars, purgeGap)
-			trainBars = append(trainBars, purged...)
-		}
-
-		if len(trainBars) == 0 || len(testBars) == 0 {
 			continue
 		}
 
@@ -96,26 +82,6 @@ func splitIntoGroups(bars []InputBar, n int) [][]InputBar {
 		groups[i] = bars[start:end]
 	}
 	return groups
-}
-
-// purgeBars removes bars from trainGroup that are within purgeGap minutes
-// of the test group boundaries to prevent information leakage.
-func purgeBars(trainGroup, testGroup []InputBar, purgeGap int) []InputBar {
-	if len(testGroup) == 0 || len(trainGroup) == 0 {
-		return trainGroup
-	}
-
-	testStart := testGroup[0].Timestamp
-	testEnd := testGroup[len(testGroup)-1].Timestamp
-	gap := time.Duration(purgeGap) * time.Minute
-
-	purged := make([]InputBar, 0, len(trainGroup))
-	for _, b := range trainGroup {
-		if b.Timestamp.Before(testStart.Add(-gap)) || b.Timestamp.After(testEnd.Add(gap)) {
-			purged = append(purged, b)
-		}
-	}
-	return purged
 }
 
 // percentile and computeSharpeFromResult are defined in montecarlo.go and walkforward.go respectively.

@@ -177,5 +177,5 @@ func variance(data []float64) float64 {
 		sumSq += v * v
 	}
 	mean := sum / n
-	return sumSq/n - mean*mean
+	return (sumSq - n*mean*mean) / (n - 1)
 }

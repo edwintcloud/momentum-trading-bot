@@ -115,7 +115,7 @@ func percentile(sorted []float64, pct float64) float64 {
 
 func meanStddev(data []float64) (float64, float64) {
 	n := float64(len(data))
-	if n == 0 {
+	if n < 2 {
 		return 0, 0
 	}
 	var sum, sumSq float64
@@ -124,6 +124,6 @@ func meanStddev(data []float64) (float64, float64) {
 		sumSq += v * v
 	}
 	mean := sum / n
-	variance := sumSq/n - mean*mean
+	variance := (sumSq - n*mean*mean) / (n - 1)
 	return mean, math.Sqrt(math.Max(0, variance))
 }

@@ -2,6 +2,7 @@ package regime
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
@@ -25,6 +26,7 @@ type barPoint struct {
 
 // Tracker maintains a benchmark-driven market regime snapshot.
 type Tracker struct {
+	mu          sync.Mutex
 	config      config.TradingConfig
 	runtime     *runtime.State
 	benchmarks  map[string]*benchmarkState
@@ -54,12 +56,17 @@ func NewTracker(cfg config.TradingConfig, runtimeState *runtime.State) *Tracker 
 
 // IsBenchmark returns true if the symbol is a regime benchmark.
 func (t *Tracker) IsBenchmark(symbol string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	_, exists := t.benchmarks[strings.ToUpper(strings.TrimSpace(symbol))]
 	return exists
 }
 
 // UpdateTick updates the regime tracker with a new tick.
 func (t *Tracker) UpdateTick(tick domain.Tick) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	state, exists := t.benchmarks[strings.ToUpper(strings.TrimSpace(tick.Symbol))]
 	if !exists || tick.Price <= 0 {
 		return

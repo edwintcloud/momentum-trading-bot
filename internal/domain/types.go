@@ -96,6 +96,7 @@ type Candidate struct {
 	RegimeConfidence      float64   `json:"regimeConfidence"`
 	Playbook              string    `json:"playbook"`
 	Float                 int64     `json:"float"`
+	PrevDayVolume         int64     `json:"prevDayVolume"`
 	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
@@ -121,6 +122,7 @@ type TradeSignal struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	AvgDailyVolume   float64   `json:"avgDailyVolume"`
 	Timestamp        time.Time `json:"timestamp"`
 }
 

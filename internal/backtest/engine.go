@@ -326,6 +326,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 				if order.Intent != domain.IntentPartial {
 					if analytics, exists := openAnalytics[order.Symbol]; exists {
 						closedAnalytics = append(closedAnalytics, tradeAnalytics{
+							side:         analytics.side,
 							entryPrice:   analytics.entryPrice,
 							riskPerShare: analytics.riskPerShare,
 							openedAt:     analytics.openedAt,
@@ -547,9 +548,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		result.TotalTAFFees = round2(totalTAF)
 		result.TotalSpreadCosts = round2(totalSpread)
 		result.TotalTransactionCosts = round2(totalComm + totalSEC + totalTAF + totalSpread)
-		totalGrossPnL := grossWins + grossLosses
-		if totalGrossPnL > 0 {
-			result.ImplementationShortfall = round2(result.TotalTransactionCosts / totalGrossPnL * 100)
+		var totalNotional float64
+		for _, trade := range closedTrades {
+			qty := float64(trade.Quantity)
+			totalNotional += trade.EntryPrice*qty + trade.ExitPrice*qty
+		}
+		if totalNotional > 0 {
+			result.ImplementationShortfall = round2(result.TotalTransactionCosts / totalNotional * 100)
 		}
 	}
 
@@ -583,25 +588,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	// Phase 5: Factor decomposition
-	if cfg.FactorAnalysisEnabled && len(closedTrades) >= 20 {
-		stratReturns := make([]float64, len(closedTrades))
-		mktReturns := make([]float64, len(closedTrades))
-		momReturns := make([]float64, len(closedTrades))
-		sizeReturns := make([]float64, len(closedTrades))
-		for i, ct := range closedTrades {
-			if cfg.StartingCapital > 0 {
-				stratReturns[i] = ct.PnL / cfg.StartingCapital
-			}
-			// Use zero-centered proxies for factors when benchmark data is unavailable
-			mktReturns[i] = stratReturns[i] * 0.5
-			momReturns[i] = stratReturns[i] * 0.3
-			sizeReturns[i] = stratReturns[i] * 0.1
-		}
-		fd := analytics.DecomposeReturns(stratReturns, mktReturns, momReturns, sizeReturns)
-		if fd.RSquared > 0 {
-			result.FactorDecomposition = &fd
-		}
-	}
+	// Skipped: requires real benchmark/factor return series (e.g. SPY, Fama-French).
+	// Synthetic proxies (scalar multiples of strategy returns) produce algebraically
+	// predetermined results and misleading alpha/R² values.
 
 	return result, nil
 }
@@ -939,6 +928,7 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 		Open:            round2(state.open),
 		HighOfDay:       round2(state.highOfDay),
 		Volume:          state.totalVolume,
+		PrevDayVolume:   state.prevDayVolume,
 		RelativeVolume:  round2(relativeVolume),
 		GapPercent:      round2(gapPercent),
 		PreMarketVolume: state.preMarketVol,

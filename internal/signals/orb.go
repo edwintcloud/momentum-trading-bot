@@ -41,6 +41,7 @@ type orbState struct {
 	barCount      int
 	prevClose     float64 // previous session close for gap calculation
 	hasPrevClose  bool
+	lastClose     float64 // most recent bar close (for session-end tracking)
 	fired         bool // only fire once per session
 	marketOpenET  time.Time
 }
@@ -92,11 +93,11 @@ func (o *ORB) OnBar(symbol string, bar Bar) *Signal {
 	// Detect new session (date change in ET)
 	sessionDate := time.Date(barET.Year(), barET.Month(), barET.Day(), 0, 0, 0, 0, markethours.Location())
 	if !sessionDate.Equal(st.sessionDate) {
-		// Save today's open price as prev close for next session
+		// Use the last close from the previous session for gap calculation
 		prevClose := st.prevClose
 		hasPrevClose := st.hasPrevClose
-		if st.barCount > 0 && st.rangeHigh > 0 {
-			prevClose = bar.Close // approximate
+		if st.barCount > 0 && st.lastClose > 0 {
+			prevClose = st.lastClose
 			hasPrevClose = true
 		}
 		*st = orbState{
@@ -148,9 +149,12 @@ func (o *ORB) OnBar(symbol string, bar Bar) *Signal {
 		return nil
 	}
 
+	// Track last close for session-end reference
+	st.lastClose = bar.Close
+
 	// Gap filter: skip if overnight gap > threshold
 	if st.hasPrevClose && st.prevClose > 0 {
-		gapPct := math.Abs(bar.Open-st.prevClose) / st.prevClose
+		gapPct := math.Abs(st.rangeHigh-st.prevClose) / st.prevClose
 		if gapPct > o.cfg.MaxGapPct {
 			st.fired = true // mark as fired to skip for rest of session
 			return nil

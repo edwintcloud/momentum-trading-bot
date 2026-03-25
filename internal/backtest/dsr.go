@@ -12,7 +12,7 @@ func ProbabilisticSharpeRatio(observedSR, srThreshold float64, numReturns int, s
 
 	// Standard error of Sharpe ratio (Lo 2002, Bailey & Lopez de Prado 2014)
 	sr2 := observedSR * observedSR
-	numerator := 1.0 - skewness*observedSR + (kurtosis-1.0)/4.0*sr2
+	numerator := 1.0 - skewness*observedSR + kurtosis/4.0*sr2
 	if numerator < 0 {
 		numerator = 1.0 // fallback
 	}
@@ -49,7 +49,7 @@ func normalCDF(z float64) float64 {
 func SkewnessKurtosis(returns []float64) (skewness, kurtosis float64) {
 	n := float64(len(returns))
 	if n < 3 {
-		return 0, 3
+		return 0, 0
 	}
 
 	mean := 0.0
@@ -74,6 +74,6 @@ func SkewnessKurtosis(returns []float64) (skewness, kurtosis float64) {
 	}
 
 	skewness = m3 / math.Pow(m2, 1.5)
-	kurtosis = m4 / (m2 * m2) // raw kurtosis (normal = 3)
+	kurtosis = m4/(m2*m2) - 3.0 // excess kurtosis (normal = 0)
 	return
 }

@@ -208,10 +208,10 @@ func historicalCVaR(returns []float64, confidence float64) float64 {
 	return cvar
 }
 
-// meanStdDev computes the mean and population standard deviation of a slice.
+// meanStdDev computes the mean and sample standard deviation of a slice.
 func meanStdDev(data []float64) (float64, float64) {
 	n := float64(len(data))
-	if n == 0 {
+	if n < 2 {
 		return 0, 0
 	}
 	var sum, sumSq float64
@@ -220,7 +220,7 @@ func meanStdDev(data []float64) (float64, float64) {
 		sumSq += v * v
 	}
 	mu := sum / n
-	variance := sumSq/n - mu*mu
+	variance := (sumSq - n*mu*mu) / (n - 1)
 	if variance < 0 {
 		variance = 0
 	}

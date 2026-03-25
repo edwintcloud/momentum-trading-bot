@@ -559,11 +559,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		if err == nil {
 			// Apply drift confidence reduction if detector available
 			if s.config.ConceptDriftEnabled && s.driftDetector != nil {
-				// PSI-based drift: reduces score when feature distributions shift
-				psi, drifted := s.driftDetector.CheckPSI(nil, s.config.PSIThreshold)
-				if drifted {
-					mlScore *= ml.ConfidenceMultiplier(psi, s.config.PSIThreshold)
-				}
 				// Performance-based drift: reduces score when rolling Sharpe decays
 				if s.driftDetector.CheckPerformanceDrift(s.config.SharpeDecayThreshold) {
 					mlScore *= 0.5
@@ -640,6 +635,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		RegimeConfidence: c.RegimeConfidence,
 		Playbook:         c.Playbook,
 		Sector:           candidateSector,
+		AvgDailyVolume:   float64(c.PrevDayVolume),
 		Timestamp:        now,
 	}
 

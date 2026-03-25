@@ -684,11 +684,17 @@ func (m *Manager) PortfolioHeat() float64 {
 
 // PortfolioHeatPct returns total open risk as a fraction of current equity.
 func (m *Manager) PortfolioHeatPct() float64 {
-	equity := m.CurrentEquity()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	equity := m.currentEquityLocked()
 	if equity <= 0 {
 		return 0
 	}
-	return m.PortfolioHeat() / equity
+	var totalRisk float64
+	for _, pos := range m.positions {
+		totalRisk += pos.RiskPerShare * float64(pos.Quantity)
+	}
+	return totalRisk / equity
 }
 
 // UpdateEquityTracking updates the high-water mark and max drawdown.

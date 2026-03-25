@@ -34,12 +34,14 @@ type vpinBucket struct {
 
 // vpinState tracks per-symbol VPIN computation state.
 type vpinState struct {
-	adv            float64 // average daily volume (set externally)
+	adv            float64 // average daily volume (set externally or auto-calibrated)
 	bucketSize     int64
 	currentBucket  vpinBucket
 	completeBuckets []vpinBucket
 	lastClose      float64
 	hasFirst       bool
+	cumulativeVol  int64 // accumulated volume for auto-calibration
+	cumulativeBars int   // accumulated bars for auto-calibration
 }
 
 // VPIN implements Volume-Synchronized Probability of Informed Trading.
@@ -91,10 +93,26 @@ func (v *VPIN) OnBar(symbol string, bar Bar) *Signal {
 
 	st := v.getState(symbol)
 
-	// Need ADV to determine bucket size
+	// Auto-calibrate bucket size from observed volume if ADV not set externally
+	st.cumulativeVol += bar.Volume
+	st.cumulativeBars++
+	if st.bucketSize <= 0 && st.cumulativeBars >= 30 {
+		// Estimate ADV from observed average bar volume × 390 minute bars per day
+		avgBarVol := float64(st.cumulativeVol) / float64(st.cumulativeBars)
+		estimatedADV := avgBarVol * 390
+		if v.cfg.BucketDivisor > 0 {
+			st.bucketSize = int64(estimatedADV / float64(v.cfg.BucketDivisor))
+		}
+		if st.bucketSize <= 0 {
+			st.bucketSize = 10000
+		}
+	}
+
+	// Need bucket size to proceed
 	if st.bucketSize <= 0 {
-		// Use a reasonable default if ADV not set: accumulate 10k shares per bucket
-		st.bucketSize = 10000
+		st.lastClose = bar.Close
+		st.hasFirst = true
+		return nil
 	}
 
 	if !st.hasFirst {

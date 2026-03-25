@@ -107,17 +107,5 @@ func RunFactorNeutral(input FactorNeutralInput) FactorNeutralResult {
 		result.HedgeShares = -result.NetBeta * input.PortfolioNotional / input.BenchmarkPrice
 	}
 
-	// Also adjust weights proportionally to reduce net beta
-	// Scale all weights so that |net_beta| ≤ maxBeta
-	if math.Abs(result.NetBeta) > 1e-12 {
-		scale := maxBeta / math.Abs(result.NetBeta)
-		if scale < 1.0 {
-			for sym, w := range result.AdjustedWeights {
-				result.AdjustedWeights[sym] = w * scale
-			}
-			result.NetBeta *= scale
-		}
-	}
-
 	return result
 }

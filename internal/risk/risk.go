@@ -242,9 +242,12 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 
 	// Phase 5: Market impact model — cap position size based on estimated impact
 	if e.config.ImpactModelEnabled && signal.Price > 0 && signal.Quantity > 0 {
-		// Estimate ADV as 100x order size as a conservative default
-		estimatedADV := float64(signal.Quantity) * 100
-		impactParams := execution.DefaultImpactParams(estimatedADV, e.config.DefaultVolatility)
+		adv := signal.AvgDailyVolume
+		if adv <= 0 {
+			// Conservative fallback when ADV is unknown
+			adv = float64(signal.Quantity) * 100
+		}
+		impactParams := execution.DefaultImpactParams(adv, e.config.DefaultVolatility)
 		impact := execution.EstimateImpact(int(signal.Quantity), signal.Price, impactParams)
 		if impact > e.config.MaxAcceptableImpactPct {
 			maxQty := execution.FindMaxQtyWithinImpact(signal.Price, impactParams, e.config.MaxAcceptableImpactPct)
@@ -393,6 +396,7 @@ func (e *Engine) toOrderRequest(signal domain.TradeSignal) domain.OrderRequest {
 		RegimeConfidence: signal.RegimeConfidence,
 		Playbook:         signal.Playbook,
 		Sector:           signal.Sector,
+		AvgDailyVolume:   signal.AvgDailyVolume,
 		Timestamp:        signal.Timestamp,
 	}
 }
