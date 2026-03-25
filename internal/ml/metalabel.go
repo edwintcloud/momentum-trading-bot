@@ -75,7 +75,11 @@ func MetaLabelSizing(metaProbability float64, baseQuantity int, minProb float64)
 	}
 
 	// Scale from 0.5x (at minProb) to 1.5x (at 0.80)
-	scaleFactor := 0.5 + (metaProbability-minProb)/(0.80-minProb)*1.0
+	denom := 0.80 - minProb
+	if denom <= 0 {
+		denom = 0.01
+	}
+	scaleFactor := 0.5 + (metaProbability-minProb)/denom*1.0
 	if scaleFactor > 1.5 {
 		scaleFactor = 1.5
 	}

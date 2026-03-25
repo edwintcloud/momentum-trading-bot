@@ -42,7 +42,7 @@ func (p *Profile) AddBar(high, low float64, volume int64) {
 	if volumePerStep < 1 {
 		volumePerStep = 1
 	}
-	for i := 0; i <= steps; i++ {
+	for i := 0; i < steps; i++ {
 		price := low + float64(i)*p.tickSize
 		key := int64(math.Round(price / p.tickSize))
 		p.levels[key] += volumePerStep

@@ -529,8 +529,14 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		var totalComm, totalSEC, totalTAF, totalSpread float64
 		for _, trade := range closedTrades {
 			qty := int(trade.Quantity)
-			entryCosts := ComputeTransactionCosts(trade.EntryPrice, qty, "buy", cfg.DefaultSpreadBps, cfg.CommissionPerShare)
-			exitCosts := ComputeTransactionCosts(trade.ExitPrice, qty, "sell", cfg.DefaultSpreadBps, cfg.CommissionPerShare)
+			entrySide := "buy"
+			exitSide := "sell"
+			if trade.Side == "short" {
+				entrySide = "sell"
+				exitSide = "buy"
+			}
+			entryCosts := ComputeTransactionCosts(trade.EntryPrice, qty, entrySide, cfg.DefaultSpreadBps, cfg.CommissionPerShare)
+			exitCosts := ComputeTransactionCosts(trade.ExitPrice, qty, exitSide, cfg.DefaultSpreadBps, cfg.CommissionPerShare)
 			totalComm += entryCosts.Commission + exitCosts.Commission
 			totalSEC += entryCosts.SECFee + exitCosts.SECFee
 			totalTAF += entryCosts.TAFFee + exitCosts.TAFFee

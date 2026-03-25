@@ -228,7 +228,7 @@ func tradingDayWindows(start, end time.Time, location *time.Location) []tradingD
 				out = append(out, tradingDayWindow{start: dayStart, end: dayEnd})
 			}
 		}
-		cursor = cursor.Add(24 * time.Hour)
+		cursor = cursor.AddDate(0, 0, 1)
 	}
 	return out
 }

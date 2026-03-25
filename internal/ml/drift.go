@@ -175,8 +175,11 @@ func (d *DriftDetector) RollingSharpe() float64 {
 // has fallen below the baseline threshold, indicating the model should
 // be disabled or retrained.
 func (d *DriftDetector) CheckPerformanceDrift(baselineThreshold float64) bool {
+	d.mu.Lock()
+	n := len(d.recentReturns)
+	d.mu.Unlock()
 	sharpe := d.RollingSharpe()
-	return len(d.recentReturns) >= 30 && sharpe < baselineThreshold
+	return n >= 30 && sharpe < baselineThreshold
 }
 
 // ConfidenceMultiplier returns a multiplier for model confidence based on

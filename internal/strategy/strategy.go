@@ -545,6 +545,10 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			MACDHistogram:      c.MACDHistogram,
 			Direction:          c.Direction,
 		}
+		// Normalize MACD histogram to percentage of price for consistent scoring
+		if c.Price > 0 {
+			features.MACDHistogram = c.MACDHistogram / c.Price * 100
+		}
 		if c.EMASlow > 0 {
 			features.EMAAlignment = (c.EMAFast - c.EMASlow) / c.EMASlow
 		}
