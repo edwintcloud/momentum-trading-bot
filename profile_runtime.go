@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
-	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
-	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 )
 
 func applyConfiguredTradingProfile(base config.TradingConfig, profilePath string) (config.TradingConfig, string, error) {
@@ -21,28 +19,4 @@ func applyConfiguredTradingProfile(base config.TradingConfig, profilePath string
 	cfg = config.ApplyTradingProfile(cfg, profile)
 	cfg = config.NormalizeStrategyProfile(cfg)
 	return cfg, fmt.Sprintf("%s@%s", profile.Name, profile.Version), nil
-}
-
-func buildRuntimeOptimizerStatus(active config.TradingConfig) runtime.OptimizerStatus {
-	status := runtime.OptimizerStatus{
-		ActiveProfileName:    active.StrategyProfileName,
-		ActiveProfileVersion: active.StrategyProfileVersion,
-	}
-	artifactStatus, err := optimizer.LoadArtifactStatus(optimizer.DefaultArtifactDir)
-	if err != nil {
-		status.LastPaperValidationResult = "optimizer-artifacts-unavailable"
-		return status
-	}
-	status.PendingProfileName = artifactStatus.PendingProfileName
-	status.PendingProfileVersion = artifactStatus.PendingProfileVersion
-	status.LastOptimizerRun = artifactStatus.LastOptimizerRun
-	status.LastPaperValidationResult = artifactStatus.LastPaperValidationResult
-	if status.LastPaperValidationResult == "" {
-		status.LastPaperValidationResult = "no-pending-candidate"
-	}
-	if status.PendingProfileName == status.ActiveProfileName && status.PendingProfileVersion == status.ActiveProfileVersion {
-		status.PendingProfileName = ""
-		status.PendingProfileVersion = ""
-	}
-	return status
 }

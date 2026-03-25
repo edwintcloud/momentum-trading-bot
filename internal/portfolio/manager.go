@@ -155,6 +155,11 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 		return
 	}
 
+	m.closePositionLocked(pos, report)
+}
+
+// closePositionLocked performs the actual close. Caller must hold m.mu.
+func (m *Manager) closePositionLocked(pos domain.Position, report domain.ExecutionReport) {
 	var pnl float64
 	if domain.IsLong(pos.Side) {
 		pnl = (report.Price - pos.AvgPrice) * float64(pos.Quantity)
@@ -188,7 +193,7 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 	m.closedTrades = append(m.closedTrades, trade)
 	m.dayPnL += pnl
 	m.tradesToday++
-	delete(m.positions, report.Symbol)
+	delete(m.positions, pos.Symbol)
 
 	m.recordDriftReturn(pnl, pos.AvgPrice, pos.Quantity)
 	if m.recorder != nil {
@@ -324,7 +329,6 @@ func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.resetDayIfNeededLocked()
 
 	exposure, longExposure, shortExposure := float64(0), float64(0), float64(0)
 	var unrealized float64
@@ -435,17 +439,6 @@ func (m *Manager) resetDayIfNeeded() {
 	}
 }
 
-func (m *Manager) resetDayIfNeededLocked() {
-	today := markethours.TradingDay(time.Now())
-	if today != m.dayKey {
-		m.dayKey = today
-		m.dayPnL = 0
-		m.tradesToday = 0
-		m.entriesToday = 0
-		m.closedTrades = m.closedTrades[:0]
-	}
-}
-
 // UpdateStopPrice updates the stop price for a position (trailing stop).
 func (m *Manager) UpdateStopPrice(symbol string, newStop float64) {
 	m.mu.Lock()
@@ -460,6 +453,7 @@ func (m *Manager) UpdateStopPrice(symbol string, newStop float64) {
 }
 
 // ReducePosition partially closes a position, reducing quantity and recording a partial trade.
+// If the exit quantity equals or exceeds the position size, a full close is performed inline.
 func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -472,10 +466,8 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 
 	exitQty := report.Quantity
 	if exitQty >= pos.Quantity {
-		// Full close — delegate to ClosePosition
-		m.mu.Unlock()
-		m.ClosePosition(report)
-		m.mu.Lock()
+		// Full close — inline instead of delegating to avoid mutex unlock/relock race.
+		m.closePositionLocked(pos, report)
 		return
 	}
 

@@ -742,16 +742,11 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		}
 	}
 
-	// For stop-loss exits, clamp exit price to the stop price to avoid >-1R losses
-	// when price gaps through the stop level.
+	// Use actual market price for exit orders. In live trading, the order must be
+	// priced at or through the current market to fill — clamping to the stop price
+	// produces a limit order on the wrong side of the market when price gaps through,
+	// causing the order to sit unfilled while losses grow.
 	exitPrice := tick.Price
-	if (reason == "stop-loss" || reason == "stop-loss-fallback") && pos.StopPrice > 0 {
-		if domain.IsLong(pos.Side) && tick.Price < pos.StopPrice {
-			exitPrice = pos.StopPrice
-		} else if domain.IsShort(pos.Side) && tick.Price > pos.StopPrice {
-			exitPrice = pos.StopPrice
-		}
-	}
 
 	signal := domain.TradeSignal{
 		Symbol:       tick.Symbol,

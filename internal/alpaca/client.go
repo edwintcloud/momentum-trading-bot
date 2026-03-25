@@ -11,7 +11,6 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
-	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
 )
 
 const (
@@ -95,7 +94,7 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 
 	limitPrice := order.Price
 	// Percentage-based slippage by liquidity tier
-	slippage := scanner.ComputeSlippage(order.Price, order.AvgDailyVolume,
+	slippage := computeOrderSlippage(order.Price, order.AvgDailyVolume,
 		5.0, 10.0, 20.0) // liquid, mid, illiquid bps
 	if slippage < 0.01 {
 		slippage = 0.05 // minimum slippage floor
@@ -243,10 +242,10 @@ func (c *Client) GetHistoricalBars(ctx context.Context, symbol string, start, en
 	pageToken := ""
 
 	for {
-		url := fmt.Sprintf("%s/v2/stocks/%s/bars?start=%s&end=%s&timeframe=%s&limit=10000&sort=asc&adjustment=split",
+		url := fmt.Sprintf("%s/v2/stocks/%s/bars?start=%s&end=%s&timeframe=%s&limit=10000&sort=asc&adjustment=split&feed=%s",
 			c.dataURL, symbol,
 			start.Format(time.RFC3339), end.Format(time.RFC3339),
-			timeframe)
+			timeframe, c.DataFeed())
 		if pageToken != "" {
 			url += "&page_token=" + pageToken
 		}
@@ -361,4 +360,18 @@ func (c *Client) getWithHeaders(ctx context.Context, url string, dest interface{
 func (c *Client) setAuth(req *http.Request) {
 	req.Header.Set("APCA-API-KEY-ID", c.apiKey)
 	req.Header.Set("APCA-API-SECRET-KEY", c.apiSecret)
+}
+
+// computeOrderSlippage computes percentage-based slippage by liquidity tier.
+func computeOrderSlippage(price float64, avgDailyVolume float64, liquidBps, midBps, illiquidBps float64) float64 {
+	var spreadPct float64
+	switch {
+	case avgDailyVolume > 5_000_000:
+		spreadPct = liquidBps / 10000.0
+	case avgDailyVolume > 500_000:
+		spreadPct = midBps / 10000.0
+	default:
+		spreadPct = illiquidBps / 10000.0
+	}
+	return price * spreadPct
 }
