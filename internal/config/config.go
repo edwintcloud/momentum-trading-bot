@@ -35,6 +35,7 @@ type ScannerConfig struct {
 	HODMomoMaxDistFromHigh     float64
 	HODMomoPullbackMaxDist     float64
 	HODMomoMinMinutesSinceOpen float64
+	MaxVolumeLeaders           int // only consider the top N symbols by dollar volume (0 = disabled)
 }
 
 // StrategyConfig holds entry/exit rules and position management parameters.

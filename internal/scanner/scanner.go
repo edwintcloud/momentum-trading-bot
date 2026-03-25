@@ -38,7 +38,7 @@ type Scanner struct {
 	mu            sync.Mutex
 	state         map[string]*symbolState
 	leaderDay     string
-	leaderMetrics map[string]float64
+	leaderMetrics map[string]float64 // symbol → cumulative dollar volume for current day
 }
 
 // NewScanner creates a scanner with the configured filters.
@@ -49,6 +49,41 @@ func NewScanner(cfg config.TradingConfig, runtimeState *runtime.State) *Scanner 
 		state:         make(map[string]*symbolState),
 		leaderMetrics: make(map[string]float64),
 	}
+}
+
+// isVolumeLeader returns true if the symbol ranks within the top MaxVolumeLeaders
+// by cumulative dollar volume for the current day. Must be called with s.mu held.
+func (s *Scanner) isVolumeLeader(symbol string) bool {
+	limit := s.config.MaxVolumeLeaders
+	if limit <= 0 {
+		return true // disabled
+	}
+	myVol := s.leaderMetrics[symbol]
+	if myVol <= 0 {
+		return false
+	}
+	// Count how many symbols have strictly higher dollar volume.
+	rank := 1
+	for sym, vol := range s.leaderMetrics {
+		if sym != symbol && vol > myVol {
+			rank++
+			if rank > limit {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// trackDollarVolume accumulates dollar volume for the symbol on the current day.
+// Must be called with s.mu held.
+func (s *Scanner) trackDollarVolume(tick domain.Tick) {
+	day := tick.Timestamp.Format("2006-01-02")
+	if day != s.leaderDay {
+		s.leaderDay = day
+		s.leaderMetrics = make(map[string]float64)
+	}
+	s.leaderMetrics[tick.Symbol] += tick.Price * float64(tick.Volume)
 }
 
 // UpdateConfig replaces the scanner's trading config.
@@ -194,6 +229,8 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	s.mu.Lock()
 	cfg := s.config
+	// Track dollar volume for volume leaders filtering.
+	s.trackDollarVolume(tick)
 	s.mu.Unlock()
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
 		return domain.Candidate{}, false
@@ -381,6 +418,14 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
+	}
+
+	// Volume leaders gate: only emit candidates for top N symbols by dollar volume.
+	s.mu.Lock()
+	leader := s.isVolumeLeader(tick.Symbol)
+	s.mu.Unlock()
+	if !leader {
+		return domain.Candidate{}, false
 	}
 
 	return candidate, true

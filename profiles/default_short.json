@@ -38,7 +38,8 @@
       "HODMomoMinRelativeVolume": 5,
       "HODMomoMaxDistFromHigh": 5,
       "HODMomoPullbackMaxDist": 0,
-      "HODMomoMinMinutesSinceOpen": 5
+      "HODMomoMinMinutesSinceOpen": 5,
+      "MaxVolumeLeaders": 5
     },
     "Strategy": {
       "EnableShorts": true,
