@@ -75,6 +75,10 @@ func runBacktest(args []string) error {
 		if err := floatStore.LoadFromCSV(floatDataURL); err != nil {
 			log.Printf("Backtest float data warning: %v", err)
 		}
+	} else {
+		if _, err := floatStore.LoadOrFetchFloatData(context.Background()); err != nil {
+			log.Printf("Backtest float data warning (SEC EDGAR): %v", err)
+		}
 	}
 
 	runCfg := backtest.RunConfig{
@@ -119,7 +123,7 @@ func runBacktest(args []string) error {
 		} else {
 			log.Printf("Backtest account tuning skipped: %v", accountErr)
 		}
-		symbols, err := resolveBacktestSymbols(setupCtx, client)
+		symbols, err := resolveBacktestSymbols(setupCtx, client, end)
 		if err != nil {
 			return err
 		}
@@ -196,11 +200,43 @@ func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) 
 	return start, end, nil
 }
 
-func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client) ([]string, error) {
+func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time) ([]string, error) {
+	type symbolCache struct {
+		Date    string   `json:"date"`
+		Symbols []string `json:"symbols"`
+	}
+
+	cachePath := filepath.Join(".cache", "backtest", "symbols.json")
+
+	// Try to load cached symbols if backtest end date is not after cache date.
+	if raw, err := os.ReadFile(cachePath); err == nil {
+		var cached symbolCache
+		if err := json.Unmarshal(raw, &cached); err == nil && len(cached.Symbols) > 0 {
+			if cacheDate, err := time.Parse("2006-01-02", cached.Date); err == nil {
+				if !backtestEnd.After(cacheDate.AddDate(0, 0, 1)) {
+					log.Printf("Using cached symbol list (%d symbols, cached %s)", len(cached.Symbols), cached.Date)
+					return cached.Symbols, nil
+				}
+			}
+		}
+	}
+
 	symbols, err := client.ListEquitySymbols(ctx, false)
 	if err != nil {
 		return nil, err
 	}
+
+	// Write cache.
+	cache := symbolCache{
+		Date:    backtestEnd.Format("2006-01-02"),
+		Symbols: symbols,
+	}
+	if data, err := json.Marshal(cache); err == nil {
+		_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
+		_ = os.WriteFile(cachePath, data, 0o644)
+		log.Printf("Cached %d symbols for date %s", len(symbols), cache.Date)
+	}
+
 	return symbols, nil
 }
 
