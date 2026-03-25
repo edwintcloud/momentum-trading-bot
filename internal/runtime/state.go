@@ -128,6 +128,18 @@ func (s *State) DependencyStatuses() map[string]bool {
 	return out
 }
 
+const maxCandidates = 50
+
+// AddCandidate appends a candidate, keeping only the most recent maxCandidates.
+func (s *State) AddCandidate(c domain.Candidate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.candidates = append(s.candidates, c)
+	if len(s.candidates) > maxCandidates {
+		s.candidates = s.candidates[len(s.candidates)-maxCandidates:]
+	}
+}
+
 // SetCandidates replaces the current scanner candidate list.
 func (s *State) SetCandidates(candidates []domain.Candidate) {
 	s.mu.Lock()
