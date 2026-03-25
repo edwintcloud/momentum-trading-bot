@@ -474,8 +474,16 @@ func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 	}
 	if tick.BarHigh > 0 && tick.BarLow > 0 {
 		typical := (tick.BarHigh + tick.BarLow + tick.Price) / 3
-		state.cumulativeDollarFlow += typical * float64(tick.Volume)
-		state.cumulativeVolume += float64(tick.Volume)
+		// Derive per-bar volume from cumulative session volume
+		barVol := tick.Volume
+		if len(state.bars) > 0 {
+			barVol = tick.Volume - state.bars[len(state.bars)-1].cumulativeVolume
+		}
+		if barVol < 0 {
+			barVol = 0
+		}
+		state.cumulativeDollarFlow += typical * float64(barVol)
+		state.cumulativeVolume += float64(barVol)
 		if state.cumulativeVolume > 0 {
 			bar.vwap = state.cumulativeDollarFlow / state.cumulativeVolume
 		}
@@ -652,16 +660,25 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 		// Volume-on-pullback: check if recent bars have decreasing volume
 		if m.setupType == "pullback" && n >= 5 {
+			// Derive per-bar volumes from cumulative session volumes
+			barVols := make([]int64, n)
+			barVols[0] = bars[0].volume
+			for i := 1; i < n; i++ {
+				barVols[i] = bars[i].volume - bars[i-1].volume
+				if barVols[i] < 0 {
+					barVols[i] = 0
+				}
+			}
 			peakVolIdx := n - 5
 			for i := n - 4; i < n; i++ {
-				if bars[i].volume > bars[peakVolIdx].volume {
+				if barVols[i] > barVols[peakVolIdx] {
 					peakVolIdx = i
 				}
 			}
 			if peakVolIdx < n-1 {
 				volumeDecreasing := true
 				for i := peakVolIdx + 1; i < n; i++ {
-					if bars[i].volume > bars[i-1].volume*115/100 { // allow 15% tolerance
+					if barVols[i] > barVols[i-1]*115/100 { // allow 15% tolerance
 						volumeDecreasing = false
 						break
 					}

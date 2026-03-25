@@ -429,6 +429,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 	openPositionsAtEnd := book.OpenPositionCount()
 	wins := 0
+	losses := 0
 	grossWins := 0.0
 	grossLosses := 0.0
 	totalWinR := 0.0
@@ -447,6 +448,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			totalWinR += trade.RMultiple
 			totalWinPnL += trade.PnL
 		} else if trade.PnL < 0 {
+			losses++
 			grossLosses += math.Abs(trade.PnL)
 			totalLossR += trade.RMultiple
 			totalLossPnL += trade.PnL
@@ -480,8 +482,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	avgTimeToStopMin := 0.0
 	if len(closedTrades) > 0 {
 		winRate = (float64(wins) / float64(len(closedTrades))) * 100
-		avgMFER = totalMFER / float64(len(closedTrades))
-		avgMAER = totalMAER / float64(len(closedTrades))
+		if len(closedAnalytics) > 0 {
+			avgMFER = totalMFER / float64(len(closedAnalytics))
+			avgMAER = totalMAER / float64(len(closedAnalytics))
+		}
 		trailingStopExitPct = (float64(trailingStopExits) / float64(len(closedTrades))) * 100
 	}
 	if grossLosses > 0 {
@@ -491,7 +495,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		avgWinR = totalWinR / float64(wins)
 		avgWinPnL = totalWinPnL / float64(wins)
 	}
-	losses := len(closedTrades) - wins
 	if losses > 0 {
 		avgLossR = totalLossR / float64(losses)
 		avgLossPnL = totalLossPnL / float64(losses)

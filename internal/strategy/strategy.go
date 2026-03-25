@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
@@ -67,6 +68,7 @@ func currentTimeWindow(ts time.Time) TimeWindow {
 // Strategy implements breakout entries and managed exits.
 type Strategy struct {
 	config              config.TradingConfig
+	mu                  sync.Mutex
 	portfolio           *portfolio.Manager
 	runtime             *runtime.State
 	riskEngine          *risk.Engine
@@ -171,7 +173,16 @@ func BuildSignalAggregator(cfg config.TradingConfig) *signals.Aggregator {
 
 // UpdateConfig replaces the strategy's trading config.
 func (s *Strategy) UpdateConfig(cfg config.TradingConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.config = cfg
+}
+
+// getConfig returns a snapshot of the current config safe for concurrent use.
+func (s *Strategy) getConfig() config.TradingConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.config
 }
 
 // Start listens for candidates and ticks, generating both entry and exit signals.
@@ -243,34 +254,35 @@ type CandidateDecision struct {
 
 // EvaluateCandidateDecision returns a rich decision object for a candidate.
 func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) CandidateDecision {
+	cfg := s.getConfig()
 	signal, ok, signalReason := s.evaluateCandidate(candidate)
 	reason := "no-signal"
 	if ok {
 		reason = signal.Reason
 	} else if !markethours.IsTradableSessionAt(candidate.Timestamp) {
 		reason = "market-closed"
-	} else if candidate.Score < s.config.MinEntryScore {
+	} else if candidate.Score < cfg.MinEntryScore {
 		reason = "low-score"
 	} else if s.runtime.IsPaused() || s.runtime.IsEmergencyStopped() {
 		reason = "system-paused"
 	} else if _, exists := s.portfolio.GetPosition(candidate.Symbol); exists {
 		reason = "existing-position"
-	} else if s.config.RegimeGatingEnabled {
+	} else if cfg.RegimeGatingEnabled {
 		if (candidate.MarketRegime == domain.RegimeBearish && domain.IsLong(candidate.Direction)) ||
 			(candidate.MarketRegime == domain.RegimeBullish && domain.IsShort(candidate.Direction)) {
 			reason = "regime-gated"
 		}
 	}
-	if reason == "no-signal" && s.config.EntryDeadlineMinutesAfterOpen > 0 {
+	if reason == "no-signal" && cfg.EntryDeadlineMinutesAfterOpen > 0 {
 		minutesSinceOpen := markethours.MinutesSinceOpen(candidate.Timestamp)
-		if minutesSinceOpen > float64(s.config.EntryDeadlineMinutesAfterOpen) {
+		if minutesSinceOpen > float64(cfg.EntryDeadlineMinutesAfterOpen) {
 			reason = "past-entry-deadline"
 		}
 	}
 	if reason == "no-signal" {
 		// Check cooldown
 		if last, exists := s.lastEntryAt[candidate.Symbol]; exists {
-			if candidate.Timestamp.Sub(last) < time.Duration(s.config.EntryCooldownSec)*time.Second {
+			if candidate.Timestamp.Sub(last) < time.Duration(cfg.EntryCooldownSec)*time.Second {
 				reason = "cooldown"
 			}
 		}
@@ -294,15 +306,16 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 }
 
 func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bool, string) {
+	cfg := s.getConfig()
 	now := c.Timestamp
 	if !markethours.IsTradableSessionAt(now) {
 		return domain.TradeSignal{}, false, "market-closed"
 	}
 
 	// Entry deadline: block entries after N minutes from open
-	if s.config.EntryDeadlineMinutesAfterOpen > 0 {
+	if cfg.EntryDeadlineMinutesAfterOpen > 0 {
 		minutesSinceOpen := markethours.MinutesSinceOpen(now)
-		if minutesSinceOpen > float64(s.config.EntryDeadlineMinutesAfterOpen) {
+		if minutesSinceOpen > float64(cfg.EntryDeadlineMinutesAfterOpen) {
 			return domain.TradeSignal{}, false, "past-entry-deadline"
 		}
 	}
@@ -314,7 +327,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 
 	// Cooldown check
 	if last, ok := s.lastEntryAt[c.Symbol]; ok {
-		if now.Sub(last) < time.Duration(s.config.EntryCooldownSec)*time.Second {
+		if now.Sub(last) < time.Duration(cfg.EntryCooldownSec)*time.Second {
 			return domain.TradeSignal{}, false, "cooldown"
 		}
 	}
@@ -329,7 +342,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	state := s.getSymbolState(c.Symbol, dayKey)
 
 	// Block re-entry on any ticker that had a losing trade today
-	if s.config.BlockLosingTickerReentry && s.portfolio.SymbolHadLossToday(c.Symbol) {
+	if cfg.BlockLosingTickerReentry && s.portfolio.SymbolHadLossToday(c.Symbol) {
 		return domain.TradeSignal{}, false, "losing-ticker-blocked"
 	}
 
@@ -339,19 +352,19 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Score threshold already checked in scanner, but double-check
-	minScore := s.config.MinEntryScore
+	minScore := cfg.MinEntryScore
 	if c.Direction == domain.DirectionShort {
-		minScore = s.config.ShortMinEntryScore
+		minScore = cfg.ShortMinEntryScore
 	}
 
 	// Phase 3 Change 3: Time-of-day adaptive score threshold
 	tw := currentTimeWindow(now)
-	if s.config.TimeOfDayEnabled {
+	if cfg.TimeOfDayEnabled {
 		twCfg := defaultTimeWindowConfigs[tw]
 		multiplier := twCfg.ScoreThresholdMultiplier
 		// Allow configurable midday multiplier override
-		if tw == TimeWindowMidDay && s.config.MidDayScoreMultiplier > 0 {
-			multiplier = s.config.MidDayScoreMultiplier
+		if tw == TimeWindowMidDay && cfg.MidDayScoreMultiplier > 0 {
+			multiplier = cfg.MidDayScoreMultiplier
 		}
 		minScore *= multiplier
 	}
@@ -361,7 +374,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Regime gating
-	if s.config.RegimeGatingEnabled {
+	if cfg.RegimeGatingEnabled {
 		switch c.MarketRegime {
 		case domain.RegimeBearish:
 			if c.Direction == domain.DirectionLong {
@@ -372,12 +385,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 				return domain.TradeSignal{}, false, "regime-gated"
 			}
 		case domain.RegimeMixed:
-			boosted := minScore * s.config.RegimeMixedScoreBoost
+			boosted := minScore * cfg.RegimeMixedScoreBoost
 			if c.Score < boosted {
 				return domain.TradeSignal{}, false, "regime-gated"
 			}
 		case domain.RegimeNeutral:
-			boosted := minScore * s.config.RegimeNeutralScoreBoost
+			boosted := minScore * cfg.RegimeNeutralScoreBoost
 			if c.Score < boosted {
 				return domain.TradeSignal{}, false, "regime-gated"
 			}
@@ -415,13 +428,13 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Phase 3 Change 3: Time-of-day risk multiplier (wider stops at open, tighter at close)
-	if s.config.TimeOfDayEnabled {
+	if cfg.TimeOfDayEnabled {
 		twCfg := defaultTimeWindowConfigs[tw]
 		riskPerShare *= twCfg.RiskMultiplier
 	}
 
 	// Risk/Reward pre-check: reject trades where reward < MinRiskRewardRatio × risk
-	if s.config.MinRiskRewardRatio > 0 && riskPerShare > 0 {
+	if cfg.MinRiskRewardRatio > 0 && riskPerShare > 0 {
 		var estimatedReward float64
 		if domain.IsLong(c.Direction) {
 			estimatedReward = c.HighOfDay - c.Price
@@ -436,25 +449,25 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			}
 		}
 		rewardRiskRatio := estimatedReward / riskPerShare
-		if rewardRiskRatio < s.config.MinRiskRewardRatio {
+		if rewardRiskRatio < cfg.MinRiskRewardRatio {
 			return domain.TradeSignal{}, false, "poor-risk-reward"
 		}
 	}
 
 	currentEquity := s.portfolio.CurrentEquity()
 	if currentEquity <= 0 {
-		currentEquity = s.config.StartingCapital
+		currentEquity = cfg.StartingCapital
 	}
 
 	// Phase 2 Change 5: Kelly Criterion sizing
-	riskPct := s.config.RiskPerTradePct
-	if s.config.KellySizingEnabled {
-		winRate, wlRatio, tradeCount := s.portfolio.RollingTradeStats(s.config.KellyWindowSize)
-		if tradeCount >= s.config.KellyMinTrades {
+	riskPct := cfg.RiskPerTradePct
+	if cfg.KellySizingEnabled {
+		winRate, wlRatio, tradeCount := s.portfolio.RollingTradeStats(cfg.KellyWindowSize)
+		if tradeCount >= cfg.KellyMinTrades {
 			kellyF := KellyFraction(winRate, wlRatio)
-			fractionalKelly := kellyF * s.config.KellyFraction
-			if fractionalKelly > s.config.MaxKellyRiskPct {
-				fractionalKelly = s.config.MaxKellyRiskPct
+			fractionalKelly := kellyF * cfg.KellyFraction
+			if fractionalKelly > cfg.MaxKellyRiskPct {
+				fractionalKelly = cfg.MaxKellyRiskPct
 			}
 			if fractionalKelly > 0 {
 				riskPct = fractionalKelly
@@ -465,12 +478,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	riskBudget := currentEquity * riskPct
 
 	// Scale position size by confidence (Phase 1 Change 7)
-	if s.config.ConfidenceSizingEnabled {
+	if cfg.ConfidenceSizingEnabled {
 		confidence := c.Score / 8.0
 		if confidence > 1.0 {
 			confidence = 1.0
 		}
-		floor := s.config.ConfidenceSizingFloor
+		floor := cfg.ConfidenceSizingFloor
 		sizeMultiplier := floor + (1.0-floor)*confidence
 		riskBudget *= sizeMultiplier
 	}
@@ -505,10 +518,10 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Phase 2 Change 6: Volatility-based position sizing cap
-	if s.config.VolTargetSizingEnabled && s.volEstimator != nil {
+	if cfg.VolTargetSizingEnabled && s.volEstimator != nil {
 		stockVol := s.volEstimator.GetVolatility(c.Symbol)
 		if stockVol > 0 {
-			targetDollarVol := currentEquity * s.config.TargetVolPerPosition
+			targetDollarVol := currentEquity * cfg.TargetVolPerPosition
 			positionDollar := targetDollarVol / stockVol
 			volBasedQty := int64(positionDollar / c.Price)
 			if volBasedQty > 0 && volBasedQty < quantity {
@@ -521,12 +534,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "low-volume"
 	}
 
-	if c.Direction == "long" && c.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
+	if c.Direction == "long" && c.ThreeMinuteReturnPct < cfg.MinThreeMinuteReturnPct {
 		return domain.TradeSignal{}, false, "no-confirmation"
 	}
 
 	// ML Scoring gate: skip trade if ML score below threshold
-	if s.config.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
+	if cfg.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
 		features := ml.ScorerFeatures{
 			RelativeVolume:     c.RelativeVolume,
 			GapPercent:         c.GapPercent,
@@ -558,17 +571,17 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		mlScore, err := s.scorer.Score(features)
 		if err == nil {
 			// Apply drift confidence reduction if detector available
-			if s.config.ConceptDriftEnabled && s.driftDetector != nil {
+			if cfg.ConceptDriftEnabled && s.driftDetector != nil {
 				// Performance-based drift: reduces score when rolling Sharpe decays
-				if s.driftDetector.CheckPerformanceDrift(s.config.SharpeDecayThreshold) {
+				if s.driftDetector.CheckPerformanceDrift(cfg.SharpeDecayThreshold) {
 					mlScore *= 0.5
 				}
 			}
-			if mlScore < s.config.MLScoringThreshold {
+			if mlScore < cfg.MLScoringThreshold {
 				return domain.TradeSignal{}, false, "ml-score-gated"
 			}
 			// Scale position by ML score using MLScoreWeight to control blend
-			w := s.config.MLScoreWeight
+			w := cfg.MLScoreWeight
 			mlSizeMultiplier := (1.0 - w) + 2.0*w*mlScore
 			if mlSizeMultiplier > 1.5 {
 				mlSizeMultiplier = 1.5
@@ -584,12 +597,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Meta-label confidence gating: skip trade if confidence too low
-	if s.config.MetaLabelEnabled {
+	if cfg.MetaLabelEnabled {
 		metaProb := c.Score / 8.0 // use rule-based score as proxy probability
 		if metaProb > 1.0 {
 			metaProb = 1.0
 		}
-		quantity = int64(ml.MetaLabelSizing(metaProb, int(quantity), s.config.MetaLabelConfidenceThreshold))
+		quantity = int64(ml.MetaLabelSizing(metaProb, int(quantity), cfg.MetaLabelConfidenceThreshold))
 		if quantity <= 0 {
 			return domain.TradeSignal{}, false, "meta-label-gated"
 		}
@@ -609,8 +622,8 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Position size floor: enforce minimum notional position
-	if s.config.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
-		minNotional := currentEquity * s.config.MinPositionNotionalPct
+	if cfg.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
+		minNotional := currentEquity * cfg.MinPositionNotionalPct
 		minQty := int64(math.Floor(minNotional / c.Price))
 		minQty = max(minQty, 0)
 		if quantity < minQty {
@@ -647,6 +660,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 }
 
 func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
+	cfg := s.getConfig()
 	pos, exists := s.portfolio.GetPosition(tick.Symbol)
 	if !exists {
 		return domain.TradeSignal{}, false
@@ -672,7 +686,7 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 
 	// Cooldown
 	if last, ok := s.lastExitAt[tick.Symbol]; ok {
-		if now.Sub(last) < time.Duration(s.config.ExitCooldownSec)*time.Second {
+		if now.Sub(last) < time.Duration(cfg.ExitCooldownSec)*time.Second {
 			return domain.TradeSignal{}, false
 		}
 	}
@@ -696,10 +710,10 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	}
 
 	// Track recent prices for mean-reversion BB exit
-	if s.config.MeanReversionEnabled {
+	if cfg.MeanReversionEnabled {
 		prices := s.recentPrices[tick.Symbol]
 		prices = append(prices, tick.Price)
-		maxLen := s.config.BollingerPeriod + 10
+		maxLen := cfg.BollingerPeriod + 10
 		if len(prices) > maxLen {
 			prices = prices[len(prices)-maxLen:]
 		}
@@ -720,7 +734,7 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	if reason == "partial-1" || reason == "partial-2" {
 		var partialQty int64
 		if reason == "partial-1" {
-			partialQty = int64(math.Floor(float64(pos.OriginalQuantity) * s.config.PartialTrigger1Pct))
+			partialQty = int64(math.Floor(float64(pos.OriginalQuantity) * cfg.PartialTrigger1Pct))
 		} else {
 			// Partial-2: exit all remaining shares (avoids tiny leftover remainders)
 			partialQty = pos.Quantity
@@ -780,27 +794,29 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 }
 
 func (s *Strategy) getPlaybookExitConfig(playbook string) config.PlaybookExitConfig {
+	cfg := s.getConfig()
 	switch playbook {
 	case "breakout":
-		return s.config.PlaybookExits.Breakout
+		return cfg.PlaybookExits.Breakout
 	case "pullback":
-		return s.config.PlaybookExits.Pullback
+		return cfg.PlaybookExits.Pullback
 	case "continuation":
-		return s.config.PlaybookExits.Continuation
+		return cfg.PlaybookExits.Continuation
 	case "reversal":
-		return s.config.PlaybookExits.Reversal
+		return cfg.PlaybookExits.Reversal
 	default:
-		return s.config.PlaybookExits.Breakout
+		return cfg.PlaybookExits.Breakout
 	}
 }
 
 func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (string, bool) {
+	cfg := s.getConfig()
 	r := s.currentR(pos, tick.Price)
 	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
 	// Safety: if stop price is zero (shouldn't happen but defensive), compute one
 	if pos.StopPrice == 0 {
-		fallbackRisk := pos.AvgPrice * s.config.EntryATRPercentFallback / 100.0
+		fallbackRisk := pos.AvgPrice * cfg.EntryATRPercentFallback / 100.0
 		if fallbackRisk <= 0 {
 			fallbackRisk = pos.AvgPrice * 0.02
 		}
@@ -826,7 +842,7 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	}
 
 	// Phase 3 Change 4: Partial exit framework
-	if s.config.PartialExitsEnabled && pos.OriginalQuantity > 0 && pos.Quantity > 0 {
+	if cfg.PartialExitsEnabled && pos.OriginalQuantity > 0 && pos.Quantity > 0 {
 		partialReason, partialExit := s.checkPartialExit(pos, r)
 		if partialExit {
 			return partialReason, true
@@ -834,10 +850,10 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	}
 
 	// Phase 3 Change 6: Mean-reversion exit at BB middle
-	if s.config.MeanReversionEnabled && isMeanReversionSetup(pos.SetupType) {
+	if cfg.MeanReversionEnabled && isMeanReversionSetup(pos.SetupType) {
 		prices := s.recentPrices[pos.Symbol]
-		if len(prices) >= s.config.BollingerPeriod {
-			_, bbMiddle, _ := scanner.ComputeBollingerBandsFromPrices(prices, s.config.BollingerPeriod, s.config.BollingerK)
+		if len(prices) >= cfg.BollingerPeriod {
+			_, bbMiddle, _ := scanner.ComputeBollingerBandsFromPrices(prices, cfg.BollingerPeriod, cfg.BollingerK)
 			if bbMiddle > 0 {
 				if domain.IsLong(pos.Side) && tick.Price >= bbMiddle {
 					return "mean-reversion-target", true
@@ -852,7 +868,7 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	// Profit target (playbook-specific)
 	profitTargetR := exitCfg.ProfitTargetR
 	// Phase 3 Change 3: Time-of-day profit target adjustment
-	if s.config.TimeOfDayEnabled {
+	if cfg.TimeOfDayEnabled {
 		tw := currentTimeWindow(tick.Timestamp)
 		twCfg := defaultTimeWindowConfigs[tw]
 		profitTargetR *= twCfg.ProfitTargetMultiplier
@@ -887,16 +903,17 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 
 // checkPartialExit determines if a partial exit should be taken.
 func (s *Strategy) checkPartialExit(pos domain.Position, r float64) (string, bool) {
+	cfg := s.getConfig()
 	// Partial 1: at trigger1R, exit trigger1Pct of original
-	if pos.PartialsExecuted == 0 && r >= s.config.PartialTrigger1R {
-		exitQty := int64(math.Floor(float64(pos.OriginalQuantity) * s.config.PartialTrigger1Pct))
+	if pos.PartialsExecuted == 0 && r >= cfg.PartialTrigger1R {
+		exitQty := int64(math.Floor(float64(pos.OriginalQuantity) * cfg.PartialTrigger1Pct))
 		if exitQty > 0 && exitQty < pos.Quantity {
 			return "partial-1", true
 		}
 	}
 	// Partial 2: at trigger2R, exit trigger2Pct of original
-	if pos.PartialsExecuted == 1 && r >= s.config.PartialTrigger2R {
-		exitQty := int64(math.Floor(float64(pos.OriginalQuantity) * s.config.PartialTrigger2Pct))
+	if pos.PartialsExecuted == 1 && r >= cfg.PartialTrigger2R {
+		exitQty := int64(math.Floor(float64(pos.OriginalQuantity) * cfg.PartialTrigger2Pct))
 		if exitQty > 0 && exitQty <= pos.Quantity {
 			return "partial-2", true
 		}
@@ -910,7 +927,8 @@ func isMeanReversionSetup(setupType string) bool {
 
 // volRegimeTrailFactor returns a multiplier for trail distances based on volatility regime.
 func (s *Strategy) volRegimeTrailFactor(pos domain.Position) float64 {
-	if !s.config.AdaptiveTrailEnabled {
+	cfg := s.getConfig()
+	if !cfg.AdaptiveTrailEnabled {
 		return 1.0
 	}
 	switch pos.MarketRegime {
@@ -932,6 +950,7 @@ func (s *Strategy) volRegimeTrailFactor(pos domain.Position) float64 {
 }
 
 func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
+	cfg := s.getConfig()
 	r := s.currentR(pos, tick.Price)
 	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
@@ -941,7 +960,7 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	var newStop float64
 	if domain.IsLong(pos.Side) {
 		// Break-even stop
-		if r >= s.config.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
+		if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
 			newStop = pos.AvgPrice + pos.EntryATR*0.1
 		}
 
@@ -962,7 +981,7 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 		}
 	} else {
 		// Short trailing stops (mirrored)
-		if r >= s.config.BreakEvenMinR && pos.StopPrice > pos.AvgPrice {
+		if r >= cfg.BreakEvenMinR && pos.StopPrice > pos.AvgPrice {
 			newStop = pos.AvgPrice - pos.EntryATR*0.1
 		}
 		if r >= exitCfg.TrailActivationR {
@@ -980,7 +999,7 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	}
 
 	// Phase 3 Change 4: Move stop to break-even after partial exit
-	if s.config.MoveStopAfterPartial && pos.PartialsExecuted > 0 {
+	if cfg.MoveStopAfterPartial && pos.PartialsExecuted > 0 {
 		if domain.IsLong(pos.Side) && newStop < pos.AvgPrice {
 			newStop = pos.AvgPrice + pos.EntryATR*0.1
 		}
@@ -1016,15 +1035,16 @@ func (s *Strategy) currentR(pos domain.Position, price float64) float64 {
 }
 
 func (s *Strategy) computeRiskPerShare(c domain.Candidate) float64 {
+	cfg := s.getConfig()
 	if c.ATR > 0 {
-		risk := c.ATR * s.config.EntryStopATRMultiplier
-		maxRisk := c.ATR * s.config.MaxRiskATRMultiplier
+		risk := c.ATR * cfg.EntryStopATRMultiplier
+		maxRisk := c.ATR * cfg.MaxRiskATRMultiplier
 		if risk > maxRisk {
 			risk = maxRisk
 		}
 		return risk
 	}
-	return c.Price * s.config.EntryATRPercentFallback / 100
+	return c.Price * cfg.EntryATRPercentFallback / 100
 }
 
 func (s *Strategy) getSymbolState(symbol, dayKey string) symbolTradeState {
