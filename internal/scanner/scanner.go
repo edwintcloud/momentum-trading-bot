@@ -266,6 +266,9 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Determine direction
 	direction := domain.DirectionLong
+	if s.config.EnableShorts && metrics.setupType == "parabolic-failed-reclaim-short" {
+		direction = domain.DirectionShort
+	}
 	priceVsVWAPPct := safePct(tick.Price-metrics.vwap, metrics.vwap) * 100
 	if s.qualifiesShortMomentumProfile(tick, priceVsVWAPPct, metrics) {
 		direction = domain.DirectionShort
@@ -275,18 +278,25 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		direction = domain.DirectionLong
 	}
 
+	if metrics.setupType == "early" {
+		return domain.Candidate{}, false
+	}
+
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+
 	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day
 	// Skip for HOD momo qualified stocks — they use their own distance thresholds
 	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified {
-		if tick.HighOfDay > 0 && tick.Price > 0 {
-			distPct := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-			if distPct > cfg.MaxDistanceFromHighPct {
-				return domain.Candidate{}, false
-			}
+		if distFromHighPct > cfg.MaxDistanceFromHighPct || distFromHighPct == 0 {
+			return domain.Candidate{}, false
 		}
 	}
 
 	// Phase 3 Change 1: RSI overbought/oversold filter
+	if direction == domain.DirectionLong && (metrics.rsiMASlope/2.0 < 0.5) {
+		return domain.Candidate{}, false
+	}
+
 	if cfg.RSIFilterEnabled {
 		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold {
 			return domain.Candidate{}, false
@@ -358,7 +368,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		Volume:                tick.Volume,
 		HighOfDay:             tick.HighOfDay,
 		PriceVsOpenPct:        safePct(tick.Price, tick.Open),
-		DistanceFromHighPct:   safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100,
+		DistanceFromHighPct:   distFromHighPct,
 		OneMinuteReturnPct:    metrics.oneMinuteReturn,
 		ThreeMinuteReturnPct:  metrics.threeMinuteReturn,
 		VolumeRate:            metrics.volumeRate,

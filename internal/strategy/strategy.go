@@ -517,6 +517,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
+	if c.VolumeRate < 30000 {
+		return domain.TradeSignal{}, false, "low-volume"
+	}
+
+	if c.Direction == "long" && c.ThreeMinuteReturnPct < s.config.MinThreeMinuteReturnPct {
+		return domain.TradeSignal{}, false, "no-confirmation"
+	}
+
 	// ML Scoring gate: skip trade if ML score below threshold
 	if s.config.MLScoringEnabled && s.scorer != nil && s.scorer.Enabled() {
 		features := ml.ScorerFeatures{

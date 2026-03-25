@@ -26,7 +26,7 @@
     "BreakoutFailureWindowMin": 5,
     "StagnationWindowMin": 15,
     "ScannerWorkers": 4,
-    "MinPrice": 2,
+    "MinPrice": 3.5,
     "MaxPrice": 40,
     "MinGapPercent": 2.8,
     "MinRelativeVolume": 1.9,
@@ -281,7 +281,7 @@
     "HODMomoMaxDistFromHigh": 5,
     "HODMomoPullbackMaxDist": 0,
     "HODMomoMinMinutesSinceOpen": 5,
-    "MinPositionNotionalPct": 0,
+    "MinPositionNotionalPct": 0.4,
     "MaxVolEstimate": 5.0,
     "BlockLosingTickerReentry": true
   },
