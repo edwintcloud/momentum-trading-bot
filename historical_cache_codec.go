@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -54,30 +53,6 @@ func historicalCachePath(job historicalFetchJob, feed string) string {
 func historicalJobCacheExists(job historicalFetchJob, feed string) bool {
 	_, err := os.Stat(historicalCachePath(job, feed))
 	return err == nil
-}
-
-func loadHistoricalJobCache(job historicalFetchJob, feed string) (historicalFetchResult, bool, error) {
-	reader, err := openHistoricalJobCacheReader(job, feed)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return historicalFetchResult{}, false, nil
-		}
-		return historicalFetchResult{}, false, err
-	}
-	defer reader.Close()
-
-	bars := make([]backtest.InputBar, 0, reader.remaining)
-	for {
-		bar, ok, err := reader.Next()
-		if err != nil {
-			return historicalFetchResult{}, false, err
-		}
-		if !ok {
-			break
-		}
-		bars = append(bars, bar)
-	}
-	return historicalFetchResult{bars: bars}, true, nil
 }
 
 func openHistoricalJobCacheReader(job historicalFetchJob, feed string) (*historicalJobCacheReader, error) {

@@ -50,7 +50,7 @@
     "HydrationRetrySec": 5,
     "HydrationQueueSize": 500,
 
-    "LimitOrderSlippageDollars": 0.05,
+    "LimitOrderSlippageDollars": 0.1,
     "EntryATRPercentFallback": 1.5,
     "EntryStopATRMultiplier": 1.0,
     "MaxRiskATRMultiplier": 2.0,
@@ -234,7 +234,6 @@
     "VaRConfidenceLevel": 0.95,
     "VaRDailyLimitPct": 0.02,
     "VaRMethod": "parametric",
-    "CVaRPositionSizing": false,
 
     "GARCHEnabled": false,
     "GARCHAlpha": 0.1,

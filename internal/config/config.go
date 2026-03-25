@@ -30,9 +30,6 @@ type TradingConfig struct {
 	MinRelativeVolume                  float64
 	MinPremarketVolume                 int64
 	FloatOverrideURL                   string // URL or file path to CSV with symbol,float data
-	ScannerMinSetupVolumeRateOffset    float64
-	ScannerMinSetupRelativeVolumeExtra float64
-	ScannerVWAPTolerancePct            float64
 	MaxFloat                           int64   // 0 = disabled; max outstanding shares for momentum filtering
 	MinFloat                           int64   // 0 = disabled; min outstanding shares
 	MinPrevDayVolume                   int64   // minimum previous day volume (0 = disabled)
@@ -57,7 +54,6 @@ type TradingConfig struct {
 	FailedBreakoutCutR                 float64
 	ShortPeakExtensionMinPct           float64
 	ShortVWAPBreakMinPct               float64
-	ShortStopATRMultiplier             float64
 
 	// Regime gating (Change 4)
 	RegimeGatingEnabled     bool
@@ -214,7 +210,6 @@ type TradingConfig struct {
 	VaRConfidenceLevel float64 // e.g. 0.95
 	VaRDailyLimitPct   float64 // max daily VaR as pct of account
 	VaRMethod          string  // "parametric" or "historical"
-	CVaRPositionSizing bool    // use CVaR for position sizing
 
 	// Risk enhancements: GARCH(1,1) volatility forecasting (Section 2.5)
 	GARCHEnabled    bool

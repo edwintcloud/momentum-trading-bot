@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -58,6 +59,9 @@ func (c *Client) ListEquitySymbols(ctx context.Context, activeOnly bool) ([]stri
 			symbols = append(symbols, strings.ToUpper(a.Symbol))
 		}
 	}
+
+	slices.Sort(symbols)
+
 	return symbols, nil
 }
 
