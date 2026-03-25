@@ -36,10 +36,16 @@ func MarketOpen(t time.Time) time.Time {
 	return time.Date(ny.Year(), ny.Month(), ny.Day(), 9, 30, 0, 0, nyLoc)
 }
 
-// MarketClose returns 4:00 PM ET for the given date.
+// MarketClose returns 4:00 PM ET for the given date (end of regular session).
 func MarketClose(t time.Time) time.Time {
 	ny := t.In(nyLoc)
 	return time.Date(ny.Year(), ny.Month(), ny.Day(), 16, 0, 0, 0, nyLoc)
+}
+
+// SessionClose returns 8:00 PM ET for the given date (end of extended-hours trading).
+func SessionClose(t time.Time) time.Time {
+	ny := t.In(nyLoc)
+	return time.Date(ny.Year(), ny.Month(), ny.Day(), 20, 0, 0, 0, nyLoc)
 }
 
 // IsMarketOpen returns true if the given time is within regular trading hours on a market day.
