@@ -134,7 +134,7 @@ func (o *OFI) OnBar(symbol string, bar Bar) *Signal {
 	currentOFI := st.ofiValues[len(st.ofiValues)-1]
 
 	// Signal fires when current OFI exceeds threshold × stddev
-	zScore := currentOFI / stdDev
+	zScore := (currentOFI - mean) / stdDev
 
 	var dir Direction
 	if zScore > o.cfg.ThresholdSigma {

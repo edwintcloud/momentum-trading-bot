@@ -290,7 +290,7 @@ func runLive() {
 	runtimeState.RecordLog("info", "system", "momentum trading bot started")
 
 	// Start API server
-	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst}
+	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst, riskEngine}
 	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg, optimizer.DefaultArtifactDir, eventRecorder)
 	for _, u := range configUpdaters {
 		apiServer.RegisterConfigUpdater(u)

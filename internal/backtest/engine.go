@@ -218,6 +218,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	book := portfolio.NewManager(cfg)
+	var simTime time.Time
+	book.SetNowFunc(func() time.Time { return simTime })
 	var regimeTracker *regime.Tracker
 	if cfg.EnableMarketRegime {
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
@@ -257,6 +259,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			break
 		}
 		currentBar := normalizeInputBar(item)
+		simTime = currentBar.Timestamp
 		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
 		tick := normalizeBar(currentBar, normalizerState)

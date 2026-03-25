@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
@@ -21,6 +22,7 @@ type ShortabilityChecker interface {
 
 // Engine enforces position sizing and loss controls before execution.
 type Engine struct {
+	mu                 sync.Mutex
 	config             config.TradingConfig
 	portfolio          *portfolio.Manager
 	runtime            *runtime.State
@@ -61,6 +63,20 @@ func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, ru
 	return e
 }
 
+// UpdateConfig replaces the trading config (thread-safe for hot-reload).
+func (e *Engine) UpdateConfig(cfg config.TradingConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.config = cfg
+}
+
+// getConfig returns a snapshot of the current config.
+func (e *Engine) getConfig() config.TradingConfig {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.config
+}
+
 // Start processes trade signals and emits approved order requests.
 func (e *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out chan<- domain.OrderRequest) error {
 	for {
@@ -88,6 +104,7 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.TradeSignal, out ch
 // Evaluate checks a trade signal against all risk gates.
 // Returns the approved order, whether it was approved, and the rejection reason.
 func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool, string) {
+	cfg := e.getConfig()
 	// Preserve original closing intent before inferIntent might override it
 	originalIntent := signal.Intent
 
@@ -112,15 +129,15 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 
 	// Position limit
 	positions := e.portfolio.GetPositions()
-	if len(positions) >= e.config.MaxOpenPositions {
-		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max positions reached (%d)", signal.Symbol, e.config.MaxOpenPositions))
+	if len(positions) >= cfg.MaxOpenPositions {
+		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max positions reached (%d)", signal.Symbol, cfg.MaxOpenPositions))
 		return domain.OrderRequest{}, false, "max-positions"
 	}
 
 	// Daily trade limit
 	e.resetDayIfNeeded(signal.Timestamp)
-	if e.approved >= e.config.MaxTradesPerDay {
-		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max daily trades reached (%d)", signal.Symbol, e.config.MaxTradesPerDay))
+	if e.approved >= cfg.MaxTradesPerDay {
+		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max daily trades reached (%d)", signal.Symbol, cfg.MaxTradesPerDay))
 		return domain.OrderRequest{}, false, "max-daily-trades"
 	}
 
@@ -130,8 +147,8 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		e.lastMinuteKey = minuteKey
 		e.minuteApproved = 0
 	}
-	if e.minuteApproved >= e.config.MaxEntriesPerMinute {
-		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max entries per minute reached (%d)", signal.Symbol, e.config.MaxEntriesPerMinute))
+	if e.minuteApproved >= cfg.MaxEntriesPerMinute {
+		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: max entries per minute reached (%d)", signal.Symbol, cfg.MaxEntriesPerMinute))
 		return domain.OrderRequest{}, false, "max-entries-per-minute"
 	}
 
@@ -140,9 +157,9 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	proposedValue := signal.Price * float64(signal.Quantity)
 	currentEquity := e.portfolio.CurrentEquity()
 	if currentEquity <= 0 {
-		currentEquity = e.config.StartingCapital
+		currentEquity = cfg.StartingCapital
 	}
-	maxExposure := currentEquity * e.config.MaxExposurePct
+	maxExposure := currentEquity * cfg.MaxExposurePct
 	if totalExposure+proposedValue > maxExposure {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: exposure limit (%.0f + %.0f > %.0f)", signal.Symbol, totalExposure, proposedValue, maxExposure))
 		return domain.OrderRequest{}, false, "exposure-limit"
@@ -156,11 +173,11 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 				shortCount++
 			}
 		}
-		if shortCount >= e.config.MaxShortOpenPositions {
+		if shortCount >= cfg.MaxShortOpenPositions {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: max short positions reached", signal.Symbol))
 			return domain.OrderRequest{}, false, "max-short-positions"
 		}
-		maxShortExposure := currentEquity * e.config.MaxShortExposurePct
+		maxShortExposure := currentEquity * cfg.MaxShortExposurePct
 		if shortExposure+proposedValue > maxShortExposure {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: short exposure limit", signal.Symbol))
 			return domain.OrderRequest{}, false, "short-exposure-limit"
@@ -173,34 +190,34 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 
 	// Daily loss limit (kept for backward compat; graduated response is in DailyLossSizingFactor)
 	snapshot := e.portfolio.StatusSnapshot()
-	dailyLossLimit := currentEquity * e.config.DailyLossLimitPct
+	dailyLossLimit := currentEquity * cfg.DailyLossLimitPct
 	if math.Abs(snapshot.DayPnL) >= dailyLossLimit && snapshot.DayPnL < 0 {
 		e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: daily loss limit reached (%.2f)", signal.Symbol, snapshot.DayPnL))
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 
 	// VaR limit check: halt new entries if intraday VaR exceeds daily budget
-	if e.config.VaREnabled && e.VaRCalc != nil {
-		if e.VaRCalc.ExceedsDailyLimit(currentEquity, e.config.VaRDailyLimitPct) {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: intraday VaR exceeds daily limit (%.2f%%)", signal.Symbol, e.config.VaRDailyLimitPct*100))
+	if cfg.VaREnabled && e.VaRCalc != nil {
+		if e.VaRCalc.ExceedsDailyLimit(currentEquity, cfg.VaRDailyLimitPct) {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: intraday VaR exceeds daily limit (%.2f%%)", signal.Symbol, cfg.VaRDailyLimitPct*100))
 			return domain.OrderRequest{}, false, "var-limit-exceeded"
 		}
 	}
 
 	// Phase 2 Change 1: Portfolio heat gate
-	if e.config.PortfolioHeatEnabled {
+	if cfg.PortfolioHeatEnabled {
 		currentHeat := e.portfolio.PortfolioHeat()
 		proposedRisk := signal.RiskPerShare * float64(signal.Quantity)
 		proposedHeatPct := (currentHeat + proposedRisk) / currentEquity
 
-		if proposedHeatPct > e.config.MaxPortfolioHeatPct {
+		if proposedHeatPct > cfg.MaxPortfolioHeatPct {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: portfolio heat would exceed maximum: %.1f%% > %.1f%%",
-				signal.Symbol, proposedHeatPct*100, e.config.MaxPortfolioHeatPct*100))
+				signal.Symbol, proposedHeatPct*100, cfg.MaxPortfolioHeatPct*100))
 			return domain.OrderRequest{}, false, "portfolio-heat-limit"
 		}
 
 		currentHeatPct := currentHeat / currentEquity
-		if currentHeatPct > e.config.PortfolioHeatAlertPct {
+		if currentHeatPct > cfg.PortfolioHeatAlertPct {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("portfolio heat elevated: %.1f%%", currentHeatPct*100))
 		}
 	}
@@ -209,48 +226,48 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	// Skip for unknown/empty sectors — small-cap momentum stocks are rarely in the
 	// hardcoded sector map, so they all resolve to "unknown" and would saturate the
 	// single "unknown" bucket, blocking all subsequent entries.
-	if e.config.SectorConcentrationEnabled && signal.Sector != "" && signal.Sector != "unknown" {
+	if cfg.SectorConcentrationEnabled && signal.Sector != "" && signal.Sector != "unknown" {
 		exposures := e.sectorExposures(positions)
 		existing := exposures[signal.Sector]
 
-		if existing.positionCount >= e.config.MaxPositionsPerSector {
+		if existing.positionCount >= cfg.MaxPositionsPerSector {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: sector concentration: %s already has %d positions (max %d)",
-				signal.Symbol, signal.Sector, existing.positionCount, e.config.MaxPositionsPerSector))
+				signal.Symbol, signal.Sector, existing.positionCount, cfg.MaxPositionsPerSector))
 			return domain.OrderRequest{}, false, "sector-concentration"
 		}
 
 		proposedSectorPct := (existing.notionalValue + proposedValue) / currentEquity
-		if proposedSectorPct > e.config.MaxSectorExposurePct {
+		if proposedSectorPct > cfg.MaxSectorExposurePct {
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: sector exposure for %s would reach %.1f%% (max %.1f%%)",
-				signal.Symbol, signal.Sector, proposedSectorPct*100, e.config.MaxSectorExposurePct*100))
+				signal.Symbol, signal.Sector, proposedSectorPct*100, cfg.MaxSectorExposurePct*100))
 			return domain.OrderRequest{}, false, "sector-exposure-limit"
 		}
 	}
 
 	// Phase 2 Change 4: Correlation-aware position approval
-	if e.config.CorrelationCheckEnabled && e.CorrelationTracker != nil {
+	if cfg.CorrelationCheckEnabled && e.CorrelationTracker != nil {
 		existingSymbols := e.portfolio.OpenSymbols()
 		if len(existingSymbols) > 0 {
 			avgCorr := e.CorrelationTracker.AvgPortfolioCorrelation(existingSymbols, signal.Symbol)
-			if avgCorr > e.config.MaxAvgCorrelation {
+			if avgCorr > cfg.MaxAvgCorrelation {
 				e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: correlation too high: avg %.2f with portfolio (max %.2f)",
-					signal.Symbol, avgCorr, e.config.MaxAvgCorrelation))
+					signal.Symbol, avgCorr, cfg.MaxAvgCorrelation))
 				return domain.OrderRequest{}, false, "correlation-limit"
 			}
 		}
 	}
 
 	// Phase 5: Market impact model — cap position size based on estimated impact
-	if e.config.ImpactModelEnabled && signal.Price > 0 && signal.Quantity > 0 {
+	if cfg.ImpactModelEnabled && signal.Price > 0 && signal.Quantity > 0 {
 		adv := signal.AvgDailyVolume
 		if adv <= 0 {
 			// Conservative fallback when ADV is unknown
 			adv = float64(signal.Quantity) * 100
 		}
-		impactParams := execution.DefaultImpactParams(adv, e.config.DefaultVolatility)
+		impactParams := execution.DefaultImpactParams(adv, cfg.DefaultVolatility)
 		impact := execution.EstimateImpact(int(signal.Quantity), signal.Price, impactParams)
-		if impact > e.config.MaxAcceptableImpactPct {
-			maxQty := execution.FindMaxQtyWithinImpact(signal.Price, impactParams, e.config.MaxAcceptableImpactPct)
+		if impact > cfg.MaxAcceptableImpactPct {
+			maxQty := execution.FindMaxQtyWithinImpact(signal.Price, impactParams, cfg.MaxAcceptableImpactPct)
 			if maxQty <= 0 {
 				return domain.OrderRequest{}, false, "market-impact-limit"
 			}
@@ -258,8 +275,9 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		}
 	}
 
-	// Position size cap
-	maxPositionValue := currentEquity * e.config.MaxExposurePct / float64(e.config.MaxOpenPositions)
+	// Position size cap (re-derive proposedValue after impact model may have reduced quantity)
+	proposedValue = signal.Price * float64(signal.Quantity)
+	maxPositionValue := currentEquity * cfg.MaxExposurePct / float64(cfg.MaxOpenPositions)
 	if proposedValue > maxPositionValue {
 		newQty := int64(math.Floor(maxPositionValue / signal.Price))
 		if newQty <= 0 {
@@ -269,7 +287,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 	}
 
 	// Dynamic risk budget position cap
-	if e.config.DynamicRiskBudgetEnabled && e.RiskBudget != nil && signal.Price > 0 {
+	if cfg.DynamicRiskBudgetEnabled && e.RiskBudget != nil && signal.Price > 0 {
 		intradayVol := e.RiskBudget.IntradayRealizedVol(30)
 		if intradayVol > 0 {
 			remainingBars := markethours.RemainingMinutes(signal.Timestamp)
@@ -289,6 +307,7 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 // DailyLossSizingFactor returns a multiplicative sizing factor based on graduated daily loss tiers.
 // Change 2: 0-1% loss: 1.0, 1% loss: 0.5, 1.5% loss: 0.25, 2%+ loss: 0.0
 func (e *Engine) DailyLossSizingFactor() float64 {
+	cfg := e.getConfig()
 	equity := e.portfolio.CurrentEquity()
 	if equity <= 0 {
 		return 1.0
@@ -301,11 +320,11 @@ func (e *Engine) DailyLossSizingFactor() float64 {
 	lossPct := math.Abs(dayPnL) / equity
 
 	switch {
-	case lossPct >= e.config.DailyLossHaltPct:
+	case lossPct >= cfg.DailyLossHaltPct:
 		return 0.0
-	case lossPct >= e.config.DailyLossSeverePct:
+	case lossPct >= cfg.DailyLossSeverePct:
 		return 0.25
-	case lossPct >= e.config.DailyLossModeratePct:
+	case lossPct >= cfg.DailyLossModeratePct:
 		return 0.50
 	default:
 		return 1.0
@@ -315,17 +334,18 @@ func (e *Engine) DailyLossSizingFactor() float64 {
 // DrawdownSizingFactor returns a multiplicative sizing factor based on drawdown from HWM.
 // Change 7: linear scale from 1.0 (no DD) to 0.0 (at MaxAcceptableDrawdown).
 func (e *Engine) DrawdownSizingFactor() float64 {
-	if !e.config.DrawdownRiskEnabled {
+	cfg := e.getConfig()
+	if !cfg.DrawdownRiskEnabled {
 		return 1.0
 	}
 	dd := e.portfolio.CurrentDrawdown()
 	if dd <= 0 {
 		return 1.0
 	}
-	if e.config.MaxAcceptableDrawdown <= 0 {
+	if cfg.MaxAcceptableDrawdown <= 0 {
 		return 1.0
 	}
-	factor := math.Max(0, 1.0-dd/e.config.MaxAcceptableDrawdown)
+	factor := math.Max(0, 1.0-dd/cfg.MaxAcceptableDrawdown)
 	return factor
 }
 

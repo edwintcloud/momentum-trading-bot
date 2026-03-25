@@ -26,6 +26,7 @@ type Manager struct {
 	driftDetector *ml.DriftDetector
 	highWaterMark float64
 	maxDrawdown   float64
+	nowFunc       func() time.Time
 }
 
 // NewManager creates a portfolio manager.
@@ -42,6 +43,7 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 		dayKey:        markethours.TradingDay(time.Now()),
 		recorder:      recorder,
 		highWaterMark: cfg.StartingCapital,
+		nowFunc:       time.Now,
 	}
 }
 
@@ -428,8 +430,16 @@ func (m *Manager) PerformanceMetrics() domain.PerformanceMetrics {
 	}
 }
 
+// SetNowFunc overrides the clock used for day-boundary detection.
+// Use this in backtests to inject simulated time.
+func (m *Manager) SetNowFunc(fn func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nowFunc = fn
+}
+
 func (m *Manager) resetDayIfNeeded() {
-	today := markethours.TradingDay(time.Now())
+	today := markethours.TradingDay(m.nowFunc())
 	if today != m.dayKey {
 		m.dayKey = today
 		m.dayPnL = 0
