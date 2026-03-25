@@ -248,6 +248,12 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "market-closed"
 	}
 
+	// Block new entries within 15 minutes of extended-hours session end (8:00 PM ET).
+	sessionEnd := markethours.SessionClose(now)
+	if now.After(sessionEnd.Add(-15 * time.Minute)) {
+		return domain.TradeSignal{}, false, "session-closing"
+	}
+
 	// Entry deadline: block entries after N minutes from open
 	if cfg.EntryDeadlineMinutesAfterOpen > 0 {
 		minutesSinceOpen := markethours.MinutesSinceOpen(now)
@@ -699,9 +705,9 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		}
 	}
 
-	// End of day — close 15 minutes before market close
-	closeTime := markethours.MarketClose(tick.Timestamp)
-	if tick.Timestamp.After(closeTime.Add(-15 * time.Minute)) {
+	// End of day — close 5 minutes before extended-hours session end (7:55 PM ET)
+	sessionEnd := markethours.SessionClose(tick.Timestamp)
+	if tick.Timestamp.After(sessionEnd.Add(-5 * time.Minute)) {
 		return "end-of-day", true
 	}
 
