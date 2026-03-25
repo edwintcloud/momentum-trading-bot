@@ -279,6 +279,22 @@ func runLive() {
 	for _, u := range configUpdaters {
 		apiServer.RegisterConfigUpdater(u)
 	}
+	// Wire price-refresh callback: fetches broker positions and updates portfolio
+	// prices so close-all orders use current market prices, not stale cached values.
+	apiServer.SetPriceRefresher(func() {
+		bPositions, err := alpacaClient.GetPositions(ctx)
+		if err != nil {
+			log.Printf("price-refresh: failed to fetch broker positions: %v", err)
+			return
+		}
+		for _, bp := range bPositions {
+			var currentPrice float64
+			fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
+			if currentPrice > 0 {
+				portfolioMgr.UpdatePrice(bp.Symbol, currentPrice)
+			}
+		}
+	})
 	go func() {
 		if err := apiServer.Start(ctx, appCfg.ListenAddr); err != nil {
 			log.Fatalf("api: %v", err)
@@ -410,7 +426,7 @@ func runLive() {
 				if err == nil {
 					portfolioMgr.SetBrokerEquity(bAcct.Equity)
 				}
-				// Log any mismatches
+				// Update portfolio prices from broker and detect mismatches
 				pmPositions := portfolioMgr.GetPositions()
 				pmSymbols := make(map[string]bool)
 				for _, p := range pmPositions {
@@ -422,6 +438,23 @@ func runLive() {
 					if !pmSymbols[bp.Symbol] {
 						runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker has position %s not in portfolio manager", bp.Symbol))
 						log.Printf("reconcile: WARNING broker has position %s not in portfolio manager", bp.Symbol)
+						continue
+					}
+					// Update portfolio price from broker's current price so positions
+					// stay fresh even when no streaming bars are received.
+					var currentPrice float64
+					fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
+					if currentPrice > 0 {
+						portfolioMgr.UpdatePrice(bp.Symbol, currentPrice)
+						// Inject a synthetic tick so the strategy evaluates exit conditions.
+						select {
+						case strategyTicks <- domain.Tick{
+							Symbol:    bp.Symbol,
+							Price:     currentPrice,
+							Timestamp: time.Now(),
+						}:
+						default:
+						}
 					}
 				}
 				for _, p := range pmPositions {

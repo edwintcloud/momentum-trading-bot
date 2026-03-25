@@ -56,6 +56,7 @@ type Server struct {
 	cachedArtifact   optimizer.ArtifactStatus
 	cachedArtifactAt time.Time
 	historyLoader    interface{}
+	refreshPrices    func() // called before close-all to get fresh prices from broker
 }
 
 // NewServer creates an API server.
@@ -83,6 +84,11 @@ func NewServer(
 // RegisterConfigUpdater adds a component that will be notified of config changes.
 func (s *Server) RegisterConfigUpdater(u ConfigUpdater) {
 	s.configUpdaters = append(s.configUpdaters, u)
+}
+
+// SetPriceRefresher sets a callback to refresh portfolio prices from the broker.
+func (s *Server) SetPriceRefresher(fn func()) {
+	s.refreshPrices = fn
 }
 
 // Start begins serving HTTP on the given address.
@@ -323,6 +329,11 @@ func (s *Server) handleCloseAll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Refresh portfolio prices from broker before generating close orders
+	// so limit prices reflect the current market, not stale cached values.
+	if s.refreshPrices != nil {
+		s.refreshPrices()
+	}
 	orders := s.portfolio.PendingCloseAll("operator-close-all")
 	for _, order := range orders {
 		s.closeAll <- order
@@ -337,6 +348,10 @@ func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runtime.EmergencyStop()
+	// Refresh portfolio prices from broker before generating close orders.
+	if s.refreshPrices != nil {
+		s.refreshPrices()
+	}
 	orders := s.portfolio.PendingCloseAll("emergency-stop")
 	for _, order := range orders {
 		s.closeAll <- order
