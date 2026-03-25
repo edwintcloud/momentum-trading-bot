@@ -1,5 +1,7 @@
 package ml
 
+import "math"
+
 // ScorerFeatures extracts the feature vector for ML scoring from a candidate.
 type ScorerFeatures struct {
 	RelativeVolume     float64
@@ -195,4 +197,8 @@ func clamp(x, lo, hi float64) float64 {
 		return hi
 	}
 	return x
+}
+
+func sigmoid(x float64) float64 {
+	return 1.0 / (1.0 + math.Exp(-x))
 }

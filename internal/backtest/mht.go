@@ -206,7 +206,7 @@ func SharpeRatioPValue(observedSR float64, numReturns int, skewness, kurtosis fl
 	}
 
 	sr2 := observedSR * observedSR
-	numerator := 1.0 - skewness*observedSR + (kurtosis-1.0)/4.0*sr2
+	numerator := 1.0 - skewness*observedSR + kurtosis/4.0*sr2
 	if numerator < 0 {
 		numerator = 1.0
 	}

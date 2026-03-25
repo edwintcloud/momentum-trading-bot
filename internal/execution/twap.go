@@ -50,7 +50,7 @@ func GenerateTWAPSchedule(symbol, side string, totalQty int64, startTime time.Ti
 		numSlices = 1
 	}
 
-	intervalDuration := time.Duration(windowSec/numSlices) * time.Second
+	intervalDuration := time.Duration(int64(windowSec) * int64(time.Second) / int64(numSlices))
 	if intervalDuration < time.Second {
 		intervalDuration = time.Second
 	}

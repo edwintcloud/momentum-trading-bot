@@ -21,11 +21,13 @@ func DefaultOBVConfig() OBVConfig {
 
 // obvState tracks per-symbol OBV divergence state.
 type obvState struct {
-	obv       float64
-	lastClose float64
-	hasFirst  bool
-	prices    []float64 // close prices in lookback window
-	obvValues []float64 // OBV values in lookback window
+	obv            float64
+	lastClose      float64
+	hasFirst       bool
+	prices         []float64 // close prices in lookback window
+	obvValues      []float64 // OBV values in lookback window
+	lastDivDir     Direction // direction of last divergence fired
+	cooldownBars   int       // bars since last divergence signal
 }
 
 // OBVDivergence implements On-Balance Volume divergence signal generation.
@@ -95,10 +97,25 @@ func (o *OBVDivergence) OnBar(symbol string, bar Bar) *Signal {
 		return nil
 	}
 
+	st.cooldownBars++
+
 	dir := detectDivergence(st.prices, st.obvValues)
 	if dir == DirectionNeutral {
+		st.lastDivDir = DirectionNeutral
 		return nil
 	}
+
+	// Cooldown: only fire once per new divergence or after lookback/2 bars
+	minCooldown := o.cfg.LookbackBars / 2
+	if minCooldown < 5 {
+		minCooldown = 5
+	}
+	if dir == st.lastDivDir && st.cooldownBars < minCooldown {
+		return nil
+	}
+
+	st.lastDivDir = dir
+	st.cooldownBars = 0
 
 	// Strength based on the magnitude of the divergence
 	strength := divergenceStrength(st.prices, st.obvValues)

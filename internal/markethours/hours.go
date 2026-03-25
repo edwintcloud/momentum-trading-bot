@@ -243,12 +243,12 @@ func TradingDay(t time.Time) string {
 	return t.In(nyLoc).Format("2006-01-02")
 }
 
-// PreviousTradingDay returns the prior weekday.
+// PreviousTradingDay returns the prior trading day (skipping weekends and holidays).
 func PreviousTradingDay(t time.Time) time.Time {
 	ny := t.In(nyLoc)
 	for {
 		ny = ny.AddDate(0, 0, -1)
-		if ny.Weekday() != time.Saturday && ny.Weekday() != time.Sunday {
+		if IsMarketDay(ny) {
 			return ny
 		}
 	}

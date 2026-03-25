@@ -23,7 +23,6 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/market"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
-	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
@@ -117,9 +116,6 @@ func runLive() {
 
 	// Initialize float store for momentum filtering
 	floatStore := alpaca.NewFloatStore()
-	if err := floatStore.LoadFromAssets(ctx, alpacaClient); err != nil {
-		log.Printf("float-store: asset load warning: %v", err)
-	}
 	floatOverrideURL := appCfg.FloatDataURL
 	if floatOverrideURL == "" {
 		floatOverrideURL = tradingCfg.FloatOverrideURL
@@ -127,6 +123,10 @@ func runLive() {
 	if floatOverrideURL != "" {
 		if err := floatStore.LoadFromCSV(floatOverrideURL); err != nil {
 			log.Printf("float-store: override load warning: %v", err)
+		}
+	} else {
+		if _, err := floatStore.LoadOrFetchFloatData(ctx); err != nil {
+			log.Printf("float-store: SEC EDGAR fetch warning: %v", err)
 		}
 	}
 	log.Printf("float-store: %d symbols with float data", floatStore.Len())
@@ -197,23 +197,7 @@ func runLive() {
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
 	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
 
-	// Create ML scorer and drift detector if enabled
-	var mlScorer ml.Scorer
-	var driftDetector *ml.DriftDetector
-	if tradingCfg.MLScoringEnabled {
-		mlScorer = ml.NewRuleBasedScorer()
-		if tradingCfg.ConceptDriftEnabled {
-			// Uniform training distribution (no trained model yet); performance drift is primary signal
-			uniformDist := make([]float64, 10)
-			for i := range uniformDist {
-				uniformDist[i] = 0.1
-			}
-			driftDetector = ml.NewDriftDetector(uniformDist, 0.95)
-			portfolioMgr.SetDriftDetector(driftDetector)
-		}
-	}
-
-	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator, mlScorer, driftDetector)
+	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
 
 	// Fan-out ticks to strategy and scanner
@@ -290,7 +274,7 @@ func runLive() {
 	runtimeState.RecordLog("info", "system", "momentum trading bot started")
 
 	// Start API server
-	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst}
+	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst, riskEngine}
 	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg, optimizer.DefaultArtifactDir, eventRecorder)
 	for _, u := range configUpdaters {
 		apiServer.RegisterConfigUpdater(u)
@@ -547,7 +531,7 @@ func runOptimize(args []string) error {
 			log.Printf("Optimize capability detection failed, using defaults: %v", capErr)
 		}
 
-		symbols, err := resolveBacktestSymbols(setupCtx, client)
+		symbols, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 		if err != nil {
 			return err
 		}
@@ -587,6 +571,10 @@ func runOptimize(args []string) error {
 			if loadErr := streamFloatStore.LoadFromCSV(floatURL); loadErr != nil {
 				log.Printf("Optimize float data warning: %v", loadErr)
 			}
+		} else {
+			if _, loadErr := streamFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
+				log.Printf("Optimize float data warning: %v", loadErr)
+			}
 		}
 		opt.SetFloatStore(streamFloatStore)
 		report, err := opt.Run()
@@ -602,6 +590,10 @@ func runOptimize(args []string) error {
 	optFloatStore := alpaca.NewFloatStore()
 	if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
 		if loadErr := optFloatStore.LoadFromCSV(floatURL); loadErr != nil {
+			log.Printf("Optimize float data warning: %v", loadErr)
+		}
+	} else {
+		if _, loadErr := optFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
 			log.Printf("Optimize float data warning: %v", loadErr)
 		}
 	}
@@ -714,7 +706,7 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 		log.Printf("auto-optimize: Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
 	}
 
-	symbols, err := resolveBacktestSymbols(setupCtx, client)
+	symbols, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 	if err != nil {
 		return optimizer.Report{}, err
 	}
@@ -747,6 +739,10 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 	autoFloatStore := alpaca.NewFloatStore()
 	if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
 		if loadErr := autoFloatStore.LoadFromCSV(floatURL); loadErr != nil {
+			log.Printf("auto-optimize: float data warning: %v", loadErr)
+		}
+	} else {
+		if _, loadErr := autoFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
 			log.Printf("auto-optimize: float data warning: %v", loadErr)
 		}
 	}

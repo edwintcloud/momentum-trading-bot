@@ -26,6 +26,7 @@ type Manager struct {
 	driftDetector *ml.DriftDetector
 	highWaterMark float64
 	maxDrawdown   float64
+	nowFunc       func() time.Time
 }
 
 // NewManager creates a portfolio manager.
@@ -42,6 +43,7 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 		dayKey:        markethours.TradingDay(time.Now()),
 		recorder:      recorder,
 		highWaterMark: cfg.StartingCapital,
+		nowFunc:       time.Now,
 	}
 }
 
@@ -155,6 +157,11 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 		return
 	}
 
+	m.closePositionLocked(pos, report)
+}
+
+// closePositionLocked performs the actual close. Caller must hold m.mu.
+func (m *Manager) closePositionLocked(pos domain.Position, report domain.ExecutionReport) {
 	var pnl float64
 	if domain.IsLong(pos.Side) {
 		pnl = (report.Price - pos.AvgPrice) * float64(pos.Quantity)
@@ -188,7 +195,7 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 	m.closedTrades = append(m.closedTrades, trade)
 	m.dayPnL += pnl
 	m.tradesToday++
-	delete(m.positions, report.Symbol)
+	delete(m.positions, pos.Symbol)
 
 	m.recordDriftReturn(pnl, pos.AvgPrice, pos.Quantity)
 	if m.recorder != nil {
@@ -324,7 +331,6 @@ func (m *Manager) PendingCloseAll(reason string) []domain.OrderRequest {
 func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.resetDayIfNeededLocked()
 
 	exposure, longExposure, shortExposure := float64(0), float64(0), float64(0)
 	var unrealized float64
@@ -424,19 +430,16 @@ func (m *Manager) PerformanceMetrics() domain.PerformanceMetrics {
 	}
 }
 
-func (m *Manager) resetDayIfNeeded() {
-	today := markethours.TradingDay(time.Now())
-	if today != m.dayKey {
-		m.dayKey = today
-		m.dayPnL = 0
-		m.tradesToday = 0
-		m.entriesToday = 0
-		m.closedTrades = m.closedTrades[:0]
-	}
+// SetNowFunc overrides the clock used for day-boundary detection.
+// Use this in backtests to inject simulated time.
+func (m *Manager) SetNowFunc(fn func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nowFunc = fn
 }
 
-func (m *Manager) resetDayIfNeededLocked() {
-	today := markethours.TradingDay(time.Now())
+func (m *Manager) resetDayIfNeeded() {
+	today := markethours.TradingDay(m.nowFunc())
 	if today != m.dayKey {
 		m.dayKey = today
 		m.dayPnL = 0
@@ -460,6 +463,7 @@ func (m *Manager) UpdateStopPrice(symbol string, newStop float64) {
 }
 
 // ReducePosition partially closes a position, reducing quantity and recording a partial trade.
+// If the exit quantity equals or exceeds the position size, a full close is performed inline.
 func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -472,10 +476,8 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 
 	exitQty := report.Quantity
 	if exitQty >= pos.Quantity {
-		// Full close — delegate to ClosePosition
-		m.mu.Unlock()
-		m.ClosePosition(report)
-		m.mu.Lock()
+		// Full close — inline instead of delegating to avoid mutex unlock/relock race.
+		m.closePositionLocked(pos, report)
 		return
 	}
 
@@ -692,11 +694,17 @@ func (m *Manager) PortfolioHeat() float64 {
 
 // PortfolioHeatPct returns total open risk as a fraction of current equity.
 func (m *Manager) PortfolioHeatPct() float64 {
-	equity := m.CurrentEquity()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	equity := m.currentEquityLocked()
 	if equity <= 0 {
 		return 0
 	}
-	return m.PortfolioHeat() / equity
+	var totalRisk float64
+	for _, pos := range m.positions {
+		totalRisk += pos.RiskPerShare * float64(pos.Quantity)
+	}
+	return totalRisk / equity
 }
 
 // UpdateEquityTracking updates the high-water mark and max drawdown.

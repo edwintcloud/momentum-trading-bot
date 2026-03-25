@@ -25,7 +25,6 @@ func DefaultOFIConfig() OFIConfig {
 
 // ofiState tracks per-symbol OFI state.
 type ofiState struct {
-	closes     []float64
 	volumes    []int64
 	ofiValues  []float64
 	lastClose  float64
@@ -86,7 +85,6 @@ func (o *OFI) OnBar(symbol string, bar Bar) *Signal {
 
 	ofi := float64(bar.Volume) * direction
 	st.ofiValues = append(st.ofiValues, ofi)
-	st.closes = append(st.closes, bar.Close)
 	st.volumes = append(st.volumes, bar.Volume)
 	st.lastClose = bar.Close
 
@@ -94,7 +92,6 @@ func (o *OFI) OnBar(symbol string, bar Bar) *Signal {
 	if len(st.ofiValues) > o.cfg.WindowBars {
 		excess := len(st.ofiValues) - o.cfg.WindowBars
 		st.ofiValues = st.ofiValues[excess:]
-		st.closes = st.closes[excess:]
 		st.volumes = st.volumes[excess:]
 	}
 
@@ -137,7 +134,7 @@ func (o *OFI) OnBar(symbol string, bar Bar) *Signal {
 	currentOFI := st.ofiValues[len(st.ofiValues)-1]
 
 	// Signal fires when current OFI exceeds threshold × stddev
-	zScore := currentOFI / stdDev
+	zScore := (currentOFI - mean) / stdDev
 
 	var dir Direction
 	if zScore > o.cfg.ThresholdSigma {

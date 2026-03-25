@@ -117,7 +117,10 @@ func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool
 	if ok {
 		return candidate, true, ""
 	}
-	reason := classifyTickRejection(tick, s.config)
+	s.mu.Lock()
+	cfg := s.config
+	s.mu.Unlock()
+	reason := classifyTickRejection(tick, cfg)
 	return candidate, false, reason
 }
 
@@ -189,7 +192,9 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		return domain.Candidate{}, false
 	}
 
+	s.mu.Lock()
 	cfg := s.config
+	s.mu.Unlock()
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
 		return domain.Candidate{}, false
 	}
@@ -292,8 +297,11 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		}
 	}
 
-	// Phase 3 Change 1: RSI overbought/oversold filter
-	if direction == domain.DirectionLong && (metrics.rsiMASlope/2.0 < 0.5) {
+	// RSI momentum slope: longs need positive momentum
+	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 {
+		return domain.Candidate{}, false
+	}
+	if direction == domain.DirectionShort && metrics.rsiMASlope > 0 {
 		return domain.Candidate{}, false
 	}
 
@@ -309,13 +317,6 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	// Compute intraday return for candidate
 	if tick.Open > 0 && tick.Price > 0 {
 		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
-	}
-
-	// Score the candidate
-	score := s.scoreCandidate(tick, metrics, direction)
-	minScore := cfg.MinEntryScore
-	if direction == domain.DirectionShort {
-		minScore = cfg.ShortMinEntryScore
 	}
 
 	// Get market regime
@@ -335,27 +336,6 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	setupType := metrics.setupType
-
-	// Phase 3 Change 6: Mean-reversion overlay
-	if cfg.MeanReversionEnabled {
-		if regime.Regime == domain.RegimeMixed || regime.Regime == domain.RegimeNeutral {
-			if metrics.adx < cfg.MeanReversionMaxADX && metrics.bbMiddle > 0 {
-				if tick.Price <= metrics.bbLower {
-					setupType = "mean_reversion_long"
-					direction = domain.DirectionLong
-					score += 2.0
-				} else if tick.Price >= metrics.bbUpper {
-					setupType = "mean_reversion_short"
-					direction = domain.DirectionShort
-					score += 2.0
-				}
-			}
-		}
-	}
-
-	if score < minScore {
-		return domain.Candidate{}, false
-	}
 
 	candidate := domain.Candidate{
 		Symbol:                tick.Symbol,
@@ -392,11 +372,12 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		MACDHistogram:         metrics.macdHistogram,
 		IntradayReturnPct:     intradayReturnPct,
 		SetupType:             setupType,
-		Score:                 score,
+		Score:                 1.0,
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
 		Playbook:              s.selectPlaybookFromSetupType(direction, setupType),
 		Float:                 tick.Float,
+		PrevDayVolume:         tick.PrevDayVolume,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
@@ -468,8 +449,16 @@ func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 	}
 	if tick.BarHigh > 0 && tick.BarLow > 0 {
 		typical := (tick.BarHigh + tick.BarLow + tick.Price) / 3
-		state.cumulativeDollarFlow += typical * float64(tick.Volume)
-		state.cumulativeVolume += float64(tick.Volume)
+		// Derive per-bar volume from cumulative session volume
+		barVol := tick.Volume
+		if len(state.bars) > 0 {
+			barVol = tick.Volume - state.bars[len(state.bars)-1].cumulativeVolume
+		}
+		if barVol < 0 {
+			barVol = 0
+		}
+		state.cumulativeDollarFlow += typical * float64(barVol)
+		state.cumulativeVolume += float64(barVol)
 		if state.cumulativeVolume > 0 {
 			bar.vwap = state.cumulativeDollarFlow / state.cumulativeVolume
 		}
@@ -646,16 +635,25 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 		// Volume-on-pullback: check if recent bars have decreasing volume
 		if m.setupType == "pullback" && n >= 5 {
+			// Derive per-bar volumes from cumulative session volumes
+			barVols := make([]int64, n)
+			barVols[0] = bars[0].volume
+			for i := 1; i < n; i++ {
+				barVols[i] = bars[i].volume - bars[i-1].volume
+				if barVols[i] < 0 {
+					barVols[i] = 0
+				}
+			}
 			peakVolIdx := n - 5
 			for i := n - 4; i < n; i++ {
-				if bars[i].volume > bars[peakVolIdx].volume {
+				if barVols[i] > barVols[peakVolIdx] {
 					peakVolIdx = i
 				}
 			}
 			if peakVolIdx < n-1 {
 				volumeDecreasing := true
 				for i := peakVolIdx + 1; i < n; i++ {
-					if bars[i].volume > bars[i-1].volume*115/100 { // allow 15% tolerance
+					if barVols[i] > barVols[i-1]*115/100 { // allow 15% tolerance
 						volumeDecreasing = false
 						break
 					}
@@ -668,124 +666,12 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	return m
 }
 
-// continuousScore returns a value in [0, 1] that ramps linearly from 0 at threshold to 1 at saturation.
-func continuousScore(value, threshold, saturation float64) float64 {
-	if value <= 0 || value < threshold {
-		return 0
-	}
-	if saturation <= threshold {
-		return 1
-	}
-	normalized := (value - threshold) / (saturation - threshold)
-	if normalized > 1.0 {
-		normalized = 1.0
-	}
-	return normalized
-}
-
-func (s *Scanner) scoreCandidate(tick domain.Tick, m scanMetrics, direction string) float64 {
-	cfg := s.config
-	score := 0.0
-
-	// Relative Volume: ramp from 2.0 to 8.0, weight 1.5
-	score += 1.5 * continuousScore(tick.RelativeVolume, 2.0, 8.0)
-
-	// Volume Rate: ramp from minVolumeRate to minVolumeRate*4, weight 0.5
-	score += 0.5 * continuousScore(m.volumeRate, cfg.MinVolumeRate, cfg.MinVolumeRate*4)
-
-	// Gap Percent: ramp from minGap to 15%, weight 1.5
-	gapAbs := math.Abs(tick.GapPercent)
-	score += 1.5 * continuousScore(gapAbs, cfg.MinGapPercent, 15.0)
-
-	// One-minute return: weight 0.5
-	if direction == domain.DirectionLong {
-		score += 0.5 * continuousScore(m.oneMinuteReturn, cfg.MinOneMinuteReturnPct, cfg.MinOneMinuteReturnPct*3)
-	} else {
-		score += 0.5 * continuousScore(-m.oneMinuteReturn, cfg.MinOneMinuteReturnPct, cfg.MinOneMinuteReturnPct*3)
-	}
-
-	// Three-minute return: weight 0.5
-	if direction == domain.DirectionLong {
-		score += 0.5 * continuousScore(m.threeMinuteReturn, cfg.MinThreeMinuteReturnPct, cfg.MinThreeMinuteReturnPct*3)
-	} else {
-		score += 0.5 * continuousScore(-m.threeMinuteReturn, cfg.MinThreeMinuteReturnPct, cfg.MinThreeMinuteReturnPct*3)
-	}
-
-	// Breakout strength: ramp from 0 to 3%, weight 1.0
-	if direction == domain.DirectionLong {
-		score += 1.0 * continuousScore(m.breakoutPct, 0, 3.0)
-	} else {
-		score += 1.0 * continuousScore(-m.breakoutPct, 0, 3.0)
-	}
-
-	// VWAP alignment: weight 0.5
-	if m.vwap > 0 {
-		vwapPct := (tick.Price - m.vwap) / m.vwap * 100
-		if direction == domain.DirectionLong {
-			score += 0.5 * continuousScore(vwapPct, 0, 2.0)
-		} else {
-			score += 0.5 * continuousScore(-vwapPct, 0, 2.0)
-		}
-	}
-
-	// EMA alignment: weight 0.5
-	if m.emaFast > 0 && m.emaSlow > 0 {
-		emaDiff := (m.emaFast - m.emaSlow) / m.emaSlow * 100
-		if direction == domain.DirectionLong {
-			score += 0.5 * continuousScore(emaDiff, 0, 1.0)
-		} else {
-			score += 0.5 * continuousScore(-emaDiff, 0, 1.0)
-		}
-	}
-
-	// RSI momentum alignment: weight 0.5
-	if direction == domain.DirectionLong && m.rsiMASlope > 0 {
-		score += 0.5 * continuousScore(m.rsiMASlope, 0, 2.0)
-	} else if direction == domain.DirectionShort && m.rsiMASlope < 0 {
-		score += 0.5 * continuousScore(-m.rsiMASlope, 0, 2.0)
-	}
-
-	// Volume pattern: decreasing volume on pullback is bullish (Cameron's key confirmation)
-	if cfg.VolumeOnPullbackEnabled && m.setupType == "pullback" {
-		if m.volumeDecreasingOnPullback {
-			score += 1.0 // significant bonus for healthy pullback pattern
-		} else {
-			score -= 0.5 // penalty for pullback on increasing volume (distribution)
-		}
-	}
-
-	// HOD Momo: intraday return from open scoring
-	if cfg.HODMomoEnabled && tick.Open > 0 {
-		intradayReturn := (tick.Price - tick.Open) / tick.Open * 100
-		if intradayReturn > 0 {
-			score += 2.0 * continuousScore(intradayReturn, cfg.HODMomoMinIntradayPct, 50.0)
-		}
-	}
-
-	// Near HOD bonus: within 3% of high = buying strength
-	if tick.HighOfDay > 0 && tick.Price > 0 {
-		distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-		if distFromHigh < 3.0 {
-			score += 0.5 * (1.0 - distFromHigh/3.0) // 0.5 at HOD, 0 at 3% below
-		}
-	}
-
-	// Parabolic-failed-reclaim-short setup bonus
-	if m.setupType == "parabolic-failed-reclaim-short" {
-		score += 8.5
-	}
-
-	return score
-}
-
 func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string) string {
 	switch setupType {
 	case "hod_breakout", "breakout", "breakdown":
 		return "breakout"
 	case "hod_pullback", "pullback":
 		return "pullback"
-	case "mean_reversion_long", "mean_reversion_short":
-		return "reversal"
 	case "parabolic-failed-reclaim-short":
 		return "reversal"
 	}
@@ -952,22 +838,17 @@ func RankCandidates(candidates []domain.Candidate) {
 	})
 
 	topComposite := rankings[0].composite
-	for rank, r := range rankings {
-		candidates[r.idx].LeaderRank = rank + 1
+	for i, r := range rankings {
+		candidates[r.idx].LeaderRank = i + 1
 		if topComposite > 0 {
 			candidates[r.idx].VolumeLeaderPct = (r.composite / topComposite) * 100
-		}
-		// Top 3 leaders get a scoring bonus
-		if rank < 3 {
-			leaderBonus := 1.0 + float64(3-rank)*0.05 // rank 0(=1st): +15%, rank 1(=2nd): +10%, rank 2(=3rd): +5%
-			candidates[r.idx].Score *= leaderBonus
 		}
 	}
 }
 
 // computeBollingerBands computes upper, middle, and lower Bollinger Bands.
 func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, middle, lower float64) {
-	if len(bars) < period {
+	if len(bars) < period || period < 2 {
 		return 0, 0, 0
 	}
 
@@ -984,7 +865,7 @@ func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, midd
 		diff := b.close - middle
 		sumSq += diff * diff
 	}
-	stddev := math.Sqrt(sumSq / float64(period))
+	stddev := math.Sqrt(sumSq / float64(period-1))
 
 	upper = middle + k*stddev
 	lower = middle - k*stddev
@@ -993,7 +874,7 @@ func computeBollingerBands(bars []symbolBar, period int, k float64) (upper, midd
 
 // ComputeBollingerBandsFromPrices computes Bollinger Bands from a slice of prices (exported for strategy use).
 func ComputeBollingerBandsFromPrices(prices []float64, period int, k float64) (upper, middle, lower float64) {
-	if len(prices) < period {
+	if len(prices) < period || period < 2 {
 		return 0, 0, 0
 	}
 
@@ -1010,7 +891,7 @@ func ComputeBollingerBandsFromPrices(prices []float64, period int, k float64) (u
 		diff := p - middle
 		sumSq += diff * diff
 	}
-	stddev := math.Sqrt(sumSq / float64(period))
+	stddev := math.Sqrt(sumSq / float64(period-1))
 
 	upper = middle + k*stddev
 	lower = middle - k*stddev

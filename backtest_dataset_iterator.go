@@ -328,20 +328,3 @@ type emptyIterator struct{}
 
 func (e *emptyIterator) Next() (backtest.InputBar, bool, error) { return backtest.InputBar{}, false, nil }
 func (e *emptyIterator) Close() error                           { return nil }
-
-func drainHistoricalDataset(dataset historicalDataset) ([]backtest.InputBar, error) {
-	iter := newHistoricalDatasetIterator(dataset)
-	defer iter.Close()
-	var bars []backtest.InputBar
-	for {
-		bar, ok, err := iter.Next()
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			break
-		}
-		bars = append(bars, bar)
-	}
-	return bars, nil
-}

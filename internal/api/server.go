@@ -528,7 +528,7 @@ func (s *Server) signSession(payload string) string {
 func sameOriginRequest(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
-		return false
+		return true // non-browser clients don't send Origin
 	}
 	originURL, err := url.Parse(origin)
 	if err != nil {

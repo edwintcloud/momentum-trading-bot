@@ -64,6 +64,9 @@ func (h *HMMRegimeDetector) Update(ret float64) {
 		for j := range newProbs {
 			newProbs[j] /= sum
 		}
+	} else {
+		// All emissions were zero (extreme outlier) — reset to prior to avoid permanent degeneration
+		copy(newProbs, h.statePrior)
 	}
 	h.forwardProbs = newProbs
 }

@@ -72,7 +72,7 @@ func (ve *VolatilityEstimator) UpdatePrice(symbol string, price float64) {
 				sumSq += r * r
 			}
 			mean := sum / n
-			variance := sumSq/n - mean*mean
+			variance := (sumSq - n*mean*mean) / (n - 1)
 			if variance > 0 {
 				est.realizedVol = math.Sqrt(variance) * math.Sqrt(390*252)
 			}

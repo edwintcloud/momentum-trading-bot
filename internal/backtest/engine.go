@@ -12,7 +12,6 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
-	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
@@ -218,6 +217,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	book := portfolio.NewManager(cfg)
+	var simTime time.Time
+	book.SetNowFunc(func() time.Time { return simTime })
 	var regimeTracker *regime.Tracker
 	if cfg.EnableMarketRegime {
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
@@ -226,13 +227,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
 
-	// Create ML scorer for backtest if enabled
-	var mlScorer ml.Scorer
-	if cfg.MLScoringEnabled {
-		mlScorer = ml.NewRuleBasedScorer()
-	}
-
-	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator, mlScorer)
+	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
 	pendingEntries := make(map[string]pendingEntry)
 	openAnalytics := make(map[string]tradeAnalytics)
 	closedAnalytics := make([]tradeAnalytics, 0)
@@ -257,6 +252,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			break
 		}
 		currentBar := normalizeInputBar(item)
+		simTime = currentBar.Timestamp
 		diagnostics.BarsLoaded++
 		diagnostics.BarsInWindow++
 		tick := normalizeBar(currentBar, normalizerState)
@@ -326,6 +322,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 				if order.Intent != domain.IntentPartial {
 					if analytics, exists := openAnalytics[order.Symbol]; exists {
 						closedAnalytics = append(closedAnalytics, tradeAnalytics{
+							side:         analytics.side,
 							entryPrice:   analytics.entryPrice,
 							riskPerShare: analytics.riskPerShare,
 							openedAt:     analytics.openedAt,
@@ -428,6 +425,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 	openPositionsAtEnd := book.OpenPositionCount()
 	wins := 0
+	losses := 0
 	grossWins := 0.0
 	grossLosses := 0.0
 	totalWinR := 0.0
@@ -446,6 +444,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			totalWinR += trade.RMultiple
 			totalWinPnL += trade.PnL
 		} else if trade.PnL < 0 {
+			losses++
 			grossLosses += math.Abs(trade.PnL)
 			totalLossR += trade.RMultiple
 			totalLossPnL += trade.PnL
@@ -479,8 +478,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	avgTimeToStopMin := 0.0
 	if len(closedTrades) > 0 {
 		winRate = (float64(wins) / float64(len(closedTrades))) * 100
-		avgMFER = totalMFER / float64(len(closedTrades))
-		avgMAER = totalMAER / float64(len(closedTrades))
+		if len(closedAnalytics) > 0 {
+			avgMFER = totalMFER / float64(len(closedAnalytics))
+			avgMAER = totalMAER / float64(len(closedAnalytics))
+		}
 		trailingStopExitPct = (float64(trailingStopExits) / float64(len(closedTrades))) * 100
 	}
 	if grossLosses > 0 {
@@ -490,7 +491,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		avgWinR = totalWinR / float64(wins)
 		avgWinPnL = totalWinPnL / float64(wins)
 	}
-	losses := len(closedTrades) - wins
 	if losses > 0 {
 		avgLossR = totalLossR / float64(losses)
 		avgLossPnL = totalLossPnL / float64(losses)
@@ -529,8 +529,14 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		var totalComm, totalSEC, totalTAF, totalSpread float64
 		for _, trade := range closedTrades {
 			qty := int(trade.Quantity)
-			entryCosts := ComputeTransactionCosts(trade.EntryPrice, qty, "buy", cfg.DefaultSpreadBps, cfg.CommissionPerShare)
-			exitCosts := ComputeTransactionCosts(trade.ExitPrice, qty, "sell", cfg.DefaultSpreadBps, cfg.CommissionPerShare)
+			entrySide := "buy"
+			exitSide := "sell"
+			if trade.Side == "short" {
+				entrySide = "sell"
+				exitSide = "buy"
+			}
+			entryCosts := ComputeTransactionCosts(trade.EntryPrice, qty, entrySide, cfg.DefaultSpreadBps, cfg.CommissionPerShare)
+			exitCosts := ComputeTransactionCosts(trade.ExitPrice, qty, exitSide, cfg.DefaultSpreadBps, cfg.CommissionPerShare)
 			totalComm += entryCosts.Commission + exitCosts.Commission
 			totalSEC += entryCosts.SECFee + exitCosts.SECFee
 			totalTAF += entryCosts.TAFFee + exitCosts.TAFFee
@@ -541,9 +547,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		result.TotalTAFFees = round2(totalTAF)
 		result.TotalSpreadCosts = round2(totalSpread)
 		result.TotalTransactionCosts = round2(totalComm + totalSEC + totalTAF + totalSpread)
-		totalGrossPnL := grossWins + grossLosses
-		if totalGrossPnL > 0 {
-			result.ImplementationShortfall = round2(result.TotalTransactionCosts / totalGrossPnL * 100)
+		var totalNotional float64
+		for _, trade := range closedTrades {
+			qty := float64(trade.Quantity)
+			totalNotional += trade.EntryPrice*qty + trade.ExitPrice*qty
+		}
+		if totalNotional > 0 {
+			result.ImplementationShortfall = round2(result.TotalTransactionCosts / totalNotional * 100)
 		}
 	}
 
@@ -577,25 +587,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	// Phase 5: Factor decomposition
-	if cfg.FactorAnalysisEnabled && len(closedTrades) >= 20 {
-		stratReturns := make([]float64, len(closedTrades))
-		mktReturns := make([]float64, len(closedTrades))
-		momReturns := make([]float64, len(closedTrades))
-		sizeReturns := make([]float64, len(closedTrades))
-		for i, ct := range closedTrades {
-			if cfg.StartingCapital > 0 {
-				stratReturns[i] = ct.PnL / cfg.StartingCapital
-			}
-			// Use zero-centered proxies for factors when benchmark data is unavailable
-			mktReturns[i] = stratReturns[i] * 0.5
-			momReturns[i] = stratReturns[i] * 0.3
-			sizeReturns[i] = stratReturns[i] * 0.1
-		}
-		fd := analytics.DecomposeReturns(stratReturns, mktReturns, momReturns, sizeReturns)
-		if fd.RSquared > 0 {
-			result.FactorDecomposition = &fd
-		}
-	}
+	// Skipped: requires real benchmark/factor return series (e.g. SPY, Fama-French).
+	// Synthetic proxies (scalar multiples of strategy returns) produce algebraically
+	// predetermined results and misleading alpha/R² values.
 
 	return result, nil
 }
@@ -933,6 +927,7 @@ func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
 		Open:            round2(state.open),
 		HighOfDay:       round2(state.highOfDay),
 		Volume:          state.totalVolume,
+		PrevDayVolume:   state.prevDayVolume,
 		RelativeVolume:  round2(relativeVolume),
 		GapPercent:      round2(gapPercent),
 		PreMarketVolume: state.preMarketVol,

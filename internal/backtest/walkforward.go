@@ -98,7 +98,7 @@ func RunWalkForward(bars []InputBar, wfCfg WalkForwardConfig, tradingCfg config.
 		isSharpe := computeSharpeFromResult(isResult)
 		oosSharpe := computeSharpeFromResult(oosResult)
 		oosReturn := 0.0
-		if isResult.StartingCapital > 0 {
+		if oosResult.StartingCapital > 0 {
 			oosReturn = oosResult.NetPnL / oosResult.StartingCapital
 		}
 
