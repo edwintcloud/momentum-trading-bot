@@ -269,7 +269,9 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Determine direction
 	direction := domain.DirectionLong
-	if tick.GapPercent < 0 && cfg.EnableShorts {
+	priceVsOpenPct := safePct(tick.Price, tick.Open)
+	priceVsVWAPPct := safePct(tick.Price-metrics.vwap, metrics.vwap) * 100
+	if cfg.EnableShorts && s.qualifiesShortMomentumProfile(tick, priceVsOpenPct, priceVsVWAPPct, metrics) {
 		direction = domain.DirectionShort
 	}
 	// HOD momo qualified stocks with positive intraday return are always long
@@ -359,7 +361,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PreMarketVolume:       tick.PreMarketVolume,
 		Volume:                tick.Volume,
 		HighOfDay:             tick.HighOfDay,
-		PriceVsOpenPct:        safePct(tick.Price, tick.Open),
+		PriceVsOpenPct:        priceVsOpenPct,
 		DistanceFromHighPct:   safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100,
 		OneMinuteReturnPct:    metrics.oneMinuteReturn,
 		ThreeMinuteReturnPct:  metrics.threeMinuteReturn,
@@ -368,7 +370,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		ATR:                   metrics.atr,
 		ATRPct:                safePct(metrics.atr, tick.Price) * 100,
 		VWAP:                  metrics.vwap,
-		PriceVsVWAPPct:        safePct(tick.Price-metrics.vwap, metrics.vwap) * 100,
+		PriceVsVWAPPct:        priceVsVWAPPct,
 		BreakoutPct:           metrics.breakoutPct,
 		ConsolidationRangePct: metrics.consolidationRangePct,
 		PullbackDepthPct:      metrics.pullbackDepthPct,
@@ -395,6 +397,36 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	return candidate, true
+}
+
+func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsOpenPct float64, priceVsVWAPPCT float64, metrics scanMetrics) bool {
+	if tick.RelativeVolume < s.config.MinRelativeVolume {
+		return false
+	}
+	vwapLimit := s.config.ShortVWAPBreakMinPct
+	if priceVsVWAPPCT > vwapLimit {
+		return false
+	}
+	if metrics.oneMinuteReturn >= -max(0.25, s.config.MinOneMinuteReturnPct*0.50) {
+		return false
+	}
+	if metrics.threeMinuteReturn >= -max(0.50, s.config.MinThreeMinuteReturnPct*0.75) {
+		return false
+	}
+	if metrics.breakoutPct > -0.05 {
+		return false
+	}
+	if tick.Open <= 0 || tick.HighOfDay <= 0 {
+		return false
+	}
+	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
+	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
+		return false
+	}
+	if tick.GapPercent < s.config.MinGapPercent {
+		return false
+	}
+	return priceVsOpenPct >= max(2.0, s.config.MinGapPercent*0.5)
 }
 
 func (s *Scanner) getOrCreateState(tick domain.Tick) *symbolState {
