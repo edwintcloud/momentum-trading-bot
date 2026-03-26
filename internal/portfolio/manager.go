@@ -16,6 +16,7 @@ type Manager struct {
 	config        config.TradingConfig
 	mu            sync.RWMutex
 	positions     map[string]domain.Position
+	pendingOrders map[string]domain.OrderRequest
 	closedTrades  []domain.ClosedTrade
 	dayKey        string
 	dayPnL        float64
@@ -39,6 +40,7 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 	return &Manager{
 		config:        cfg,
 		positions:     make(map[string]domain.Position),
+		pendingOrders: make(map[string]domain.OrderRequest),
 		closedTrades:  make([]domain.ClosedTrade, 0),
 		dayKey:        markethours.TradingDay(time.Now()),
 		recorder:      recorder,
@@ -571,6 +573,7 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 
 // ApplyExecution processes an execution report, opening or closing positions as appropriate.
 func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
+	m.ClearPendingOrder(report.Symbol)
 	if domain.IsOpeningIntent(report.Intent) {
 		m.OpenPosition(report)
 	} else if domain.IsPartialIntent(report.Intent) {
@@ -586,6 +589,36 @@ func (m *Manager) HasPosition(symbol string) bool {
 	defer m.mu.RUnlock()
 	_, ok := m.positions[symbol]
 	return ok
+}
+
+// MarkPendingOrder records an in-flight order so strategy/risk can suppress duplicates.
+func (m *Manager) MarkPendingOrder(order domain.OrderRequest) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingOrders[order.Symbol] = order
+}
+
+// ClearPendingOrder removes any in-flight order record for the symbol.
+func (m *Manager) ClearPendingOrder(symbol string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.pendingOrders, symbol)
+}
+
+// HasPendingOrder returns true when any in-flight order exists for the symbol.
+func (m *Manager) HasPendingOrder(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.pendingOrders[symbol]
+	return ok
+}
+
+// HasPendingClose returns true when an in-flight close/partial order exists for the symbol.
+func (m *Manager) HasPendingClose(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	order, ok := m.pendingOrders[symbol]
+	return ok && domain.IsClosingIntent(order.Intent)
 }
 
 // SymbolHadLossToday returns true if the symbol has any closed trade with negative PnL today.

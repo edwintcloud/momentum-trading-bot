@@ -237,10 +237,12 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		EngineOptions: []execution.EngineOption{
 			execution.WithPollInterval(1 * time.Millisecond),
 			execution.WithPollTimeout(5 * time.Second),
+			execution.WithSynchronous(true),
 			execution.WithNowFunc(func() time.Time {
 				return time.Unix(0, simTimeNano.Load())
 			}),
 		},
+		Deterministic: true,
 		OnTick: func(tick domain.Tick, domBar domain.Bar) {
 			broker.UpdateBar(domBar)
 			simTimeNano.Store(domBar.Timestamp.UnixNano())

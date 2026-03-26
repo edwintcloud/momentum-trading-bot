@@ -278,6 +278,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if _, exists := s.portfolio.GetPosition(c.Symbol); exists {
 		return domain.TradeSignal{}, false, "existing-position"
 	}
+	if s.portfolio.HasPendingOrder(c.Symbol) {
+		return domain.TradeSignal{}, false, "pending-order"
+	}
 
 	// Day state
 	dayKey := markethours.TradingDay(now)
@@ -499,6 +502,9 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	cfg := s.getConfig()
 	pos, exists := s.portfolio.GetPosition(tick.Symbol)
 	if !exists {
+		return domain.TradeSignal{}, false
+	}
+	if s.portfolio.HasPendingClose(tick.Symbol) {
 		return domain.TradeSignal{}, false
 	}
 

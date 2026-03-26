@@ -33,6 +33,7 @@ type paperOrder struct {
 	fillPrice    float64   // set when filled
 	status       string    // "new", "filled", "expired"
 	submittedBar time.Time // bar timestamp at submission (entry orders skip this bar)
+	lastEvalBar  time.Time // last bar timestamp used to advance this order
 }
 
 // NewPaperBroker creates a paper broker for simulated execution.
@@ -49,7 +50,12 @@ func NewPaperBroker() *PaperBroker {
 func (pb *PaperBroker) UpdateBar(bar domain.Bar) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
+	prevBar, hadPrev := pb.bars[bar.Symbol]
 	pb.bars[bar.Symbol] = bar
+	if hadPrev && prevBar.Timestamp.Equal(bar.Timestamp) {
+		return
+	}
+	pb.advancePendingOrders(bar)
 }
 
 // SubmitOrder stores a pending order and returns a synthetic order ID.
@@ -84,7 +90,7 @@ func (pb *PaperBroker) SubmitOrder(_ context.Context, order domain.OrderRequest)
 	return id, nil
 }
 
-// PollOrderStatus checks if the latest bar for the order's symbol crosses the limit price.
+// PollOrderStatus reports the order's bar-driven status.
 func (pb *PaperBroker) PollOrderStatus(_ context.Context, orderID string) (string, float64, error) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
@@ -103,29 +109,51 @@ func (pb *PaperBroker) PollOrderStatus(_ context.Context, orderID string) (strin
 		delete(pb.pending, orderID)
 		return "expired", 0, nil
 	}
+	return "new", 0, nil
+}
 
-	bar, hasBar := pb.bars[po.request.Symbol]
-	if !hasBar {
-		return "new", 0, nil
+// CancelOrder removes a pending order.
+func (pb *PaperBroker) CancelOrder(_ context.Context, orderID string) error {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	delete(pb.pending, orderID)
+	return nil
+}
+
+// IsShortable always returns true for paper trading.
+func (pb *PaperBroker) IsShortable(_ string) bool {
+	return true
+}
+
+// Expiries returns the number of entry orders that expired without filling.
+func (pb *PaperBroker) Expiries() int {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	return pb.expiries
+}
+
+func (pb *PaperBroker) advancePendingOrders(bar domain.Bar) {
+	for _, po := range pb.pending {
+		if po.status != "new" || !domain.IsOpeningIntent(po.request.Intent) || po.request.Symbol != bar.Symbol {
+			continue
+		}
+		if !po.submittedBar.IsZero() && bar.Timestamp.Equal(po.submittedBar) {
+			continue
+		}
+		if !po.lastEvalBar.IsZero() && !bar.Timestamp.After(po.lastEvalBar) {
+			continue
+		}
+		pb.advanceOrderOnBar(po, bar)
+		po.lastEvalBar = bar.Timestamp
 	}
+}
 
-	// Entry orders: skip the bar they were submitted on (can't fill
-	// on the same bar that generated the signal).
-	if !po.submittedBar.IsZero() && bar.Timestamp.Equal(po.submittedBar) {
-		return "new", 0, nil
-	}
-
+func (pb *PaperBroker) advanceOrderOnBar(po *paperOrder, bar domain.Bar) {
 	// Volume constraint: order qty must be ≤ 80% of bar volume
 	maxShares := int64(float64(bar.Volume) * 0.80)
 	if po.request.Quantity > maxShares {
-		po.barsLeft--
-		if po.barsLeft <= 0 {
-			po.status = "expired"
-			pb.expiries++
-			delete(pb.pending, orderID)
-			return "expired", 0, nil
-		}
-		return "new", 0, nil
+		pb.expireOrCarry(po)
+		return
 	}
 
 	// OHLC fill logic
@@ -156,40 +184,18 @@ func (pb *PaperBroker) PollOrderStatus(_ context.Context, orderID string) (strin
 		} else {
 			fillPrice = math.Min(po.request.Price, fillPrice+penalty)
 		}
-		fillPrice = math.Round(fillPrice*100) / 100
-
 		po.status = "filled"
-		po.fillPrice = fillPrice
-		delete(pb.pending, orderID)
-		return "filled", fillPrice, nil
+		po.fillPrice = math.Round(fillPrice*100) / 100
+		return
 	}
 
+	pb.expireOrCarry(po)
+}
+
+func (pb *PaperBroker) expireOrCarry(po *paperOrder) {
 	po.barsLeft--
 	if po.barsLeft <= 0 {
 		po.status = "expired"
 		pb.expiries++
-		delete(pb.pending, orderID)
-		return "expired", 0, nil
 	}
-	return "new", 0, nil
-}
-
-// CancelOrder removes a pending order.
-func (pb *PaperBroker) CancelOrder(_ context.Context, orderID string) error {
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
-	delete(pb.pending, orderID)
-	return nil
-}
-
-// IsShortable always returns true for paper trading.
-func (pb *PaperBroker) IsShortable(_ string) bool {
-	return true
-}
-
-// Expiries returns the number of entry orders that expired without filling.
-func (pb *PaperBroker) Expiries() int {
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
-	return pb.expiries
 }
