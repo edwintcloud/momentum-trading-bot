@@ -107,15 +107,10 @@ func runBacktest(args []string) error {
 		} else {
 			log.Printf("Backtest capability detection failed, using defaults: %v", capErr)
 		}
-		if account, accountErr := client.GetAccount(setupCtx); accountErr == nil {
-			if cash, ok := brokerCashValue(account); ok {
-				cfg = config.TuneTradingConfig(cfg, cash, float64(historicalRateLimit))
-			} else if equity, _, ok := brokerAccountValues(account); ok {
-				cfg = config.TuneTradingConfig(cfg, equity, float64(historicalRateLimit))
-			}
-		} else {
-			log.Printf("Backtest account tuning skipped: %v", accountErr)
-		}
+		// Backtests must start from the profile/default capital, not the live broker
+		// account balance, otherwise ROI and sizing depend on whatever happened in the
+		// paper/live account outside the historical window.
+		cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
 		symbols, blockedSymbols, err := resolveBacktestSymbols(setupCtx, client, end)
 		if err != nil {
 			return err

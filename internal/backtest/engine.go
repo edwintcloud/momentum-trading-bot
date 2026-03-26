@@ -378,7 +378,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		return Result{}, fmt.Errorf("no bars found for requested backtest window")
 	}
 
-	closedTrades := book.GetClosedTrades()
+	closedTrades := book.GetTradeHistory()
 	for _, trade := range closedTrades {
 		diagnostics.ByRegime[normalizeKey(trade.MarketRegime)] = updateBreakdown(diagnostics.ByRegime[normalizeKey(trade.MarketRegime)], trade)
 		diagnostics.BySetup[normalizeKey(trade.SetupType)] = updateBreakdown(diagnostics.BySetup[normalizeKey(trade.SetupType)], trade)

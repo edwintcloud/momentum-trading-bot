@@ -28,6 +28,13 @@ type symbolState struct {
 	bars []symbolBar
 }
 
+type structuredSetup struct {
+	setupType   string
+	setupHigh   float64
+	setupLow    float64
+	breakoutPct float64
+}
+
 // Scanner scans market ticks for momentum candidates.
 type Scanner struct {
 	config         config.TradingConfig
@@ -87,6 +94,30 @@ func (s *Scanner) isVolumeLeader(symbol string) bool {
 		}
 	}
 	return true
+}
+
+// volumeLeaderStats returns the daily dollar-volume rank and normalized strength
+// for a symbol using the scanner's running intraday leaderboard.
+func (s *Scanner) volumeLeaderStats(symbol string) (int, float64) {
+	myVol := s.leaderMetrics[symbol]
+	if myVol <= 0 {
+		return 0, 0
+	}
+	rank := 1
+	topVol := myVol
+	for sym, vol := range s.leaderMetrics {
+		if vol > topVol {
+			topVol = vol
+		}
+		if sym != symbol && vol > myVol {
+			rank++
+		}
+	}
+	strengthPct := 0.0
+	if topVol > 0 {
+		strengthPct = (myVol / topVol) * 100
+	}
+	return rank, strengthPct
 }
 
 // trackDollarVolume accumulates dollar volume for the symbol on the current day.
@@ -322,9 +353,11 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Update bar state
 	s.mu.Lock()
+	s.trackDollarVolume(tick)
 	state := s.getOrCreateState(tick)
 	s.updateBars(state, tick)
 	metrics := s.computeMetrics(state, tick)
+	leaderRank, leaderStrengthPct := s.volumeLeaderStats(tick.Symbol)
 	s.mu.Unlock()
 
 	// Determine direction
@@ -393,7 +426,17 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		}
 	}
 
+	if direction == domain.DirectionLong {
+		if structured, ok := s.classifyStructuredLongSetup(state, tick, metrics, cfg); ok {
+			metrics.setupType = structured.setupType
+			metrics.setupHigh = structured.setupHigh
+			metrics.setupLow = structured.setupLow
+			metrics.breakoutPct = structured.breakoutPct
+		}
+	}
+
 	setupType := metrics.setupType
+	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct)
 
 	candidate := domain.Candidate{
 		Symbol:                tick.Symbol,
@@ -416,6 +459,8 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		ATRPct:                safePct(metrics.atr, tick.Price) * 100,
 		VWAP:                  metrics.vwap,
 		PriceVsVWAPPct:        priceVsVWAPPct,
+		VolumeLeaderPct:       leaderStrengthPct,
+		LeaderRank:            leaderRank,
 		BreakoutPct:           metrics.breakoutPct,
 		ConsolidationRangePct: metrics.consolidationRangePct,
 		PullbackDepthPct:      metrics.pullbackDepthPct,
@@ -431,7 +476,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		MACDHistogram:         metrics.macdHistogram,
 		IntradayReturnPct:     intradayReturnPct,
 		SetupType:             setupType,
-		Score:                 1.0,
+		Score:                 score,
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
 		Playbook:              s.selectPlaybookFromSetupType(direction, setupType),
@@ -443,6 +488,146 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	return candidate, true
+}
+
+func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics, direction string, setupType string, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64) float64 {
+	score := 0.0
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+
+	if domain.IsLong(direction) {
+		switch setupType {
+		case "orb_breakout":
+			score += 1.35
+		case "orb_reclaim":
+			score += 1.55
+		case "hod_breakout", "breakout":
+			score += 1.25
+		case "hod_pullback":
+			score += 0.9
+		case "pullback":
+			score += 0.2
+		}
+
+		switch {
+		case tick.HighOfDay > 0 && distFromHighPct <= 0.5:
+			score += 1.25
+		case tick.HighOfDay > 0 && distFromHighPct <= 1.5:
+			score += 0.95
+		case tick.HighOfDay > 0 && distFromHighPct <= 3.0:
+			score += 0.45
+		}
+
+		switch {
+		case metrics.fiveMinuteReturn >= 2.5:
+			score += 1.1
+		case metrics.fiveMinuteReturn >= 1.2:
+			score += 0.8
+		case metrics.fiveMinuteReturn >= max(cfg.MinThreeMinuteReturnPct, 0.6):
+			score += 0.35
+		}
+
+		switch {
+		case intradayReturnPct >= 15:
+			score += 1.1
+		case intradayReturnPct >= 8:
+			score += 0.75
+		case intradayReturnPct >= max(cfg.MinGapPercent, 4.0):
+			score += 0.35
+		}
+
+		switch {
+		case tick.RelativeVolume >= 10:
+			score += 1.0
+		case tick.RelativeVolume >= 5:
+			score += 0.75
+		case tick.RelativeVolume >= max(cfg.MinRelativeVolume, 2.5):
+			score += 0.35
+		}
+
+		switch {
+		case metrics.volumeRate >= 20000:
+			score += 0.35
+		case metrics.volumeRate >= 10000:
+			score += 0.2
+		}
+
+		switch {
+		case tick.Float > 0 && tick.Float <= 50_000_000:
+			score += 0.9
+		case tick.Float > 0 && tick.Float <= 100_000_000:
+			score += 0.55
+		case tick.Float > 0 && tick.Float <= 250_000_000:
+			score += 0.2
+		case tick.Float > 250_000_000:
+			score -= 0.6
+		default:
+			score -= 0.15
+		}
+
+		switch {
+		case tick.Price >= cfg.MinPrice && tick.Price <= 15:
+			score += 0.55
+		case tick.Price > 15 && tick.Price <= 25:
+			score += 0.2
+		case tick.Price > 25:
+			score -= 0.2
+		}
+
+		if leaderRank > 0 {
+			switch {
+			case leaderRank <= 3:
+				score += 0.55
+			case leaderRank <= max(cfg.MaxVolumeLeaders, 5):
+				score += 0.3
+			}
+			if leaderStrengthPct >= 60 {
+				score += 0.15
+			}
+		}
+
+		if metrics.macdHistogram > 0 {
+			score += 0.25
+		}
+		if metrics.ema9 > 0 && tick.Price > metrics.ema9 {
+			score += 0.2
+		}
+		if metrics.vwap > 0 && tick.Price > metrics.vwap {
+			score += 0.15
+		}
+		if tick.Catalyst != "" {
+			score += 0.35
+		}
+		if markethours.IsMarketOpen(tick.Timestamp) && setupType == "hod_pullback" {
+			score -= 0.35
+		}
+	} else {
+		switch setupType {
+		case "parabolic-failed-reclaim-short":
+			score += 1.0
+		case "breakdown":
+			score += 0.6
+		}
+		if metrics.oneMinuteReturn <= -0.5 {
+			score += 0.5
+		}
+		if metrics.threeMinuteReturn <= -1.0 {
+			score += 0.5
+		}
+		if metrics.macdHistogram < 0 {
+			score += 0.3
+		}
+		if metrics.vwap > 0 && tick.Price < metrics.vwap {
+			score += 0.2
+		}
+	}
+
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
 }
 
 func (s *Scanner) instrumentBlockReason(symbol string) (string, bool) {
@@ -740,8 +925,10 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string) string {
 	switch setupType {
-	case "hod_breakout", "breakout", "breakdown":
+	case "orb_breakout", "hod_breakout", "breakout", "breakdown":
 		return "breakout"
+	case "orb_reclaim":
+		return "continuation"
 	case "hod_pullback", "pullback":
 		return "pullback"
 	case "parabolic-failed-reclaim-short":
@@ -751,6 +938,155 @@ func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string
 		return "continuation"
 	}
 	return "reversal"
+}
+
+func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Tick, metrics scanMetrics, cfg config.TradingConfig) (structuredSetup, bool) {
+	if !markethours.IsMarketOpen(tick.Timestamp) {
+		return structuredSetup{}, false
+	}
+	minutesSinceOpen := markethours.MinutesSinceOpen(tick.Timestamp)
+	if minutesSinceOpen < 5 || minutesSinceOpen > 90 {
+		return structuredSetup{}, false
+	}
+
+	window := cfg.ORBWindowMinutes
+	if window <= 0 {
+		window = 5
+	}
+	if window < 5 {
+		window = 5
+	}
+	if window > 15 {
+		window = 15
+	}
+
+	bufferPct := cfg.ORBBufferPct
+	if bufferPct <= 0 {
+		bufferPct = 0.001
+	}
+
+	bars := regularSessionBars(state.bars)
+	if len(bars) <= window {
+		return structuredSetup{}, false
+	}
+
+	rangeBars := bars[:window]
+	rangeHigh := maxBarHigh(rangeBars)
+	rangeLow := minBarLow(rangeBars)
+	rangeWidth := rangeHigh - rangeLow
+	if rangeHigh <= 0 || rangeWidth <= 0 {
+		return structuredSetup{}, false
+	}
+
+	avgRangeVolume := averageBarVolume(rangeBars)
+	volumeMultiplier := cfg.ORBVolumeMultiplier
+	if volumeMultiplier <= 0 {
+		volumeMultiplier = 1.2
+	}
+	volumeThreshold := avgRangeVolume * max(volumeMultiplier*0.75, 1.0)
+	breakoutLevel := rangeHigh * (1 + bufferPct)
+	currentIdx := len(bars) - 1
+	currentBar := bars[currentIdx]
+
+	breakoutIdx := -1
+	for i := window; i < len(bars); i++ {
+		if bars[i].close > breakoutLevel && float64(max(bars[i].volume, 0)) >= volumeThreshold {
+			breakoutIdx = i
+			break
+		}
+	}
+	if breakoutIdx == -1 {
+		return structuredSetup{}, false
+	}
+
+	if breakoutIdx == currentIdx {
+		breakoutPct := safePct(currentBar.close-breakoutLevel, breakoutLevel) * 100
+		if metrics.oneMinuteReturn > 0 &&
+			metrics.threeMinuteReturn > 0 &&
+			metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct, 1.0) &&
+			breakoutPct <= 3.5 {
+			return structuredSetup{
+				setupType:   "orb_breakout",
+				setupHigh:   rangeHigh,
+				setupLow:    rangeLow,
+				breakoutPct: breakoutPct,
+			}, true
+		}
+		return structuredSetup{}, false
+	}
+
+	if currentIdx-breakoutIdx < 2 {
+		return structuredSetup{}, false
+	}
+
+	postBreakoutBars := bars[breakoutIdx : currentIdx+1]
+	peakHigh := maxBarHigh(postBreakoutBars)
+	pullbackLow := minBarLow(bars[breakoutIdx+1 : currentIdx])
+	if peakHigh <= 0 || pullbackLow <= 0 || pullbackLow >= peakHigh {
+		return structuredSetup{}, false
+	}
+
+	pullbackDepthPct := safePct(peakHigh-pullbackLow, peakHigh) * 100
+	if pullbackDepthPct < 0.5 || pullbackDepthPct > 4.5 {
+		return structuredSetup{}, false
+	}
+	if pullbackLow < rangeHigh*(1-0.003) {
+		return structuredSetup{}, false
+	}
+
+	reclaimLookback := 3
+	if currentIdx-breakoutIdx < reclaimLookback {
+		reclaimLookback = currentIdx - breakoutIdx
+	}
+	if reclaimLookback < 2 {
+		return structuredSetup{}, false
+	}
+	reclaimHigh := maxBarHigh(bars[currentIdx-reclaimLookback : currentIdx])
+	if reclaimHigh <= 0 {
+		return structuredSetup{}, false
+	}
+
+	reclaimPct := safePct(currentBar.close-reclaimHigh, reclaimHigh) * 100
+	if currentBar.close > reclaimHigh &&
+		currentBar.close > breakoutLevel &&
+		metrics.oneMinuteReturn > 0 &&
+		metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct*0.75, 0.5) &&
+		tick.Price > metrics.vwap &&
+		reclaimPct <= 2.5 {
+		return structuredSetup{
+			setupType:   "orb_reclaim",
+			setupHigh:   reclaimHigh,
+			setupLow:    pullbackLow,
+			breakoutPct: reclaimPct,
+		}, true
+	}
+
+	return structuredSetup{}, false
+}
+
+func regularSessionBars(bars []symbolBar) []symbolBar {
+	sessionBars := make([]symbolBar, 0, len(bars))
+	loc := markethours.Location()
+	for _, bar := range bars {
+		barET := bar.timestamp.In(loc)
+		minutes := float64(barET.Hour()*60 + barET.Minute())
+		if minutes < 570 || minutes >= 960 {
+			continue
+		}
+		sessionBars = append(sessionBars, bar)
+	}
+	return sessionBars
+}
+
+func averageBarVolume(bars []symbolBar) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	total := int64(0)
+	for _, bar := range bars {
+		total += max(bar.volume, 0)
+	}
+	return float64(total) / float64(len(bars))
 }
 
 func computeATR(bars []symbolBar, period int) float64 {

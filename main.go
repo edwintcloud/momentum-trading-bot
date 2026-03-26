@@ -711,11 +711,14 @@ func computeSeededPositionStops(portfolioMgr *portfolio.Manager, tradingCfg conf
 		}
 
 		// Fallback to percentage-based stop
-		riskPct := tradingCfg.EntryATRPercentFallback / 100.0
-		if riskPct <= 0 {
-			riskPct = 0.02 // 2% default fallback
+		riskPct := tradingCfg.EntryATRPercentFallback
+		switch {
+		case riskPct <= 0:
+			riskPct = 2.0
+		case riskPct < 0.5:
+			riskPct = 2.0
 		}
-		riskPerShare := pos.AvgPrice * riskPct
+		riskPerShare := pos.AvgPrice * riskPct / 100.0
 		var stopPrice float64
 		if domain.IsLong(pos.Side) {
 			stopPrice = pos.AvgPrice - riskPerShare*tradingCfg.EntryStopATRMultiplier
