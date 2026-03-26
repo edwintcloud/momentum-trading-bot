@@ -121,6 +121,7 @@ type Diagnostics struct {
 	EntryRejectSamples map[string]EntrySample
 	RiskRejectSamples  []RiskRejectSample
 	FillExpirySamples  []FillExpirySample
+	DebugTrace         []DebugTraceEvent
 }
 
 // EntrySample captures a representative entry decision for diagnostics.
@@ -140,6 +141,7 @@ type EntrySample struct {
 	VolumeRate             float64
 	VolumeLeaderPct        float64
 	LeaderRank             int
+	StockSelectionScore    float64
 	ATRPct                 float64
 	PriceVsVWAPPct         float64
 	BreakoutPct            float64
@@ -172,6 +174,31 @@ type FillExpirySample struct {
 	SetupType  string
 }
 
+type DebugTraceEvent struct {
+	Stage                 string    `json:"stage"`
+	Symbol                string    `json:"symbol"`
+	Timestamp             time.Time `json:"timestamp"`
+	Passed                bool      `json:"passed"`
+	Reason                string    `json:"reason"`
+	SetupType             string    `json:"setupType,omitempty"`
+	Price                 float64   `json:"price,omitempty"`
+	Open                  float64   `json:"open,omitempty"`
+	HighOfDay             float64   `json:"highOfDay,omitempty"`
+	GapPercent            float64   `json:"gapPercent,omitempty"`
+	RelativeVolume        float64   `json:"relativeVolume,omitempty"`
+	FiveMinuteVolume      int64     `json:"fiveMinuteVolume,omitempty"`
+	Score                 float64   `json:"score,omitempty"`
+	DistanceFromHighPct   float64   `json:"distanceFromHighPct,omitempty"`
+	OneMinuteReturnPct    float64   `json:"oneMinuteReturnPct,omitempty"`
+	ThreeMinuteReturnPct  float64   `json:"threeMinuteReturnPct,omitempty"`
+	FiveMinuteReturnPct   float64   `json:"fiveMinuteReturnPct,omitempty"`
+	PriceVsVWAPPct        float64   `json:"priceVsVWAPPct,omitempty"`
+	BreakoutPct           float64   `json:"breakoutPct,omitempty"`
+	PullbackDepthPct      float64   `json:"pullbackDepthPct,omitempty"`
+	ConsolidationRangePct float64   `json:"consolidationRangePct,omitempty"`
+	CloseOffHighPct       float64   `json:"closeOffHighPct,omitempty"`
+}
+
 type bar = InputBar
 
 // Run executes a historical backtest by wiring components through the shared Pipeline.
@@ -195,6 +222,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		BySetup:            make(map[string]TradeBreakdown),
 		BySide:             make(map[string]TradeBreakdown),
 		EntryRejectSamples: make(map[string]EntrySample),
+	}
+	debugSymbols := make(map[string]bool, len(runCfg.DebugSymbols))
+	for _, symbol := range runCfg.DebugSymbols {
+		debugSymbols[strings.ToUpper(strings.TrimSpace(symbol))] = true
 	}
 
 	book := portfolio.NewManager(cfg)
@@ -258,6 +289,35 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			} else {
 				incrementReason(diagnostics.ScannerRejects, reason)
 			}
+			if debugSymbols[strings.ToUpper(tick.Symbol)] {
+				event := DebugTraceEvent{
+					Stage:            "scan",
+					Symbol:           tick.Symbol,
+					Timestamp:        tick.Timestamp,
+					Passed:           passed,
+					Reason:           reason,
+					Price:            tick.Price,
+					Open:             tick.Open,
+					HighOfDay:        tick.HighOfDay,
+					GapPercent:       tick.GapPercent,
+					RelativeVolume:   tick.RelativeVolume,
+					FiveMinuteVolume: tick.FiveMinuteVolume,
+				}
+				if passed {
+					event.SetupType = candidate.SetupType
+					event.Score = candidate.Score
+					event.DistanceFromHighPct = candidate.DistanceFromHighPct
+					event.OneMinuteReturnPct = candidate.OneMinuteReturnPct
+					event.ThreeMinuteReturnPct = candidate.ThreeMinuteReturnPct
+					event.FiveMinuteReturnPct = candidate.FiveMinuteReturnPct
+					event.PriceVsVWAPPct = candidate.PriceVsVWAPPct
+					event.BreakoutPct = candidate.BreakoutPct
+					event.PullbackDepthPct = candidate.PullbackDepthPct
+					event.ConsolidationRangePct = candidate.ConsolidationRangePct
+					event.CloseOffHighPct = candidate.CloseOffHighPct
+				}
+				diagnostics.DebugTrace = append(diagnostics.DebugTrace, event)
+			}
 		},
 		OnEntryDecision: func(candidate domain.Candidate, decision strategy.CandidateDecision) {
 			mu.Lock()
@@ -268,6 +328,32 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			} else {
 				incrementReason(diagnostics.EntryRejects, decision.Reason)
 				rememberEntryRejectSample(&diagnostics, candidate, decision)
+			}
+			if debugSymbols[strings.ToUpper(candidate.Symbol)] {
+				diagnostics.DebugTrace = append(diagnostics.DebugTrace, DebugTraceEvent{
+					Stage:                 "entry",
+					Symbol:                candidate.Symbol,
+					Timestamp:             candidate.Timestamp,
+					Passed:                decision.Emit,
+					Reason:                decision.Reason,
+					SetupType:             candidate.SetupType,
+					Price:                 candidate.Price,
+					Open:                  candidate.Open,
+					HighOfDay:             candidate.HighOfDay,
+					GapPercent:            candidate.GapPercent,
+					RelativeVolume:        candidate.RelativeVolume,
+					FiveMinuteVolume:      0,
+					Score:                 candidate.Score,
+					DistanceFromHighPct:   candidate.DistanceFromHighPct,
+					OneMinuteReturnPct:    candidate.OneMinuteReturnPct,
+					ThreeMinuteReturnPct:  candidate.ThreeMinuteReturnPct,
+					FiveMinuteReturnPct:   candidate.FiveMinuteReturnPct,
+					PriceVsVWAPPct:        candidate.PriceVsVWAPPct,
+					BreakoutPct:           candidate.BreakoutPct,
+					PullbackDepthPct:      candidate.PullbackDepthPct,
+					ConsolidationRangePct: candidate.ConsolidationRangePct,
+					CloseOffHighPct:       candidate.CloseOffHighPct,
+				})
 			}
 		},
 		OnExitCheck: func(tick domain.Tick, signal domain.TradeSignal, shouldExit bool, reason string) {
@@ -314,6 +400,17 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 				} else {
 					incrementReason(diagnostics.ExitRiskRejects, reason)
 				}
+			}
+			if debugSymbols[strings.ToUpper(signal.Symbol)] {
+				diagnostics.DebugTrace = append(diagnostics.DebugTrace, DebugTraceEvent{
+					Stage:     "risk",
+					Symbol:    signal.Symbol,
+					Timestamp: signal.Timestamp,
+					Passed:    approved,
+					Reason:    reason,
+					SetupType: signal.SetupType,
+					Price:     signal.Price,
+				})
 			}
 		},
 		OnTickFanOut: func(tick domain.Tick) {
@@ -670,6 +767,7 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		VolumeRate:             round2(candidate.VolumeRate),
 		VolumeLeaderPct:        candidate.VolumeLeaderPct,
 		LeaderRank:             candidate.LeaderRank,
+		StockSelectionScore:    round2(candidate.StockSelectionScore),
 		ATRPct:                 round2(candidate.ATRPct),
 		PriceVsVWAPPct:         round2(candidate.PriceVsVWAPPct),
 		BreakoutPct:            round2(candidate.BreakoutPct),

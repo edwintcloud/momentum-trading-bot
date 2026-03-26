@@ -90,6 +90,7 @@ type Candidate struct {
 	VolumeRate            float64   `json:"volumeRate"`
 	VolumeLeaderPct       float64   `json:"volumeLeaderPct"`
 	LeaderRank            int       `json:"leaderRank"`
+	StockSelectionScore   float64   `json:"stockSelectionScore"`
 	MinutesSinceOpen      float64   `json:"minutesSinceOpen"`
 	ATR                   float64   `json:"atr"`
 	ATRPct                float64   `json:"atrPct"`
