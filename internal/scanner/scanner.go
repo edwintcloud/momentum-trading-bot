@@ -392,45 +392,6 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		direction = domain.DirectionLong
 	}
 
-	if metrics.setupType == "early" {
-		return domain.Candidate{}, false
-	}
-
-	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
-
-	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day
-	// Skip for HOD momo qualified stocks — they use their own distance thresholds
-	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified {
-		if distFromHighPct > cfg.MaxDistanceFromHighPct || distFromHighPct == 0 {
-			return domain.Candidate{}, false
-		}
-	}
-
-	// RSI momentum slope: longs need positive momentum
-	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 {
-		return domain.Candidate{}, false
-	}
-	if direction == domain.DirectionShort && metrics.rsiMASlope > 0 {
-		return domain.Candidate{}, false
-	}
-
-	if cfg.RSIFilterEnabled {
-		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold {
-			return domain.Candidate{}, false
-		}
-		if direction == domain.DirectionShort && metrics.rsi < cfg.RSIOversoldThreshold {
-			return domain.Candidate{}, false
-		}
-	}
-
-	// Compute intraday return for candidate
-	if tick.Open > 0 && tick.Price > 0 {
-		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
-	}
-
-	// Get market regime
-	regime := s.runtime.MarketRegime()
-
 	// HOD breakout/pullback detection: price near session high with strong intraday move
 	if cfg.HODMomoEnabled && tick.Open > 0 && tick.HighOfDay > 0 {
 		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
@@ -452,6 +413,47 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 			metrics.breakoutPct = structured.breakoutPct
 		}
 	}
+
+	if metrics.setupType == "early" {
+		return domain.Candidate{}, false
+	}
+
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+	breakoutBypass := direction == domain.DirectionLong && shouldBypassLongBreakoutFilters(cfg, tick, metrics)
+
+	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day.
+	// True breakout setups are allowed to print at the exact high instead of being rejected.
+	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified && !breakoutBypass {
+		if distFromHighPct > cfg.MaxDistanceFromHighPct {
+			return domain.Candidate{}, false
+		}
+	}
+
+	// RSI momentum slope: longs generally need positive momentum, but fast breakout prints
+	// can briefly outrun smoothed RSI slope and should not be filtered out for that alone.
+	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 && !breakoutBypass {
+		return domain.Candidate{}, false
+	}
+	if direction == domain.DirectionShort && metrics.rsiMASlope > 0 {
+		return domain.Candidate{}, false
+	}
+
+	if cfg.RSIFilterEnabled {
+		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold && !breakoutBypass {
+			return domain.Candidate{}, false
+		}
+		if direction == domain.DirectionShort && metrics.rsi < cfg.RSIOversoldThreshold {
+			return domain.Candidate{}, false
+		}
+	}
+
+	// Compute intraday return for candidate
+	if tick.Open > 0 && tick.Price > 0 {
+		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
+	}
+
+	// Get market regime
+	regime := s.runtime.MarketRegime()
 
 	setupType := metrics.setupType
 	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct)
@@ -506,6 +508,26 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	return candidate, true
+}
+
+func shouldBypassLongBreakoutFilters(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics) bool {
+	if tick.HighOfDay <= 0 {
+		return false
+	}
+	switch metrics.setupType {
+	case "breakout", "hod_breakout", "orb_breakout", "orb_reclaim":
+	default:
+		return false
+	}
+	if metrics.oneMinuteReturn <= 0 {
+		return false
+	}
+	if metrics.fiveMinuteReturn < math.Max(cfg.MinThreeMinuteReturnPct, 0.5) {
+		return false
+	}
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+	maxDist := math.Max(cfg.MaxDistanceFromHighPct, 1.0)
+	return distFromHighPct <= maxDist
 }
 
 func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics, direction string, setupType string, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64) float64 {
