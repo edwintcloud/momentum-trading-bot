@@ -260,10 +260,11 @@ func runLive() {
 	defer stream.Close()
 
 	// Resolve symbols and subscribe
-	symbols, err := resolveStreamSymbols(ctx, alpacaClient, appCfg)
+	symbols, blockedSymbols, err := resolveStreamSymbols(ctx, alpacaClient, appCfg)
 	if err != nil {
 		log.Fatalf("symbols: %v", err)
 	}
+	scannerInst.SetBlockedSymbols(blockedSymbols)
 	log.Printf("stream: subscribing to %d symbols", len(symbols))
 	if err := stream.Subscribe(ctx, symbols); err != nil {
 		log.Fatalf("subscribe: %v", err)
@@ -432,18 +433,18 @@ func runLive() {
 	cancel()
 }
 
-func resolveStreamSymbols(ctx context.Context, client *alpaca.Client, cfg config.AppConfig) ([]string, error) {
-	if len(cfg.AlpacaSymbols) > 0 {
-		log.Printf("symbols: using %d configured symbols", len(cfg.AlpacaSymbols))
-		return cfg.AlpacaSymbols, nil
-	}
-	// Fetch all equity symbols from Alpaca
-	symbols, err := client.ListEquitySymbols(ctx, true)
+func resolveStreamSymbols(ctx context.Context, client *alpaca.Client, cfg config.AppConfig) ([]string, map[string]string, error) {
+	assets, err := client.ListEquityAssets(ctx, true)
 	if err != nil {
-		return nil, fmt.Errorf("list equity symbols: %w", err)
+		return nil, nil, fmt.Errorf("list equity assets: %w", err)
 	}
-	log.Printf("symbols: resolved %d NASDAQ+NYSE symbols from Alpaca", len(symbols))
-	return symbols, nil
+	symbols, blockedSymbols := filterScannerUniverseAssets(assets, cfg.AlpacaSymbols)
+	if len(cfg.AlpacaSymbols) > 0 {
+		log.Printf("symbols: using %d configured symbols after blocking %d ETF/derivative instruments", len(symbols), len(blockedSymbols))
+		return symbols, blockedSymbols, nil
+	}
+	log.Printf("symbols: resolved %d NASDAQ+NYSE symbols from Alpaca after blocking %d ETF/derivative instruments", len(symbols), len(blockedSymbols))
+	return symbols, blockedSymbols, nil
 }
 
 func runOptimize(args []string) error {
@@ -491,7 +492,7 @@ func runOptimize(args []string) error {
 		log.Printf("Optimize capability detection failed, using defaults: %v", capErr)
 	}
 
-	symbols, err := resolveBacktestSymbols(setupCtx, client, time.Now())
+	symbols, _, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 	if err != nil {
 		return err
 	}
@@ -639,7 +640,7 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 		log.Printf("auto-optimize: Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
 	}
 
-	symbols, err := resolveBacktestSymbols(setupCtx, client, time.Now())
+	symbols, _, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 	if err != nil {
 		return optimizer.Report{}, err
 	}
@@ -673,7 +674,7 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 	if _, loadErr := autoFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
 		log.Printf("auto-optimize: float data warning: %v", loadErr)
 	}
-	
+
 	opt.SetFloatStore(autoFloatStore)
 	return opt.Run()
 }

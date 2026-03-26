@@ -26,15 +26,16 @@ import (
 
 // RunConfig controls a historical simulation.
 type RunConfig struct {
-	DataPath     string
-	Bars         []InputBar
-	Iterator     InputBarIterator
-	IteratorFn   IteratorFactory // factory for creating bounded iterators (streaming mode)
-	Start        time.Time
-	End          time.Time
-	Recorder     domain.EventRecorder
-	DebugSymbols []string           // symbols to trace per-bar through scanner/strategy
-	FloatStore   *alpaca.FloatStore // optional float data for tick enrichment
+	DataPath       string
+	Bars           []InputBar
+	Iterator       InputBarIterator
+	IteratorFn     IteratorFactory // factory for creating bounded iterators (streaming mode)
+	Start          time.Time
+	End            time.Time
+	Recorder       domain.EventRecorder
+	DebugSymbols   []string           // symbols to trace per-bar through scanner/strategy
+	FloatStore     *alpaca.FloatStore // optional float data for tick enrichment
+	BlockedSymbols map[string]string  // optional hard blocklist for ETF/derivative instruments
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -205,6 +206,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
 	}
 	scan := scanner.NewScanner(cfg, runtimeState)
+	scan.SetBlockedSymbols(runCfg.BlockedSymbols)
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)

@@ -30,22 +30,39 @@ type symbolState struct {
 
 // Scanner scans market ticks for momentum candidates.
 type Scanner struct {
-	config        config.TradingConfig
-	runtime       *runtime.State
-	mu            sync.Mutex
-	state         map[string]*symbolState
-	leaderDay     string
-	leaderMetrics map[string]float64 // symbol → cumulative dollar volume for current day
+	config         config.TradingConfig
+	runtime        *runtime.State
+	mu             sync.Mutex
+	state          map[string]*symbolState
+	blockedSymbols map[string]string
+	leaderDay      string
+	leaderMetrics  map[string]float64 // symbol → cumulative dollar volume for current day
 }
 
 // NewScanner creates a scanner with the configured filters.
 func NewScanner(cfg config.TradingConfig, runtimeState *runtime.State) *Scanner {
 	return &Scanner{
-		config:        cfg,
-		runtime:       runtimeState,
-		state:         make(map[string]*symbolState),
-		leaderMetrics: make(map[string]float64),
+		config:         cfg,
+		runtime:        runtimeState,
+		state:          make(map[string]*symbolState),
+		blockedSymbols: make(map[string]string),
+		leaderMetrics:  make(map[string]float64),
 	}
+}
+
+// SetBlockedSymbols installs a hard blocklist for symbols the scanner should never trade.
+func (s *Scanner) SetBlockedSymbols(blocked map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(blocked) == 0 {
+		s.blockedSymbols = make(map[string]string)
+		return
+	}
+	copyMap := make(map[string]string, len(blocked))
+	for symbol, reason := range blocked {
+		copyMap[symbol] = reason
+	}
+	s.blockedSymbols = copyMap
 }
 
 // isVolumeLeader returns true if the symbol ranks within the top MaxVolumeLeaders
@@ -145,6 +162,9 @@ func (s *Scanner) Evaluate(tick domain.Tick) (domain.Candidate, bool) {
 // EvaluateTickDetailed tests a tick against scanner filters and returns
 // the rejection reason when the tick is not a candidate.
 func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
+	if reason, blocked := s.instrumentBlockReason(tick.Symbol); blocked {
+		return domain.Candidate{}, false, reason
+	}
 	candidate, ok := s.evaluate(tick)
 	if ok {
 		return candidate, true, ""
@@ -220,6 +240,9 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 }
 
 func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
+	if _, blocked := s.instrumentBlockReason(tick.Symbol); blocked {
+		return domain.Candidate{}, false
+	}
 	if tick.Price <= 0 || tick.Volume <= 0 {
 		return domain.Candidate{}, false
 	}
@@ -420,6 +443,13 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	return candidate, true
+}
+
+func (s *Scanner) instrumentBlockReason(symbol string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reason, blocked := s.blockedSymbols[symbol]
+	return reason, blocked
 }
 
 func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT float64, metrics scanMetrics) bool {

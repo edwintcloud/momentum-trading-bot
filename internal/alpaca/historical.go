@@ -31,33 +31,58 @@ type MarketDataCapabilities struct {
 	HistoricalRateLimitPerMin int
 }
 
-// ListEquitySymbols returns all active NASDAQ and NYSE equity symbols.
-func (c *Client) ListEquitySymbols(ctx context.Context, activeOnly bool) ([]string, error) {
-	var assets []struct {
-		Symbol   string `json:"symbol"`
-		Status   string `json:"status"`
-		Exchange string `json:"exchange"`
-		Class    string `json:"class"`
-		Tradable bool   `json:"tradable"`
-	}
+// EquityAsset is Alpaca asset metadata for a US equity symbol.
+type EquityAsset struct {
+	Symbol     string   `json:"symbol"`
+	Name       string   `json:"name"`
+	Status     string   `json:"status"`
+	Exchange   string   `json:"exchange"`
+	Class      string   `json:"class"`
+	Tradable   bool     `json:"tradable"`
+	Attributes []string `json:"attributes"`
+}
+
+// ListEquityAssets returns Alpaca metadata for active NASDAQ and NYSE US equities.
+func (c *Client) ListEquityAssets(ctx context.Context, activeOnly bool) ([]EquityAsset, error) {
+	var assets []EquityAsset
 	status := "all"
 	if activeOnly {
 		status = "active"
 	}
 	url := fmt.Sprintf("%s/v2/assets?status=%s&asset_class=us_equity", c.baseURL, status)
 	if err := c.get(ctx, url, &assets); err != nil {
-		return nil, fmt.Errorf("list equity symbols: %w", err)
+		return nil, fmt.Errorf("list equity assets: %w", err)
 	}
 
-	symbols := make([]string, 0, len(assets))
+	filtered := make([]EquityAsset, 0, len(assets))
 	for _, a := range assets {
 		if !a.Tradable {
 			continue
 		}
 		exchange := strings.ToUpper(a.Exchange)
 		if exchange == "NASDAQ" || exchange == "NYSE" {
-			symbols = append(symbols, strings.ToUpper(a.Symbol))
+			a.Symbol = strings.ToUpper(a.Symbol)
+			filtered = append(filtered, a)
 		}
+	}
+
+	slices.SortFunc(filtered, func(a, b EquityAsset) int {
+		return strings.Compare(a.Symbol, b.Symbol)
+	})
+
+	return filtered, nil
+}
+
+// ListEquitySymbols returns all active NASDAQ and NYSE equity symbols.
+func (c *Client) ListEquitySymbols(ctx context.Context, activeOnly bool) ([]string, error) {
+	assets, err := c.ListEquityAssets(ctx, activeOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	symbols := make([]string, 0, len(assets))
+	for _, a := range assets {
+		symbols = append(symbols, a.Symbol)
 	}
 
 	slices.Sort(symbols)

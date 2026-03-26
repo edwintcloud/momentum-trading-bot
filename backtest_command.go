@@ -116,10 +116,11 @@ func runBacktest(args []string) error {
 		} else {
 			log.Printf("Backtest account tuning skipped: %v", accountErr)
 		}
-		symbols, err := resolveBacktestSymbols(setupCtx, client, end)
+		symbols, blockedSymbols, err := resolveBacktestSymbols(setupCtx, client, end)
 		if err != nil {
 			return err
 		}
+		runCfg.BlockedSymbols = blockedSymbols
 		// Go back 3 calendar days so the warmup window includes at least one
 		// prior trading day even when the backtest starts on Monday (−1 only
 		// reaches Sunday, which the weekend filter skips).
@@ -187,44 +188,50 @@ func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) 
 	return start, end, nil
 }
 
-func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time) ([]string, error) {
+func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time) ([]string, map[string]string, error) {
 	type symbolCache struct {
+		Version int      `json:"version"`
 		Date    string   `json:"date"`
 		Symbols []string `json:"symbols"`
 	}
 
+	const symbolCacheVersion = 2
 	cachePath := filepath.Join(".cache", "backtest", "symbols.json")
 
 	// Try to load cached symbols if backtest end date is not after cache date.
 	if raw, err := os.ReadFile(cachePath); err == nil {
 		var cached symbolCache
 		if err := json.Unmarshal(raw, &cached); err == nil && len(cached.Symbols) > 0 {
-			if cacheDate, err := time.Parse("2006-01-02", cached.Date); err == nil {
-				if !backtestEnd.After(cacheDate.AddDate(0, 0, 1)) {
-					log.Printf("Using cached symbol list (%d symbols, cached %s)", len(cached.Symbols), cached.Date)
-					return cached.Symbols, nil
+			if cached.Version == symbolCacheVersion {
+				if cacheDate, err := time.Parse("2006-01-02", cached.Date); err == nil {
+					if !backtestEnd.After(cacheDate.AddDate(0, 0, 1)) {
+						log.Printf("Using cached symbol list (%d symbols, cached %s)", len(cached.Symbols), cached.Date)
+						return cached.Symbols, nil, nil
+					}
 				}
 			}
 		}
 	}
 
-	symbols, err := client.ListEquitySymbols(ctx, false)
+	assets, err := client.ListEquityAssets(ctx, false)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	symbols, blockedSymbols := filterScannerUniverseAssets(assets, nil)
 
 	// Write cache.
 	cache := symbolCache{
+		Version: symbolCacheVersion,
 		Date:    backtestEnd.Format("2006-01-02"),
 		Symbols: symbols,
 	}
 	if data, err := json.Marshal(cache); err == nil {
 		_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
 		_ = os.WriteFile(cachePath, data, 0o644)
-		log.Printf("Cached %d symbols for date %s", len(symbols), cache.Date)
+		log.Printf("Cached %d symbols for date %s (blocked %d ETF/derivative instruments)", len(symbols), cache.Date, len(blockedSymbols))
 	}
 
-	return symbols, nil
+	return symbols, blockedSymbols, nil
 }
 
 func parseCLIBacktestTime(value string) (time.Time, bool, error) {
@@ -332,7 +339,7 @@ func backtestSummaryLines(start, end time.Time, result backtest.Result) []string
 		"Backtest Summary",
 		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
 		fmt.Sprintf("  PnL          roi=%.0f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
-			result.NetPnL / result.StartingCapital * 100,
+			result.NetPnL/result.StartingCapital*100,
 			formatMoney(result.NetPnL),
 			formatMoney(result.RealizedPnL),
 			formatMoney(result.UnrealizedPnL),
