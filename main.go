@@ -17,13 +17,12 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwintcloud/momentum-trading-bot/internal/api"
 	"github.com/edwintcloud/momentum-trading-bot/internal/autooptimize"
-	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
-	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/market"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
+	"github.com/edwintcloud/momentum-trading-bot/internal/pipeline"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
@@ -116,18 +115,8 @@ func runLive() {
 
 	// Initialize float store for momentum filtering
 	floatStore := alpaca.NewFloatStore()
-	floatOverrideURL := appCfg.FloatDataURL
-	if floatOverrideURL == "" {
-		floatOverrideURL = tradingCfg.FloatOverrideURL
-	}
-	if floatOverrideURL != "" {
-		if err := floatStore.LoadFromCSV(floatOverrideURL); err != nil {
-			log.Printf("float-store: override load warning: %v", err)
-		}
-	} else {
-		if _, err := floatStore.LoadOrFetchFloatData(ctx); err != nil {
-			log.Printf("float-store: SEC EDGAR fetch warning: %v", err)
-		}
+	if _, err := floatStore.LoadOrFetchFloatData(ctx); err != nil {
+		log.Printf("float-store: SEC EDGAR fetch warning: %v", err)
 	}
 	log.Printf("float-store: %d symbols with float data", floatStore.Len())
 
@@ -187,108 +176,34 @@ func runLive() {
 	}
 
 	// Pipeline channels
-	tickCh := make(chan domain.Tick, 1024)
-	candidateCh := make(chan domain.Candidate, 256)
-	signalCh := make(chan domain.TradeSignal, 64)
-	orderCh := make(chan domain.OrderRequest, 64)
-	closeAllCh := make(chan domain.OrderRequest, 64)
-
-	// Start components
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
 	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
-
 	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
+	normalizer := market.NewNormalizer()
 
-	// Fan-out ticks to strategy and scanner
-	scannerTicks := make(chan domain.Tick, 1024)
-	strategyTicks := make(chan domain.Tick, 1024)
-	go func() {
-		for tick := range tickCh {
-			// Update regime tracker
-			if regimeTracker.IsBenchmark(tick.Symbol) {
-				regimeTracker.UpdateTick(tick)
-			}
-			// Update portfolio prices
-			portfolioMgr.UpdatePrice(tick.Symbol, tick.Price)
-			// Feed vol estimator and correlation tracker
-			volEstimator.UpdatePrice(tick.Symbol, tick.Price)
-			riskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
-
-			select {
-			case scannerTicks <- tick:
-			default:
-			}
-			select {
-			case strategyTicks <- tick:
-			default:
-			}
-		}
-	}()
-
-	// Start pipeline stages
-	go func() {
-		if err := scannerInst.Start(ctx, scannerTicks, candidateCh); err != nil {
-			log.Printf("scanner: %v", err)
-		}
-	}()
-
-	// Tap candidates for the UI dashboard before forwarding to strategy.
-	strategyCandidates := make(chan domain.Candidate, 256)
-	go func() {
-		for c := range candidateCh {
-			runtimeState.AddCandidate(c)
-			select {
-			case strategyCandidates <- c:
-			default:
-			}
-		}
-		close(strategyCandidates)
-	}()
-
-	go func() {
-		if err := strategyInst.Start(ctx, strategyCandidates, strategyTicks, signalCh); err != nil {
-			log.Printf("strategy: %v", err)
-		}
-	}()
-
-	// Start risk engine
-	go func() {
-		if err := riskEngine.Start(ctx, signalCh, orderCh); err != nil {
-			log.Printf("risk: %v", err)
-		}
-	}()
-
-	// Process close-all requests
-	go func() {
-		for order := range closeAllCh {
-			orderCh <- order
-		}
-	}()
-
-	// Create execution engine
-	fillCh := make(chan domain.ExecutionReport, 64)
-	execEngine := execution.NewEngine(alpacaClient, runtimeState, logger)
-	go func() {
-		if err := execEngine.Start(ctx, orderCh, fillCh); err != nil {
-			log.Printf("execution: %v", err)
-		}
-	}()
-
-	// Process fills — update portfolio
-	go func() {
-		for fill := range fillCh {
-			portfolioMgr.ApplyExecution(fill)
-			logger.RecordExecution(fill)
-		}
-	}()
+	pipe := pipeline.New(pipeline.Config{
+		TradingCfg:    tradingCfg,
+		Runtime:       runtimeState,
+		Portfolio:     portfolioMgr,
+		Normalizer:    normalizer,
+		Scanner:       scannerInst,
+		Strategy:      strategyInst,
+		RiskEngine:    riskEngine,
+		VolEstimator:  volEstimator,
+		Broker:        alpacaClient,
+		Recorder:      logger,
+		RegimeTracker: regimeTracker,
+		FloatLookup:   floatStore.Get,
+	})
+	pipe.Start(ctx)
 
 	runtimeState.SetReady(true)
 	runtimeState.RecordLog("info", "system", "momentum trading bot started")
 
 	// Start API server
 	configUpdaters := []api.ConfigUpdater{scannerInst, strategyInst, riskEngine}
-	apiServer := api.NewServer(portfolioMgr, runtimeState, closeAllCh, appCfg, tradingCfg, optimizer.DefaultArtifactDir, eventRecorder)
+	apiServer := api.NewServer(portfolioMgr, runtimeState, pipe.CloseAllCh(), appCfg, tradingCfg, optimizer.DefaultArtifactDir, eventRecorder)
 	for _, u := range configUpdaters {
 		apiServer.RegisterConfigUpdater(u)
 	}
@@ -357,7 +272,6 @@ func runLive() {
 	// Seed normalizer with historical context from Alpaca snapshots.
 	// Without this, previousClose=0 and prevDayVolume=0 on fresh start,
 	// causing GapPercent=0 and RelativeVolume=1.0 — all scanner filters fail.
-	normalizer := market.NewNormalizer()
 	log.Println("normalizer: fetching snapshots for historical context...")
 	seedCtx, seedCancel := context.WithTimeout(ctx, 2*time.Minute)
 	snapshots, snapshotErr := alpacaClient.GetSnapshots(seedCtx, symbols)
@@ -399,15 +313,20 @@ func runLive() {
 	// Improve seeded position stops using snapshot data (if available)
 	computeSeededPositionStops(portfolioMgr, tradingCfg, snapshots)
 
-	// Normalize streaming bars into ticks
+	// Feed streaming bars into the pipeline
 	go func() {
-		for bar := range barCh {
-			tick := normalizer.Normalize(bar)
-			tick.Float = floatStore.Get(tick.Symbol)
+		for sbar := range barCh {
 			select {
-			case tickCh <- tick:
+			case pipe.BarCh() <- domain.Bar{
+				Symbol:    sbar.Symbol,
+				Timestamp: sbar.Timestamp,
+				Open:      sbar.Open,
+				High:      sbar.High,
+				Low:       sbar.Low,
+				Close:     sbar.Close,
+				Volume:    sbar.Volume,
+			}:
 			default:
-				// Drop tick if pipeline is backed up
 			}
 		}
 	}()
@@ -459,11 +378,15 @@ func runLive() {
 					fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
 					if currentPrice > 0 {
 						portfolioMgr.UpdatePrice(bp.Symbol, currentPrice)
-						// Inject a synthetic tick so the strategy evaluates exit conditions.
+						// Inject a synthetic bar so the strategy evaluates exit conditions.
 						select {
-						case strategyTicks <- domain.Tick{
+						case pipe.BarCh() <- domain.Bar{
 							Symbol:    bp.Symbol,
-							Price:     currentPrice,
+							Open:      currentPrice,
+							High:      currentPrice,
+							Low:       currentPrice,
+							Close:     currentPrice,
+							Volume:    0,
 							Timestamp: time.Now(),
 						}:
 						default:
@@ -527,7 +450,6 @@ func runOptimize(args []string) error {
 	fs := flag.NewFlagSet("optimize", flag.ContinueOnError)
 	asOfStr := fs.String("as-of", "", "as-of date (YYYY-MM-DD)")
 	startStr := fs.String("start", "", "explicit lookback start date (YYYY-MM-DD); defaults to as-of minus 3 months")
-	dataPath := fs.String("data", "", "path to CSV data file (optional; fetches from Alpaca when omitted)")
 	outDir := fs.String("out", ".cache/optimizer", "output directory")
 	maxSymbols := fs.Int("max-symbols", 500, "maximum symbols for optimization (0=unlimited)")
 	if err := fs.Parse(args); err != nil {
@@ -552,105 +474,70 @@ func runOptimize(args []string) error {
 	}
 	log.Printf("Optimize lookback: %s to %s", lookbackStart.Format("2006-01-02"), asOf.Format("2006-01-02"))
 
-	var bars []backtest.InputBar
+	setupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
-	if *dataPath != "" {
-		bars, err = backtest.LoadInputBars(*dataPath, lookbackStart, asOf)
-		if err != nil {
-			return fmt.Errorf("load csv: %v", err)
-		}
+	alpacaCfg, err := config.LoadBacktestAlpacaConfig(nil)
+	if err != nil {
+		return err
+	}
+	client := alpaca.NewClient(alpacaCfg)
+
+	historicalRateLimit := 0
+	if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
+		historicalRateLimit = capabilities.HistoricalRateLimitPerMin
+		log.Printf("Optimize using Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
 	} else {
-		setupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		alpacaCfg, err := config.LoadBacktestAlpacaConfig(nil)
-		if err != nil {
-			return err
-		}
-		client := alpaca.NewClient(alpacaCfg)
-
-		historicalRateLimit := 0
-		if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
-			historicalRateLimit = capabilities.HistoricalRateLimitPerMin
-			log.Printf("Optimize using Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
-		} else {
-			log.Printf("Optimize capability detection failed, using defaults: %v", capErr)
-		}
-
-		symbols, err := resolveBacktestSymbols(setupCtx, client, time.Now())
-		if err != nil {
-			return err
-		}
-
-		if *maxSymbols > 0 && len(symbols) > *maxSymbols {
-			screened, screenErr := client.ListMostActiveSymbols(setupCtx, *maxSymbols)
-			if screenErr == nil && len(screened) > 0 {
-				log.Printf("Optimize using top %d symbols (screener=true, was %d)", len(screened), len(symbols))
-				symbols = screened
-			} else {
-				if screenErr != nil {
-					log.Printf("Optimize screener unavailable: %v; truncating to %d symbols", screenErr, *maxSymbols)
-				} else {
-					log.Printf("Optimize screener returned empty; truncating to %d symbols", *maxSymbols)
-				}
-				symbols = symbols[:*maxSymbols]
-			}
-		}
-
-		prevDayStart := lookbackStart.AddDate(0, 0, -1)
-		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, asOf, historicalRateLimit)
-		log.Printf("Optimize historical fetch timeout=%s coverage start=%s end=%s", fetchTimeout, formatLogTime(prevDayStart), formatLogTime(asOf))
-
-		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
-		defer fetchCancel()
-
-		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, asOf, historicalRateLimit)
-		if err != nil {
-			return err
-		}
-
-		log.Printf("Optimize historical dataset ready shards=%d symbols=%d (streaming mode)", len(dataset.jobs), len(symbols))
-		iterFactory := newDatasetIteratorFactory(dataset)
-		opt := optimizer.NewStreamingOptimizer(iterFactory, lookbackStart, asOf, *outDir)
-		streamFloatStore := alpaca.NewFloatStore()
-		if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
-			if loadErr := streamFloatStore.LoadFromCSV(floatURL); loadErr != nil {
-				log.Printf("Optimize float data warning: %v", loadErr)
-			}
-		} else {
-			if _, loadErr := streamFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
-				log.Printf("Optimize float data warning: %v", loadErr)
-			}
-		}
-		opt.SetFloatStore(streamFloatStore)
-		report, err := opt.Run()
-		if err != nil {
-			return err
-		}
-		output, _ := json.MarshalIndent(report, "", "  ")
-		fmt.Println(string(output))
-		return nil
+		log.Printf("Optimize capability detection failed, using defaults: %v", capErr)
 	}
 
-	opt := optimizer.NewOptimizer(bars, asOf, *outDir)
-	optFloatStore := alpaca.NewFloatStore()
-	if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
-		if loadErr := optFloatStore.LoadFromCSV(floatURL); loadErr != nil {
-			log.Printf("Optimize float data warning: %v", loadErr)
-		}
-	} else {
-		if _, loadErr := optFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
-			log.Printf("Optimize float data warning: %v", loadErr)
-		}
-	}
-	opt.SetFloatStore(optFloatStore)
-	report, err := opt.Run()
+	symbols, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 	if err != nil {
 		return err
 	}
 
+	if *maxSymbols > 0 && len(symbols) > *maxSymbols {
+		screened, screenErr := client.ListMostActiveSymbols(setupCtx, *maxSymbols)
+		if screenErr == nil && len(screened) > 0 {
+			log.Printf("Optimize using top %d symbols (screener=true, was %d)", len(screened), len(symbols))
+			symbols = screened
+		} else {
+			if screenErr != nil {
+				log.Printf("Optimize screener unavailable: %v; truncating to %d symbols", screenErr, *maxSymbols)
+			} else {
+				log.Printf("Optimize screener returned empty; truncating to %d symbols", *maxSymbols)
+			}
+			symbols = symbols[:*maxSymbols]
+		}
+	}
+
+	prevDayStart := lookbackStart.AddDate(0, 0, -1)
+	fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, asOf, historicalRateLimit)
+	log.Printf("Optimize historical fetch timeout=%s coverage start=%s end=%s", fetchTimeout, formatLogTime(prevDayStart), formatLogTime(asOf))
+
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer fetchCancel()
+
+	dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, asOf, historicalRateLimit)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Optimize historical dataset ready shards=%d symbols=%d (streaming mode)", len(dataset.jobs), len(symbols))
+	iterFactory := newDatasetIteratorFactory(dataset)
+	opt := optimizer.NewStreamingOptimizer(iterFactory, lookbackStart, asOf, *outDir)
+	streamFloatStore := alpaca.NewFloatStore()
+	if _, loadErr := streamFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
+		log.Printf("Optimize float data warning: %v", loadErr)
+	}
+	opt.SetFloatStore(streamFloatStore)
+	report, err := opt.Run()
+	if err != nil {
+		return err
+	}
 	output, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(output))
+
 	return nil
 }
 
@@ -783,15 +670,10 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 	iterFactory := newDatasetIteratorFactory(dataset)
 	opt := optimizer.NewStreamingOptimizer(iterFactory, lookbackStart, asOf, outDir)
 	autoFloatStore := alpaca.NewFloatStore()
-	if floatURL := os.Getenv("FLOAT_DATA_URL"); floatURL != "" {
-		if loadErr := autoFloatStore.LoadFromCSV(floatURL); loadErr != nil {
-			log.Printf("auto-optimize: float data warning: %v", loadErr)
-		}
-	} else {
-		if _, loadErr := autoFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
-			log.Printf("auto-optimize: float data warning: %v", loadErr)
-		}
+	if _, loadErr := autoFloatStore.LoadOrFetchFloatData(context.Background()); loadErr != nil {
+		log.Printf("auto-optimize: float data warning: %v", loadErr)
 	}
+	
 	opt.SetFloatStore(autoFloatStore)
 	return opt.Run()
 }

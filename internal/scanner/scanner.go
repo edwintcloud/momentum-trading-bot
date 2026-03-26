@@ -229,13 +229,14 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	s.mu.Lock()
 	cfg := s.config
-	// Track dollar volume for volume leaders filtering.
-	s.trackDollarVolume(tick)
 	s.mu.Unlock()
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
 		return domain.Candidate{}, false
 	}
 
+	if cfg.MinFiveMinuteVolume > 0 && tick.FiveMinuteVolume < cfg.MinFiveMinuteVolume {
+		return domain.Candidate{}, false
+	}
 	// Path 1: Traditional gap scanner (existing)
 	gapQualified := tick.GapPercent >= cfg.MinGapPercent || tick.GapPercent <= -cfg.MinGapPercent
 
@@ -418,14 +419,6 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
 		Timestamp:             tick.Timestamp,
-	}
-
-	// Volume leaders gate: only emit candidates for top N symbols by dollar volume.
-	s.mu.Lock()
-	leader := s.isVolumeLeader(tick.Symbol)
-	s.mu.Unlock()
-	if !leader {
-		return domain.Candidate{}, false
 	}
 
 	return candidate, true

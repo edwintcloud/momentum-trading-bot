@@ -2,10 +2,8 @@ package alpaca
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -47,29 +45,6 @@ func (fs *FloatStore) Len() int {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 	return len(fs.floats)
-}
-
-// LoadFromAssets fetches active US equity assets from Alpaca and stores any
-// available share count data. Alpaca's assets API does not expose a direct
-// float field, so this is best-effort — the FloatOverrideURL is the
-// recommended way to supply accurate float data.
-func (fs *FloatStore) LoadFromAssets(ctx context.Context, client *Client) error {
-	type alpacaAsset struct {
-		Symbol string `json:"symbol"`
-		Status string `json:"status"`
-		Class  string `json:"class"`
-	}
-
-	var assets []alpacaAsset
-	err := client.get(ctx, client.baseURL+"/v2/assets?status=active&asset_class=us_equity", &assets)
-	if err != nil {
-		return fmt.Errorf("fetch assets: %w", err)
-	}
-
-	// Alpaca assets don't have a float field, but loading this confirms
-	// which symbols are active. Log that we checked.
-	log.Printf("float-store: loaded %d active assets from Alpaca (no direct float data available)", len(assets))
-	return nil
 }
 
 // LoadFromCSV loads float data from a CSV source (file path or URL).
@@ -136,6 +111,5 @@ func (fs *FloatStore) LoadFromCSV(source string) error {
 		return fmt.Errorf("scan float CSV: %w", err)
 	}
 
-	log.Printf("float-store: loaded %d symbols from %s", loaded, source)
 	return nil
 }

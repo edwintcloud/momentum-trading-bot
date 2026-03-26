@@ -157,7 +157,7 @@
       "VolTargetSizingEnabled": false,
       "TargetVolPerPosition": 0.02,
       "DefaultVolatility": 0.3,
-      "DrawdownRiskEnabled": true,
+      "DrawdownRiskEnabled": false,
       "MaxAcceptableDrawdown": 0.15,
       "SlippageLiquidBps": 5,
       "SlippageMidBps": 10,

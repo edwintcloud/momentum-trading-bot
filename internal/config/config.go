@@ -4,31 +4,32 @@ import "encoding/json"
 
 // ScannerConfig holds stock selection criteria (Ross Cameron momentum filters).
 type ScannerConfig struct {
-	MinPrice             float64
-	MaxPrice             float64
-	MinGapPercent        float64
-	MinRelativeVolume    float64
-	MinPremarketVolume   int64
-	FloatOverrideURL     string
-	MaxFloat             int64
-	MinFloat             int64
-	MinPrevDayVolume     int64
-	ScannerWorkers       int
-	MinOneMinuteReturnPct   float64
-	MinThreeMinuteReturnPct float64
-	MinVolumeRate           float64
-	MaxDistanceFromHighPct  float64
-	VolumeOnPullbackEnabled bool
-	RSIFilterEnabled       bool
-	RSIOverboughtThreshold float64
-	RSIOversoldThreshold   float64
-	MACDFastPeriod   int
-	MACDSlowPeriod   int
-	MACDSignalPeriod int
-	MeanReversionEnabled bool
-	MeanReversionMaxADX  float64
-	BollingerPeriod      int
-	BollingerK           float64
+	MinPrice                   float64
+	MaxPrice                   float64
+	MinGapPercent              float64
+	MinRelativeVolume          float64
+	MinPremarketVolume         int64
+	FloatOverrideURL           string
+	MaxFloat                   int64
+	MinFloat                   int64
+	MinPrevDayVolume           int64
+	ScannerWorkers             int
+	MinOneMinuteReturnPct      float64
+	MinThreeMinuteReturnPct    float64
+	MinFiveMinuteVolume        int64
+	MinVolumeRate              float64
+	MaxDistanceFromHighPct     float64
+	VolumeOnPullbackEnabled    bool
+	RSIFilterEnabled           bool
+	RSIOverboughtThreshold     float64
+	RSIOversoldThreshold       float64
+	MACDFastPeriod             int
+	MACDSlowPeriod             int
+	MACDSignalPeriod           int
+	MeanReversionEnabled       bool
+	MeanReversionMaxADX        float64
+	BollingerPeriod            int
+	BollingerK                 float64
 	HODMomoEnabled             bool
 	HODMomoMinIntradayPct      float64
 	HODMomoMinRelativeVolume   float64
@@ -40,46 +41,46 @@ type ScannerConfig struct {
 
 // StrategyConfig holds entry/exit rules and position management parameters.
 type StrategyConfig struct {
-	EnableShorts             bool
-	RiskPerTradePct          float64
-	MaxTradesPerDay          int
-	MaxOpenPositions         int
-	MaxExposurePct           float64
-	MaxShortOpenPositions    int
-	MaxShortExposurePct      float64
-	EntryCooldownSec         int
-	ExitCooldownSec          int
-	MinEntryScore            float64
-	ShortMinEntryScore       float64
-	EntryATRPercentFallback  float64
-	EntryStopATRMultiplier   float64
-	MaxRiskATRMultiplier     float64
-	BreakEvenMinR            float64
-	TrailActivationR         float64
-	TrailATRMultiplier       float64
-	TightTrailTriggerR       float64
-	TightTrailATRMultiplier  float64
-	ProfitTargetR            float64
-	FailedBreakoutCutR       float64
-	ShortPeakExtensionMinPct float64
-	ShortVWAPBreakMinPct     float64
-	RegimeGatingEnabled      bool
-	RegimeMixedScoreBoost    float64
-	RegimeNeutralScoreBoost  float64
-	PlaybookExits            PlaybookExitsConfig
-	ConfidenceSizingEnabled  bool
-	ConfidenceSizingFloor    float64
-	StagnationMinPeakR       float64
-	BreakoutFailureWindowMin int
-	StagnationWindowMin      int
-	TimeOfDayEnabled         bool
-	PartialExitsEnabled      bool
-	PartialTrigger1R         float64
-	PartialTrigger1Pct       float64
-	PartialTrigger2R         float64
-	PartialTrigger2Pct       float64
-	MoveStopAfterPartial     bool
-	AdaptiveTrailEnabled     bool
+	EnableShorts                  bool
+	RiskPerTradePct               float64
+	MaxTradesPerDay               int
+	MaxOpenPositions              int
+	MaxExposurePct                float64
+	MaxShortOpenPositions         int
+	MaxShortExposurePct           float64
+	EntryCooldownSec              int
+	ExitCooldownSec               int
+	MinEntryScore                 float64
+	ShortMinEntryScore            float64
+	EntryATRPercentFallback       float64
+	EntryStopATRMultiplier        float64
+	MaxRiskATRMultiplier          float64
+	BreakEvenMinR                 float64
+	TrailActivationR              float64
+	TrailATRMultiplier            float64
+	TightTrailTriggerR            float64
+	TightTrailATRMultiplier       float64
+	ProfitTargetR                 float64
+	FailedBreakoutCutR            float64
+	ShortPeakExtensionMinPct      float64
+	ShortVWAPBreakMinPct          float64
+	RegimeGatingEnabled           bool
+	RegimeMixedScoreBoost         float64
+	RegimeNeutralScoreBoost       float64
+	PlaybookExits                 PlaybookExitsConfig
+	ConfidenceSizingEnabled       bool
+	ConfidenceSizingFloor         float64
+	StagnationMinPeakR            float64
+	BreakoutFailureWindowMin      int
+	StagnationWindowMin           int
+	TimeOfDayEnabled              bool
+	PartialExitsEnabled           bool
+	PartialTrigger1R              float64
+	PartialTrigger1Pct            float64
+	PartialTrigger2R              float64
+	PartialTrigger2Pct            float64
+	MoveStopAfterPartial          bool
+	AdaptiveTrailEnabled          bool
 	EntryDeadlineMinutesAfterOpen int
 	MinRiskRewardRatio            float64
 	MidDayScoreMultiplier         float64

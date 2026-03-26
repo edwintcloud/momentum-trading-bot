@@ -4,7 +4,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/volumeprofile"
@@ -66,9 +65,11 @@ func (n *Normalizer) Seed(symbol string, seed SeedState, now time.Time) {
 	n.states[symbol] = state
 }
 
-// Normalize converts a raw StreamBar into an enriched domain.Tick with
+// Normalize converts a domain.Bar into an enriched domain.Tick with
 // gap%, relative volume, pre-market volume, volume spikes, and high-of-day.
-func (n *Normalizer) Normalize(bar alpaca.StreamBar) domain.Tick {
+// If bar.PrevClose > 0, it overrides the tracked previousClose on day boundaries
+// so gap% is accurate even when the prior day's data is absent.
+func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 	state := n.states[bar.Symbol]
 	if state == nil {
 		state = &symbolState{}
@@ -80,7 +81,11 @@ func (n *Normalizer) Normalize(bar alpaca.StreamBar) domain.Tick {
 		if state.day != "" && state.totalVolume > 0 {
 			state.prevDayVolume = state.totalVolume
 		}
-		state.previousClose = state.lastClose
+		prevClose := state.lastClose
+		if bar.PrevClose > 0 {
+			prevClose = bar.PrevClose
+		}
+		state.previousClose = prevClose
 		state.day = day
 		state.open = bar.Open
 		state.highOfDay = 0
@@ -114,22 +119,32 @@ func (n *Normalizer) Normalize(bar alpaca.StreamBar) domain.Tick {
 
 	relativeVolume := calculateRelativeVolume(state, bar.Timestamp)
 	volumeSpike := isVolumeSpike(state.recentVolumes, bar.Volume, relativeVolume)
+	get5MinVol := func() int64 {
+		s := int64(0)
+		for _, v := range state.recentVolumes {
+			s += v
+		}
+		return s
+	}
 
 	return domain.Tick{
-		Symbol:          bar.Symbol,
-		Price:           round2(bar.Close),
-		BarOpen:         round2(bar.Open),
-		BarHigh:         round2(bar.High),
-		BarLow:          round2(bar.Low),
-		Open:            round2(state.open),
-		HighOfDay:       round2(state.highOfDay),
-		Volume:          state.totalVolume,
-		RelativeVolume:  round2(relativeVolume),
-		GapPercent:      round2(gapPercent),
-		PreMarketVolume: state.preMarketVol,
-		VolumeSpike:     volumeSpike,
-		PrevDayVolume:   state.prevDayVolume,
-		Timestamp:       bar.Timestamp,
+		Symbol:           bar.Symbol,
+		Price:            round2(bar.Close),
+		BarOpen:          round2(bar.Open),
+		BarHigh:          round2(bar.High),
+		BarLow:           round2(bar.Low),
+		Open:             round2(state.open),
+		HighOfDay:        round2(state.highOfDay),
+		Volume:           state.totalVolume,
+		RelativeVolume:   round2(relativeVolume),
+		GapPercent:       round2(gapPercent),
+		PreMarketVolume:  state.preMarketVol,
+		VolumeSpike:      volumeSpike,
+		PrevDayVolume:    state.prevDayVolume,
+		Catalyst:         bar.Catalyst,
+		CatalystURL:      bar.CatalystURL,
+		Timestamp:        bar.Timestamp,
+		FiveMinuteVolume: get5MinVol(),
 	}
 }
 

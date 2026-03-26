@@ -5,20 +5,23 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
 	"github.com/edwintcloud/momentum-trading-bot/internal/analytics"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
-	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
+	"github.com/edwintcloud/momentum-trading-bot/internal/market"
+	"github.com/edwintcloud/momentum-trading-bot/internal/pipeline"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
 	"github.com/edwintcloud/momentum-trading-bot/internal/strategy"
-	"github.com/edwintcloud/momentum-trading-bot/internal/volumeprofile"
 )
 
 // RunConfig controls a historical simulation.
@@ -169,33 +172,7 @@ type FillExpirySample struct {
 
 type bar = InputBar
 
-type pendingEntry struct {
-	order         domain.OrderRequest
-	barsRemaining int
-}
-
-type tradeAnalytics struct {
-	side         string
-	entryPrice   float64
-	riskPerShare float64
-	openedAt     time.Time
-	mfeR         float64
-	maeR         float64
-}
-
-type symbolState struct {
-	day           string
-	previousClose float64
-	open          float64
-	highOfDay     float64
-	totalVolume   int64
-	preMarketVol  int64
-	prevDayVolume int64
-	recentVolumes []int64
-	lastClose     float64
-}
-
-// Run executes a CSV-driven backtest using the live strategy/risk/portfolio components.
+// Run executes a historical backtest by wiring components through the shared Pipeline.
 func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Result, error) {
 	iter, err := resolveBarIterator(runCfg)
 	if err != nil {
@@ -204,6 +181,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	defer iter.Close()
 
 	runtimeState := runtime.NewState()
+	var mu sync.Mutex
+	var simTimeNano atomic.Int64
 	diagnostics := Diagnostics{
 		ScannerRejects:     make(map[string]int),
 		EntryRejects:       make(map[string]int),
@@ -217,8 +196,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	book := portfolio.NewManager(cfg)
-	var simTime time.Time
-	book.SetNowFunc(func() time.Time { return simTime })
+	book.SetNowFunc(func() time.Time {
+		return time.Unix(0, simTimeNano.Load())
+	})
 	var regimeTracker *regime.Tracker
 	if cfg.EnableMarketRegime {
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
@@ -226,18 +206,131 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	scan := scanner.NewScanner(cfg, runtimeState)
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
-
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
-	pendingEntries := make(map[string]pendingEntry)
-	openAnalytics := make(map[string]tradeAnalytics)
-	closedAnalytics := make([]tradeAnalytics, 0)
-	normalizerState := make(map[string]*symbolState)
-	debugSet := make(map[string]bool, len(runCfg.DebugSymbols))
-	for _, sym := range runCfg.DebugSymbols {
-		debugSet[strings.ToUpper(sym)] = true
-	}
+	broker := execution.NewPaperBroker()
+	normalizer := market.NewNormalizer()
+
 	peakEquity := cfg.StartingCapital
 	maxDrawdown := 0.0
+
+	pipe := pipeline.New(pipeline.Config{
+		TradingCfg:    cfg,
+		Runtime:       runtimeState,
+		Portfolio:     book,
+		Normalizer:    normalizer,
+		Scanner:       scan,
+		Strategy:      strat,
+		RiskEngine:    riskEngine,
+		VolEstimator:  volEstimator,
+		Broker:        broker,
+		Recorder:      runCfg.Recorder,
+		RegimeTracker: regimeTracker,
+		FloatLookup: func(sym string) int64 {
+			if runCfg.FloatStore != nil {
+				return runCfg.FloatStore.Get(sym)
+			}
+			return 0
+		},
+		EngineOptions: []execution.EngineOption{
+			execution.WithPollInterval(1 * time.Millisecond),
+			execution.WithPollTimeout(5 * time.Second),
+			execution.WithNowFunc(func() time.Time {
+				return time.Unix(0, simTimeNano.Load())
+			}),
+		},
+		OnTick: func(tick domain.Tick, domBar domain.Bar) {
+			broker.UpdateBar(domBar)
+			simTimeNano.Store(domBar.Timestamp.UnixNano())
+		},
+		TickFilter: func(t domain.Tick) bool {
+			return withinWindow(t.Timestamp, runCfg.Start, runCfg.End)
+		},
+		OnScanResult: func(tick domain.Tick, candidate domain.Candidate, passed bool, reason string) {
+			mu.Lock()
+			defer mu.Unlock()
+			if passed {
+				diagnostics.EntryCandidates++
+			} else {
+				incrementReason(diagnostics.ScannerRejects, reason)
+			}
+		},
+		OnEntryDecision: func(candidate domain.Candidate, decision strategy.CandidateDecision) {
+			mu.Lock()
+			defer mu.Unlock()
+			if decision.Emit {
+				diagnostics.EntrySignals++
+				rememberEntrySignalSample(&diagnostics, candidate, decision)
+			} else {
+				incrementReason(diagnostics.EntryRejects, decision.Reason)
+				rememberEntryRejectSample(&diagnostics, candidate, decision)
+			}
+		},
+		OnExitCheck: func(tick domain.Tick, signal domain.TradeSignal, shouldExit bool, reason string) {
+			hasPosition := book.HasPosition(tick.Symbol)
+			mu.Lock()
+			defer mu.Unlock()
+			if hasPosition {
+				diagnostics.ExitChecks++
+			}
+			if shouldExit {
+				diagnostics.ExitSignals++
+			} else if hasPosition {
+				incrementReason(diagnostics.ExitRejects, reason)
+			}
+		},
+		OnRiskDecision: func(signal domain.TradeSignal, order domain.OrderRequest, approved bool, reason string) {
+			mu.Lock()
+			defer mu.Unlock()
+			isEntry := domain.IsOpeningIntent(signal.Intent)
+			if approved {
+				if isEntry {
+					diagnostics.EntryRiskApproved++
+				} else {
+					diagnostics.ExitRiskApproved++
+				}
+			} else {
+				if isEntry {
+					incrementReason(diagnostics.EntryRiskRejects, reason)
+					if len(diagnostics.RiskRejectSamples) < 30 {
+						diagnostics.RiskRejectSamples = append(diagnostics.RiskRejectSamples, RiskRejectSample{
+							Symbol:    signal.Symbol,
+							Timestamp: signal.Timestamp,
+							Side:      signal.Side,
+							Price:     signal.Price,
+							Quantity:  signal.Quantity,
+							Reason:    reason,
+							SetupType: signal.SetupType,
+						})
+					}
+					if reason == "daily-loss-limit" {
+						runtimeState.RecordLog("warn", "risk", "blocked buy "+signal.Symbol+": "+reason)
+						runtimeState.TriggerDailyLossStop(signal.Timestamp)
+					}
+				} else {
+					incrementReason(diagnostics.ExitRiskRejects, reason)
+				}
+			}
+		},
+		OnTickFanOut: func(tick domain.Tick) {
+			equity := cfg.StartingCapital + book.RealizedPnL() + book.UnrealizedPnL()
+			mu.Lock()
+			defer mu.Unlock()
+			if equity > peakEquity {
+				peakEquity = equity
+			}
+			if peakEquity > 0 {
+				drawdown := ((peakEquity - equity) / peakEquity) * 100
+				if drawdown > maxDrawdown {
+					maxDrawdown = drawdown
+				}
+			}
+		},
+	})
+	pipe.Start(ctx)
+
+	// Feed bars from iterator into the pipeline.
+	barsLoaded := 0
+	barsInWindow := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -252,168 +345,31 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			break
 		}
 		currentBar := normalizeInputBar(item)
-		simTime = currentBar.Timestamp
-		diagnostics.BarsLoaded++
-		diagnostics.BarsInWindow++
-		tick := normalizeBar(currentBar, normalizerState)
-		if runCfg.FloatStore != nil {
-			tick.Float = runCfg.FloatStore.Get(tick.Symbol)
+		barsLoaded++
+		if withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
+			barsInWindow++
 		}
-		if regimeTracker != nil {
-			regimeTracker.UpdateTick(tick)
-		}
-		volEstimator.UpdatePrice(currentBar.Symbol, currentBar.Close)
-		riskEngine.CorrelationTracker.UpdatePrice(currentBar.Symbol, currentBar.Close)
-		if !withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
-			continue
-		}
-
-		if pending, exists := pendingEntries[currentBar.Symbol]; exists {
-			if fill, updatedPending, filled, expired := maybeFillPendingOrder(pending, currentBar); filled {
-				delete(pendingEntries, currentBar.Symbol)
-				book.ApplyExecution(fill)
-				openAnalytics[fill.Symbol] = tradeAnalytics{
-					side:         fill.PositionSide,
-					entryPrice:   fill.Price,
-					riskPerShare: fill.RiskPerShare,
-					openedAt:     fill.FilledAt,
-					mfeR:         0,
-					maeR:         0,
-				}
-			} else if expired {
-				diagnostics.FillExpiries++
-				if len(diagnostics.FillExpirySamples) < 30 {
-					diagnostics.FillExpirySamples = append(diagnostics.FillExpirySamples, FillExpirySample{
-						Symbol:     pending.order.Symbol,
-						OrderTime:  pending.order.Timestamp,
-						ExpiryTime: currentBar.Timestamp,
-						Side:       pending.order.Side,
-						LimitPrice: pending.order.Price,
-						Quantity:   pending.order.Quantity,
-						SetupType:  pending.order.SetupType,
-					})
-				}
-				delete(pendingEntries, currentBar.Symbol)
-			} else {
-				pendingEntries[currentBar.Symbol] = updatedPending
-			}
-		}
-
-		hadPosition := book.HasPosition(tick.Symbol)
-		exitSignal, exitOK, exitReason := strat.EvaluateExitDetailed(tick)
-		if hadPosition {
-			diagnostics.ExitChecks++
-			if analytics, exists := openAnalytics[tick.Symbol]; exists {
-				if exitOK && tick.BarOpen > 0 && round2(exitSignal.Price) == round2(tick.BarOpen) {
-					updateTradeAnalytics(&analytics, tick.BarOpen, tick.BarOpen)
-				} else {
-					updateTradeAnalytics(&analytics, tick.BarHigh, tick.BarLow)
-				}
-				openAnalytics[tick.Symbol] = analytics
-			}
-		}
-		if exitOK {
-			diagnostics.ExitSignals++
-			if order, approved, riskReason := riskEngine.Evaluate(exitSignal); approved {
-				diagnostics.ExitRiskApproved++
-				// Only archive analytics on full close, not partial exits.
-				// Partial exits reduce the position but keep it open for
-				// subsequent trailing-stop or profit-target exits.
-				if order.Intent != domain.IntentPartial {
-					if analytics, exists := openAnalytics[order.Symbol]; exists {
-						closedAnalytics = append(closedAnalytics, tradeAnalytics{
-							side:         analytics.side,
-							entryPrice:   analytics.entryPrice,
-							riskPerShare: analytics.riskPerShare,
-							openedAt:     analytics.openedAt,
-							mfeR:         analytics.mfeR,
-							maeR:         analytics.maeR,
-						})
-						delete(openAnalytics, order.Symbol)
-					}
-				}
-				applyPaperFill(book, order, tick.Timestamp)
-			} else {
-				incrementReason(diagnostics.ExitRiskRejects, riskReason)
-			}
-		} else if hadPosition {
-			incrementReason(diagnostics.ExitRejects, exitReason)
-		}
-		if book.HasPosition(tick.Symbol) {
-			book.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
-			book.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
-			book.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
-		}
-
-		candidate, ok, scanReason := scan.EvaluateTickDetailed(tick)
-
-		if debugSet[tick.Symbol] {
-			et := tick.Timestamp.In(markethours.Location())
-			if ok {
-				decision := strat.EvaluateCandidateDecision(candidate)
-				fmt.Printf("DEBUG %s@%s price=%.2f rvol=%.2f vspike=%t scan=candidate strategy=%s score=%.2f setup=%s vwap_pct=%.2f 1m=%.2f 3m=%.2f vr=%.2f dist_high=%.2f ema9_pct=%.2f pvo=%.2f squeeze=%t leader=%.2f rank=%d ema_fast=%.4f ema_slow=%.4f\n",
-					tick.Symbol, et.Format("15:04"), tick.Price, tick.RelativeVolume, tick.VolumeSpike,
-					decision.Reason, candidate.Score, candidate.SetupType,
-					candidate.PriceVsVWAPPct, candidate.OneMinuteReturnPct, candidate.ThreeMinuteReturnPct,
-					candidate.VolumeRate, candidate.DistanceFromHighPct, candidate.PriceVsEMA9Pct,
-					candidate.PriceVsOpenPct, decision.StrongSqueeze, candidate.VolumeLeaderPct, candidate.LeaderRank,
-					candidate.EMAFast, candidate.EMASlow)
-			} else {
-				fmt.Printf("DEBUG %s@%s price=%.2f rvol=%.2f vspike=%t gap=%.2f premkt=%d scan=%s\n",
-					tick.Symbol, et.Format("15:04"), tick.Price, tick.RelativeVolume, tick.VolumeSpike, tick.GapPercent, tick.PreMarketVolume, scanReason)
-			}
-		}
-
-		if ok {
-			// runtimeState.RecordLog("info", "scanner", "candidate "+candidate.Symbol+" at "+candidate.Timestamp.Format(time.RFC3339))
-			diagnostics.EntryCandidates++
-			decision := strat.EvaluateCandidateDecision(candidate)
-			if decision.Emit {
-				diagnostics.EntrySignals++
-				rememberEntrySignalSample(&diagnostics, candidate, decision)
-				if order, approved, riskReason := riskEngine.Evaluate(decision.Signal); approved {
-					diagnostics.EntryRiskApproved++
-					pendingEntries[order.Symbol] = pendingEntry{order: order, barsRemaining: 2}
-				} else {
-					incrementReason(diagnostics.EntryRiskRejects, riskReason)
-					if len(diagnostics.RiskRejectSamples) < 30 {
-						diagnostics.RiskRejectSamples = append(diagnostics.RiskRejectSamples, RiskRejectSample{
-							Symbol:    decision.Signal.Symbol,
-							Timestamp: decision.Signal.Timestamp,
-							Side:      decision.Signal.Side,
-							Price:     decision.Signal.Price,
-							Quantity:  decision.Signal.Quantity,
-							Reason:    riskReason,
-							SetupType: decision.Signal.SetupType,
-							Score:     candidate.Score,
-						})
-					}
-					if riskReason == "daily-loss-limit" {
-						runtimeState.RecordLog("warn", "risk", "blocked buy "+decision.Signal.Symbol+": "+riskReason)
-						runtimeState.TriggerDailyLossStop(decision.Signal.Timestamp)
-					}
-				}
-			} else {
-				incrementReason(diagnostics.EntryRejects, decision.Reason)
-				rememberEntryRejectSample(&diagnostics, candidate, decision)
-			}
-		} else {
-			incrementReason(diagnostics.ScannerRejects, scanReason)
-		}
-
-		equity := cfg.StartingCapital + book.RealizedPnL() + book.UnrealizedPnL()
-		if equity > peakEquity {
-			peakEquity = equity
-		}
-		if peakEquity > 0 {
-			drawdown := ((peakEquity - equity) / peakEquity) * 100
-			if drawdown > maxDrawdown {
-				maxDrawdown = drawdown
-			}
+		pipe.BarCh() <- domain.Bar{
+			Symbol:      currentBar.Symbol,
+			Timestamp:   currentBar.Timestamp,
+			Open:        currentBar.Open,
+			High:        currentBar.High,
+			Low:         currentBar.Low,
+			Close:       currentBar.Close,
+			Volume:      currentBar.Volume,
+			PrevClose:   currentBar.PrevClose,
+			Catalyst:    currentBar.Catalyst,
+			CatalystURL: currentBar.CatalystURL,
 		}
 	}
+	pipe.Close()
+	pipe.Wait()
 
-	if diagnostics.BarsLoaded == 0 {
+	diagnostics.BarsLoaded = barsLoaded
+	diagnostics.BarsInWindow = barsInWindow
+	diagnostics.FillExpiries = broker.Expiries()
+
+	if barsLoaded == 0 {
 		return Result{}, fmt.Errorf("no bars found for requested backtest window")
 	}
 
@@ -456,10 +412,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			stopMinutesTotal += trade.ClosedAt.Sub(trade.OpenedAt).Minutes()
 			stopMinutesCount++
 		}
-	}
-	for _, analytics := range closedAnalytics {
-		totalMFER += analytics.mfeR
-		totalMAER += analytics.maeR
+		totalMFER += trade.MFER
+		totalMAER += trade.MAER
 	}
 
 	realizedPnL := book.RealizedPnL()
@@ -478,10 +432,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	avgTimeToStopMin := 0.0
 	if len(closedTrades) > 0 {
 		winRate = (float64(wins) / float64(len(closedTrades))) * 100
-		if len(closedAnalytics) > 0 {
-			avgMFER = totalMFER / float64(len(closedAnalytics))
-			avgMAER = totalMAER / float64(len(closedAnalytics))
-		}
+		avgMFER = totalMFER / float64(len(closedTrades))
+		avgMAER = totalMAER / float64(len(closedTrades))
 		trailingStopExitPct = (float64(trailingStopExits) / float64(len(closedTrades))) * 100
 	}
 	if grossLosses > 0 {
@@ -608,122 +560,6 @@ func estimateTradingDays(trades []domain.ClosedTrade) int {
 	return tradingDays
 }
 
-func applyPaperFill(book *portfolio.Manager, order domain.OrderRequest, at time.Time) {
-	book.ApplyExecution(domain.ExecutionReport{
-		Symbol:           order.Symbol,
-		Side:             order.Side,
-		Intent:           order.Intent,
-		PositionSide:     order.PositionSide,
-		Price:            order.Price,
-		Quantity:         order.Quantity,
-		StopPrice:        order.StopPrice,
-		RiskPerShare:     order.RiskPerShare,
-		EntryATR:         order.EntryATR,
-		SetupType:        order.SetupType,
-		Reason:           order.Reason,
-		MarketRegime:     order.MarketRegime,
-		RegimeConfidence: order.RegimeConfidence,
-		Playbook:         order.Playbook,
-		FilledAt:         at,
-	})
-}
-
-func maybeFillPendingOrder(pending pendingEntry, current bar) (domain.ExecutionReport, pendingEntry, bool, bool) {
-	if pending.order.Symbol == "" || !domain.IsOpeningIntent(pending.order.Intent) {
-		return domain.ExecutionReport{}, pending, false, false
-	}
-
-	maxAllowedShares := int64(float64(current.Volume) * 0.80)
-	if pending.order.Quantity > maxAllowedShares {
-		pending.barsRemaining--
-		return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0
-	}
-
-	fillPrice := 0.0
-	switch {
-	case pending.order.Side == domain.SideBuy && current.Open > 0 && current.Open <= pending.order.Price:
-		fillPrice = current.Open
-	case pending.order.Side == domain.SideBuy && current.Low > 0 && current.Low <= pending.order.Price:
-		fillPrice = pending.order.Price
-	case pending.order.Side == domain.SideSell && current.Open > 0 && current.Open >= pending.order.Price:
-		fillPrice = current.Open
-	case pending.order.Side == domain.SideSell && current.High > 0 && current.High >= pending.order.Price:
-		fillPrice = pending.order.Price
-	}
-
-	if fillPrice > 0 {
-		// Phase 3 Change 7: Percentage-based slippage by liquidity tier
-		penalty := scanner.ComputeSlippage(fillPrice, pending.order.AvgDailyVolume,
-			5.0, 10.0, 20.0)
-		if penalty < 0.01 {
-			// Fallback: use spread-based estimate
-			spread := current.High - current.Low
-			if spread < 0 {
-				spread = 0
-			}
-			penalty = spread * 0.05
-		}
-		if pending.order.Side == domain.SideSell {
-			fillPrice = math.Max(pending.order.Price, fillPrice-penalty)
-		} else {
-			fillPrice = math.Min(pending.order.Price, fillPrice+penalty)
-		}
-
-		return domain.ExecutionReport{
-			Symbol:           pending.order.Symbol,
-			Side:             pending.order.Side,
-			Intent:           pending.order.Intent,
-			PositionSide:     pending.order.PositionSide,
-			Price:            round2(fillPrice),
-			Quantity:         pending.order.Quantity,
-			StopPrice:        pending.order.StopPrice,
-			RiskPerShare:     pending.order.RiskPerShare,
-			EntryATR:         pending.order.EntryATR,
-			SetupType:        pending.order.SetupType,
-			Reason:           pending.order.Reason,
-			MarketRegime:     pending.order.MarketRegime,
-			RegimeConfidence: pending.order.RegimeConfidence,
-			Playbook:         pending.order.Playbook,
-			FilledAt:         current.Timestamp,
-		}, pending, true, true
-	}
-	pending.barsRemaining--
-	return domain.ExecutionReport{}, pending, false, pending.barsRemaining <= 0
-}
-
-func updateTradeAnalytics(analytics *tradeAnalytics, high, low float64) {
-	if analytics == nil || analytics.riskPerShare <= 0 || analytics.entryPrice <= 0 {
-		return
-	}
-	if domain.IsShort(analytics.side) {
-		if low > 0 {
-			mfeR := (analytics.entryPrice - low) / analytics.riskPerShare
-			if mfeR > analytics.mfeR {
-				analytics.mfeR = mfeR
-			}
-		}
-		if high > 0 {
-			maeR := (high - analytics.entryPrice) / analytics.riskPerShare
-			if maeR > analytics.maeR {
-				analytics.maeR = maeR
-			}
-		}
-		return
-	}
-	if high > 0 {
-		mfeR := (high - analytics.entryPrice) / analytics.riskPerShare
-		if mfeR > analytics.mfeR {
-			analytics.mfeR = mfeR
-		}
-	}
-	if low > 0 {
-		maeR := (analytics.entryPrice - low) / analytics.riskPerShare
-		if maeR > analytics.maeR {
-			analytics.maeR = maeR
-		}
-	}
-}
-
 func isStopLikeExit(reason string) bool {
 	switch reason {
 	case "stop-loss", "failed-breakout", "break-even-stop":
@@ -731,38 +567,6 @@ func isStopLikeExit(reason string) bool {
 	default:
 		return false
 	}
-}
-
-func calculateRelativeVolume(state *symbolState, timestamp time.Time) float64 {
-	if state.prevDayVolume <= 0 {
-		return 1.0
-	}
-	expected := float64(state.prevDayVolume) * volumeprofile.ExpectedCumulativeShare(timestamp)
-	if expected < 1 {
-		return 1.0
-	}
-	return float64(state.totalVolume) / expected
-}
-
-func isVolumeSpike(recent []int64, latest int64, relativeVolume float64) bool {
-	if relativeVolume >= 5 {
-		return true
-	}
-	if len(recent) < 3 {
-		return false
-	}
-	var total int64
-	for _, volume := range recent[:len(recent)-1] {
-		total += volume
-	}
-	average := float64(total) / float64(len(recent)-1)
-	return average > 0 && float64(latest) >= average*1.8
-}
-
-func isPremarket(timestamp time.Time) bool {
-	est := timestamp.In(markethours.Location())
-	minutes := est.Hour()*60 + est.Minute()
-	return minutes >= 4*60 && minutes < 9*60+30
 }
 
 func parseTimestamp(value string) (time.Time, error) {
@@ -867,73 +671,5 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		Score:                  round2(candidate.Score),
 		StrongSqueeze:          decision.StrongSqueeze,
 		Volume:                 candidate.Volume,
-	}
-}
-
-func normalizeBar(item bar, states map[string]*symbolState) domain.Tick {
-	state := states[item.Symbol]
-	if state == nil {
-		state = &symbolState{}
-		states[item.Symbol] = state
-	}
-
-	day := item.Timestamp.In(markethours.Location()).Format("2006-01-02")
-	if state.day != day {
-		if state.day != "" && state.totalVolume > 0 {
-			state.prevDayVolume = state.totalVolume
-		}
-		prevClose := state.lastClose
-		if item.PrevClose > 0 {
-			prevClose = item.PrevClose
-		}
-		state.day = day
-		state.previousClose = prevClose
-		state.open = item.Open
-		state.highOfDay = 0
-		state.totalVolume = 0
-		state.preMarketVol = 0
-		state.recentVolumes = nil
-	}
-
-	state.totalVolume += item.Volume
-	state.lastClose = item.Close
-	if item.High > state.highOfDay {
-		state.highOfDay = item.High
-	}
-	if state.highOfDay == 0 {
-		state.highOfDay = item.High
-	}
-	if isPremarket(item.Timestamp) {
-		state.preMarketVol += item.Volume
-	}
-	state.recentVolumes = append(state.recentVolumes, item.Volume)
-	if len(state.recentVolumes) > 5 {
-		state.recentVolumes = state.recentVolumes[len(state.recentVolumes)-5:]
-	}
-
-	gapPercent := 0.0
-	if state.previousClose > 0 && state.open > 0 {
-		gapPercent = ((state.open - state.previousClose) / state.previousClose) * 100
-	}
-	relativeVolume := calculateRelativeVolume(state, item.Timestamp)
-	volumeSpike := isVolumeSpike(state.recentVolumes, item.Volume, relativeVolume)
-
-	return domain.Tick{
-		Symbol:          item.Symbol,
-		Price:           round2(item.Close),
-		BarOpen:         round2(item.Open),
-		BarHigh:         round2(item.High),
-		BarLow:          round2(item.Low),
-		Open:            round2(state.open),
-		HighOfDay:       round2(state.highOfDay),
-		Volume:          state.totalVolume,
-		PrevDayVolume:   state.prevDayVolume,
-		RelativeVolume:  round2(relativeVolume),
-		GapPercent:      round2(gapPercent),
-		PreMarketVolume: state.preMarketVol,
-		VolumeSpike:     volumeSpike,
-		Catalyst:        item.Catalyst,
-		CatalystURL:     item.CatalystURL,
-		Timestamp:       item.Timestamp,
 	}
 }
