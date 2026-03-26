@@ -24,8 +24,11 @@ type symbolBar struct {
 }
 
 type symbolState struct {
-	day  string
-	bars []symbolBar
+	day             string
+	bars            []symbolBar
+	bars5           []symbolBar
+	vwapDollarFlow  float64
+	vwapTotalVolume float64
 }
 
 type structuredSetup struct {
@@ -683,7 +686,11 @@ func (s *Scanner) getOrCreateState(tick domain.Tick) *symbolState {
 	day := markethours.TradingDay(tick.Timestamp)
 	state, ok := s.state[tick.Symbol]
 	if !ok || state.day != day {
-		state = &symbolState{day: day, bars: make([]symbolBar, 0, 390)}
+		state = &symbolState{
+			day:   day,
+			bars:  make([]symbolBar, 0, 390),
+			bars5: make([]symbolBar, 0, 80),
+		}
 		s.state[tick.Symbol] = state
 	}
 	return state
@@ -699,29 +706,81 @@ func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 		volume:    tick.BarVolume,
 	}
 	if len(state.bars) > 0 && state.bars[len(state.bars)-1].timestamp.Equal(tick.Timestamp) {
+		prev := state.bars[len(state.bars)-1]
 		state.bars[len(state.bars)-1] = bar
+		s.updateVWAP(state, &prev)
+		s.updateFiveMinuteBars(state)
 	} else {
 		state.bars = append(state.bars, bar)
+		s.updateVWAP(state, nil)
+		s.updateFiveMinuteBars(state)
 	}
-	s.recomputeVWAP(state)
 }
 
-func (s *Scanner) recomputeVWAP(state *symbolState) {
-	cumulativeDollarFlow := 0.0
-	cumulativeVolume := 0.0
-	for i := range state.bars {
-		bar := &state.bars[i]
-		bar.vwap = 0
-		if bar.high <= 0 || bar.low <= 0 || bar.volume <= 0 {
-			continue
-		}
-		typical := (bar.high + bar.low + bar.close) / 3
-		cumulativeDollarFlow += typical * float64(bar.volume)
-		cumulativeVolume += float64(bar.volume)
-		if cumulativeVolume > 0 {
-			bar.vwap = cumulativeDollarFlow / cumulativeVolume
+func (s *Scanner) updateVWAP(state *symbolState, prev *symbolBar) {
+	if prev != nil && prev.high > 0 && prev.low > 0 && prev.volume > 0 {
+		prevTypical := (prev.high + prev.low + prev.close) / 3
+		state.vwapDollarFlow -= prevTypical * float64(prev.volume)
+		state.vwapTotalVolume -= float64(prev.volume)
+		if state.vwapTotalVolume < 0 {
+			state.vwapTotalVolume = 0
 		}
 	}
+
+	last := &state.bars[len(state.bars)-1]
+	last.vwap = 0
+	if last.high > 0 && last.low > 0 && last.volume > 0 {
+		typical := (last.high + last.low + last.close) / 3
+		state.vwapDollarFlow += typical * float64(last.volume)
+		state.vwapTotalVolume += float64(last.volume)
+	}
+	if state.vwapTotalVolume > 0 {
+		last.vwap = state.vwapDollarFlow / state.vwapTotalVolume
+	}
+}
+
+func (s *Scanner) updateFiveMinuteBars(state *symbolState) {
+	last := state.bars[len(state.bars)-1]
+	bucket := fiveMinuteBucketStart(last.timestamp)
+	n5 := len(state.bars5)
+	if n5 == 0 || !state.bars5[n5-1].timestamp.Equal(bucket) {
+		state.bars5 = append(state.bars5, symbolBar{
+			timestamp: bucket,
+			open:      last.open,
+			high:      last.high,
+			low:       last.low,
+			close:     last.close,
+			volume:    max(last.volume, 0),
+		})
+		return
+	}
+	state.bars5[n5-1] = buildFiveMinuteBar(state.bars, bucket)
+}
+
+func buildFiveMinuteBar(bars []symbolBar, bucket time.Time) symbolBar {
+	agg := symbolBar{timestamp: bucket}
+	started := false
+	for i := len(bars) - 1; i >= 0; i-- {
+		if !fiveMinuteBucketStart(bars[i].timestamp).Equal(bucket) {
+			if started {
+				break
+			}
+			continue
+		}
+		if !started {
+			agg.close = bars[i].close
+			started = true
+		}
+		agg.open = bars[i].open
+		if bars[i].high > agg.high {
+			agg.high = bars[i].high
+		}
+		if agg.low == 0 || (bars[i].low > 0 && bars[i].low < agg.low) {
+			agg.low = bars[i].low
+		}
+		agg.volume += max(bars[i].volume, 0)
+	}
+	return agg
 }
 
 type scanMetrics struct {
@@ -756,7 +815,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	var m scanMetrics
 	bars := state.bars
 	n := len(bars)
-	bars5 := aggregate5MinBars(bars)
+	bars5 := state.bars5
 	n5 := len(bars5)
 
 	// Returns
@@ -789,13 +848,16 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 		m.vwap = bars[n-1].vwap
 	}
 
-	// EMAs on aligned 5-minute candles
-	m.ema9 = computeEMA(bars5, 9)
-	m.emaFast = computeEMA(bars5, s.config.MarketRegimeEMAFastPeriod)
-	m.emaSlow = computeEMA(bars5, s.config.MarketRegimeEMASlowPeriod)
-
-	// MACD histogram (standard 12, 26, 9 on 5-minute candles)
-	m.macdHistogram = computeMACDHistogram(bars5, s.config.MACDFastPeriod, s.config.MACDSlowPeriod, s.config.MACDSignalPeriod)
+	// EMAs and MACD histogram on aligned 5-minute candles
+	m.ema9, m.emaFast, m.emaSlow, m.macdHistogram = computeEMAsAndMACDHistogram(
+		bars5,
+		9,
+		s.config.MarketRegimeEMAFastPeriod,
+		s.config.MarketRegimeEMASlowPeriod,
+		s.config.MACDFastPeriod,
+		s.config.MACDSlowPeriod,
+		s.config.MACDSignalPeriod,
+	)
 
 	// RSI and RSI MA Slope (14-period Wilder RSI) on aligned 5-minute candles
 	m.rsi = computeRSI(bars5, 14)
@@ -1150,6 +1212,77 @@ func fiveMinuteBucketStart(ts time.Time) time.Time {
 	et := ts.In(markethours.Location())
 	minute := et.Minute() - (et.Minute() % 5)
 	return time.Date(et.Year(), et.Month(), et.Day(), et.Hour(), minute, 0, 0, markethours.Location())
+}
+
+func computeEMAsAndMACDHistogram(
+	bars []symbolBar,
+	ema9Period, regimeFastPeriod, regimeSlowPeriod, macdFastPeriod, macdSlowPeriod, macdSignalPeriod int,
+) (ema9, regimeFast, regimeSlow, macdHistogram float64) {
+	if len(bars) == 0 {
+		return 0, 0, 0, 0
+	}
+
+	ema9 = bars[0].close
+	regimeFast = bars[0].close
+	regimeSlow = bars[0].close
+	macdFast := bars[0].close
+	macdSlow := bars[0].close
+	macdLine := 0.0
+	signal := 0.0
+
+	ema9Mult := 0.0
+	if ema9Period > 0 {
+		ema9Mult = 2.0 / float64(ema9Period+1)
+	}
+	regimeFastMult := 0.0
+	if regimeFastPeriod > 0 {
+		regimeFastMult = 2.0 / float64(regimeFastPeriod+1)
+	}
+	regimeSlowMult := 0.0
+	if regimeSlowPeriod > 0 {
+		regimeSlowMult = 2.0 / float64(regimeSlowPeriod+1)
+	}
+	macdFastMult := 0.0
+	if macdFastPeriod > 0 {
+		macdFastMult = 2.0 / float64(macdFastPeriod+1)
+	}
+	macdSlowMult := 0.0
+	if macdSlowPeriod > 0 {
+		macdSlowMult = 2.0 / float64(macdSlowPeriod+1)
+	}
+	signalMult := 0.0
+	if macdSignalPeriod > 0 {
+		signalMult = 2.0 / float64(macdSignalPeriod+1)
+	}
+
+	for i := 1; i < len(bars); i++ {
+		close := bars[i].close
+		if ema9Mult > 0 {
+			ema9 = (close-ema9)*ema9Mult + ema9
+		}
+		if regimeFastMult > 0 {
+			regimeFast = (close-regimeFast)*regimeFastMult + regimeFast
+		}
+		if regimeSlowMult > 0 {
+			regimeSlow = (close-regimeSlow)*regimeSlowMult + regimeSlow
+		}
+		if macdFastMult > 0 {
+			macdFast = (close-macdFast)*macdFastMult + macdFast
+		}
+		if macdSlowMult > 0 {
+			macdSlow = (close-macdSlow)*macdSlowMult + macdSlow
+		}
+		macdLine = macdFast - macdSlow
+		if i == 1 {
+			signal = macdLine
+			continue
+		}
+		if signalMult > 0 {
+			signal = (macdLine-signal)*signalMult + signal
+		}
+	}
+	macdHistogram = macdLine - signal
+	return ema9, regimeFast, regimeSlow, macdHistogram
 }
 
 // computeMACDHistogram returns the MACD histogram (MACD line - signal line).
