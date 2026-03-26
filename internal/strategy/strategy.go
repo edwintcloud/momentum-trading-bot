@@ -1088,6 +1088,13 @@ func rejectWeakLongStockSelection(c domain.Candidate) (string, bool) {
 		return "stock-selection-filter", true
 	}
 
+	if c.SetupType == "orb_breakout" &&
+		c.PriceVsVWAPPct > 18.0 &&
+		c.BreakoutPct < 0.25 &&
+		c.ConsolidationRangePct > 12.0 {
+		return "stock-selection-filter", true
+	}
+
 	if c.LeaderRank > 0 &&
 		c.LeaderRank > 5 &&
 		c.StockSelectionScore < 4.25 &&
@@ -1187,6 +1194,12 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 		return "hod-breakout-quality", true
 	}
 	if c.PriceVsVWAPPct < 0.8 {
+		return "hod-breakout-quality", true
+	}
+	if c.PullbackDepthPct > 0 &&
+		c.PullbackDepthPct < 2.5 &&
+		c.ConsolidationRangePct > 10.0 &&
+		c.PriceVsVWAPPct > 8.0 {
 		return "hod-breakout-quality", true
 	}
 	if c.OneMinuteReturnPct > math.Max(3.5, c.ThreeMinuteReturnPct*1.25) &&

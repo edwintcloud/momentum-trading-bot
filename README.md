@@ -1,6 +1,6 @@
 # Momentum Trading Bot
 
-A modular momentum-trading system built in Go with a React operator dashboard. The full quant stack includes intraday alpha signals (OFI, VPIN, OBV, ORB, dollar bars), VaR/CVaR risk management, GARCH volatility forecasting, mean-variance optimization, risk parity portfolio construction, VWAP/TWAP execution algorithms, an ML inference pipeline with meta-labeling and ensemble scoring, a weekly auto-optimizer with guardrails and hot-reload, backtesting with walk-forward/CPCV validation, and live paper/real trading via the Alpaca Markets API.
+A modular momentum-trading system built in Go with a React operator dashboard. The full quant stack includes intraday alpha signals (OFI, VPIN, OBV, ORB, dollar bars), VaR/CVaR risk management, GARCH volatility forecasting, mean-variance optimization, risk parity portfolio construction, VWAP/TWAP execution algorithms, an ML scoring pipeline with meta-labeling and drift detection, a weekly auto-optimizer with guardrails and hot-reload, backtesting with walk-forward/CPCV validation, and live paper/real trading via the Alpaca Markets API.
 
 > **Alpaca paid subscription required** — the bot uses the SIP data feed for real-time and historical market data.
 
@@ -45,8 +45,8 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
 │  │ Signals  │  │   ML     │  │ Regime   │  │ Backtest │  │Optimizer │     │
 │  │(OFI,VPIN│  │(Scoring +│  │(HMM +   │  │ Engine   │  │(LHS +   │     │
-│  │OBV, ORB) │  │Ensemble +│  │threshold)│  │          │  │Bayesian) │     │
-│  │          │  │MetaLabel)│  │          │  │          │  │          │     │
+│  │OBV, ORB) │  │MetaLabel+│  │threshold)│  │          │  │Bayesian) │     │
+│  │          │  │Drift Det)│  │          │  │          │  │          │     │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
 │                                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
@@ -128,12 +128,10 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - Percentage-based slippage model (liquid / mid / illiquid tiers)
 
 ### Machine Learning Pipeline
-- **Feature engineering** — 20+ causal, stationary features
-- **Fractional differentiation** for stationarity preservation
-- **Pure-Go inference engine** (linear models + gradient-boosted stumps)
+- **Feature engineering** — 17 causal features (relative volume, gap %, returns, breakout %, VWAP distance, EMA alignment, RSI, ATR, consolidation range, pullback depth, time-of-day, regime probability, MACD histogram, etc.)
+- **Rule-based scorer** — heuristic scoring engine with direction-aware feature weighting
 - **Meta-labeling** with triple barrier method (wired into strategy)
 - **ML scoring** with confidence threshold (wired into strategy)
-- **Ensemble methods** (equal weight, IR-weighted, regime-conditional)
 - **Concept drift detection** (PSI + rolling Sharpe decay)
 
 ### Trade Management
@@ -165,7 +163,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - Latin Hypercube Sampling (LHS) grid search
 - Bayesian optimization with Gaussian Process surrogate + Expected Improvement
 - Sensitivity analysis
-- Four strategy profiles: `baseline_breakout`, `high_conviction_breakout`, `continuation_breakout`, `momentum_cameron`
+- Strategy profiles: `baseline_breakout` (default), with support for custom profiles
 - Optimizer artifact output with promotion workflow (paper → live)
 
 ### Auto-Optimizer
@@ -346,8 +344,8 @@ go run . optimize -as-of 2025-06-01 -start 2025-01-01 -max-symbols 200
 # Auto-optimizer (runs on schedule)
 go run . auto-optimize -profile profiles/default.json
 
-# Clear bar cache
-go run . backtest -start 2025-01-01 -clear-cache
+# Weekly rolling backtests (Python helper)
+python3 run_weekly_backtests.py -start 2025-01-01 -end 2025-06-01
 ```
 
 > The backtest and optimize commands automatically fetch historical data from Alpaca. The `-symbols` flag is **not** required — the system discovers symbols automatically. Data is cached to `.cache/bars/` for fast subsequent runs.
@@ -393,18 +391,15 @@ Control-plane access:
 
 ### Trading Profile
 
-The bot uses versioned JSON trading profiles stored in `profiles/`. Four strategy profiles are supported:
+The bot uses versioned JSON trading profiles stored in `profiles/`:
 
 | Profile | Description |
 |---|---|
 | `baseline_breakout` | Default balanced profile |
-| `high_conviction_breakout` | Higher conviction, fewer trades |
-| `continuation_breakout` | Continuation-focused entries |
-| `momentum_cameron` | Ross Cameron-inspired momentum day trading (long-only, strict filters) |
 
 - Profile loaded from `TRADING_PROFILE_PATH` env var or bundled `profiles/default.json`
 - `TuneTradingConfig()` fills any missing fields with sensible defaults based on broker equity and plan limits
-- See `profiles/default.json` for the full ~125 config fields
+- See `profiles/default.json` for the full config fields (~200 fields across Scanner, Strategy, Risk, Execution, Portfolio, Backtest, Alpha, ML, and Regime sections)
 
 ### Key Config Categories
 
@@ -416,7 +411,7 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Four strateg
 
 **Scanner Quality** — `MaxDistanceFromHighPct`, `VolumeOnPullbackEnabled`
 
-**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range), `HODMomoMinMinutesSinceOpen` (5 min). Enabled in `momentum_cameron` profile.
+**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range), `HODMomoMinMinutesSinceOpen` (5 min)
 
 **Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor), `MaxVolEstimate` (5.0 = cap annualized vol at 500%)
 
@@ -426,31 +421,6 @@ The bot uses versioned JSON trading profiles stored in `profiles/`. Four strateg
 
 See `profiles/default.json` for the complete field reference.
 
-### Momentum Cameron Profile
-
-The `momentum_cameron` profile implements Ross Cameron's momentum day trading methodology combined with the bot's quant infrastructure. It is designed for small accounts ($25k) focused on high-probability intraday momentum trades.
-
-**Key differences from `baseline_breakout`:**
-- **Strict stock selection** — MaxPrice $20 (vs $200), MinRelativeVolume 5x (vs 2x), MinGapPercent 5% (vs 3%), float filter (500k–20M shares), MinPrevDayVolume 500K (rejects thinly traded stocks)
-- **Long-only** — shorts disabled; Cameron's edge is exclusively long-biased
-- **Morning-only** — entry deadline 120 minutes after open; midday score multiplier 2x
-- **Conservative risk** — 1% risk per trade, max 6 trades/day, max 3 open positions, 2:1 minimum R:R requirement
-- **Tighter exits** — Breakout target 2.5R (vs 4.0R), faster trailing stops, partial exits at 1R (50%) and 2R (25%)
-- **HOD Momo scanner enabled** — catches intraday momentum runners that gap small but run 50-100%+ from open (e.g., ANNA 2026-03-20), with pullback entries up to 10% from HOD
-- **Vol-target sizing disabled** — momentum trading IS about volatile stocks; risk-per-trade % and ATR stops control risk instead
-- **Position size floor** — `MinPositionNotionalPct=2%` prevents vol estimates from crushing position sizes to near-zero
-- **DynamicRiskBudget & VaR disabled** — these portfolio-level risk features fight against momentum's inherent volatility; ATR-based stops and risk-per-trade % control risk instead
-- **Momentum signals enabled** — OFI, VPIN, ORB, OBV divergence for order flow confirmation
-- **Portfolio construction disabled** — MVO, risk parity, factor-neutral off (not applicable for 1–3 position momentum)
-- **ML disabled** — until models are trained on momentum-specific data
-
-**Usage:**
-```bash
-TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
-```
-
-**Recommended for:** small accounts ($25k), momentum day trading, paper trading validation before live deployment.
-
 ## Project Structure
 
 ```
@@ -458,11 +428,15 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 ├── backtest_command.go              # Backtest CLI command
 ├── backtest_dataset_iterator.go     # Streaming bar iterator
 ├── backtest_fetch.go                # Alpaca historical data fetcher
-├── historical_cache_codec.go        # Bar cache read/write
+├── historical_cache_codec.go        # Bar cache read/write (binary+gzip codec)
+├── instrument_universe.go           # ETF/derivative filtering for scanner universe
 ├── profile_runtime.go               # Runtime profile management
+├── run_weekly_backtests.py          # Weekly rolling backtest helper (Python)
 ├── internal/
 │   ├── alpaca/                      # Alpaca Markets integration
 │   │   ├── client.go                # REST client + snapshot API
+│   │   ├── float.go                 # Float data store (CSV loader)
+│   │   ├── float_sec.go             # SEC EDGAR float data fetching
 │   │   ├── historical.go            # Historical bar fetching
 │   │   └── stream.go                # Real-time streaming
 │   ├── analytics/
@@ -486,7 +460,7 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 │   ├── config/                      # Configuration
 │   │   ├── app.go                   # Environment config
 │   │   ├── backtest.go              # Backtest run config
-│   │   ├── config.go                # TradingConfig (~125 fields)
+│   │   ├── config.go                # TradingConfig (~200 fields)
 │   │   ├── profile.go               # Profile loading/saving
 │   │   ├── tuning.go                # Auto-tuning defaults
 │   │   └── watcher.go               # File watcher for hot-reload
@@ -496,6 +470,7 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 │   │   └── regime.go                # Regime types
 │   ├── execution/                   # Order execution
 │   │   ├── execution.go             # Alpaca order execution
+│   │   ├── paper.go                 # Paper broker for backtests (OHLC fills + slippage)
 │   │   ├── impact.go                # Almgren-Chriss impact model
 │   │   ├── vwap.go                  # VWAP execution algorithm
 │   │   ├── twap.go                  # TWAP execution algorithm
@@ -504,18 +479,16 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 │   ├── market/normalizer.go         # Tick normalization + snapshot seeding
 │   ├── markethours/hours.go         # ET market hours + holidays
 │   ├── ml/                          # Machine learning pipeline
-│   │   ├── features.go              # Feature engineering (20+ features)
-│   │   ├── fracdiff.go              # Fractional differentiation
-│   │   ├── training.go              # Pure-Go inference engine
-│   │   ├── scorer.go                # ML scoring with confidence threshold
+│   │   ├── scorer.go                # ML scoring (features, rule-based scorer, stub scorer)
 │   │   ├── metalabel.go             # Meta-labeling (triple barrier)
-│   │   ├── ensemble.go              # Ensemble methods (equal/IR/regime)
 │   │   └── drift.go                 # Concept drift detection (PSI + Sharpe)
 │   ├── optimizer/                   # Parameter optimization
 │   │   ├── optimizer.go             # LHS grid search + orchestration
 │   │   ├── bayesian.go              # Bayesian optimization (GP + EI)
 │   │   ├── sensitivity.go           # Sensitivity analysis
 │   │   └── artifacts.go             # Optimizer output artifacts
+│   ├── pipeline/
+│   │   └── pipeline.go              # Channel-based trading pipeline (stages: normalize → scan → strategy → risk → execute)
 │   ├── portfolio/                   # Portfolio management & construction
 │   │   ├── manager.go               # Position tracking & PnL
 │   │   ├── constructor.go           # Portfolio construction orchestrator
@@ -557,9 +530,12 @@ TRADING_PROFILE_PATH=profiles/momentum_cameron.json go run . live
 ├── docs/
 │   └── quant_research_findings.md   # Quantitative research document
 ├── web/                             # React dashboard (Vite + Tailwind)
-├── profiles/default.json            # Default trading profile (~125 config fields)
-├── Dockerfile                       # Multi-stage build (Node → Go → Alpine)
+├── logs/
+│   └── executions.jsonl             # Trade execution log
+├── profiles/default.json            # Default trading profile (~200 config fields)
+├── Dockerfile                       # Multi-stage build (Node 22 → Go 1.24 → Alpine 3.20)
 ├── docker-compose.yml               # PostgreSQL + bot + auto-optimizer
+├── go.mod                           # Go module (gorilla/websocket, godotenv, lib/pq)
 └── .env.example                     # Environment template
 ```
 
