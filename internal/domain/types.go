@@ -34,23 +34,40 @@ type IndicatorSnapshot struct {
 
 // Tick is a normalized market data event shared across the trading pipeline.
 type Tick struct {
-	Symbol          string    `json:"symbol"`
-	Price           float64   `json:"price"`
-	BarOpen         float64   `json:"barOpen"`
-	BarHigh         float64   `json:"barHigh"`
-	BarLow          float64   `json:"barLow"`
-	Open            float64   `json:"open"`
-	HighOfDay       float64   `json:"highOfDay"`
-	Volume          int64     `json:"volume"`
-	RelativeVolume  float64   `json:"relativeVolume"`
-	GapPercent      float64   `json:"gapPercent"`
-	PreMarketVolume int64     `json:"premarketVolume"`
-	VolumeSpike     bool      `json:"volumeSpike"`
-	Float           int64     `json:"float"`         // shares available to trade (0 = unknown)
-	PrevDayVolume   int64     `json:"prevDayVolume"` // previous day's total volume (0 = unknown)
-	Catalyst        string    `json:"catalyst"`
-	CatalystURL     string    `json:"catalystUrl"`
-	Timestamp       time.Time `json:"timestamp"`
+	Symbol           string    `json:"symbol"`
+	Price            float64   `json:"price"`
+	BarOpen          float64   `json:"barOpen"`
+	BarHigh          float64   `json:"barHigh"`
+	BarLow           float64   `json:"barLow"`
+	Open             float64   `json:"open"`
+	HighOfDay        float64   `json:"highOfDay"`
+	Volume           int64     `json:"volume"`
+	RelativeVolume   float64   `json:"relativeVolume"`
+	GapPercent       float64   `json:"gapPercent"`
+	PreMarketVolume  int64     `json:"premarketVolume"`
+	VolumeSpike      bool      `json:"volumeSpike"`
+	Float            int64     `json:"float"`         // shares available to trade (0 = unknown)
+	PrevDayVolume    int64     `json:"prevDayVolume"` // previous day's total volume (0 = unknown)
+	Catalyst         string    `json:"catalyst"`
+	CatalystURL      string    `json:"catalystUrl"`
+	Timestamp        time.Time `json:"timestamp"`
+	FiveMinuteVolume int64     `json:"fiveMinuteVolume"`
+}
+
+// Bar is a unified OHLCV bar used across live trading, backtest, and optimizer.
+// All bar sources (Alpaca stream, historical CSV, etc.) convert into this type
+// before feeding the normalizer.
+type Bar struct {
+	Symbol      string
+	Timestamp   time.Time
+	Open        float64
+	High        float64
+	Low         float64
+	Close       float64
+	Volume      int64
+	PrevClose   float64 // optional; overrides tracked previousClose on day flip (0 = use tracked state)
+	Catalyst    string  // optional metadata
+	CatalystURL string  // optional metadata
 }
 
 // Candidate is a stock that passed the scanner filters.
@@ -128,25 +145,25 @@ type TradeSignal struct {
 
 // OrderRequest is an execution-ready order approved by risk checks.
 type OrderRequest struct {
-	Symbol           string    `json:"symbol"`
-	Side             string    `json:"side"`
-	Intent           string    `json:"intent"`
-	PositionSide     string    `json:"positionSide"`
-	Price            float64   `json:"price"`
-	Quantity         int64     `json:"quantity"`
-	StopPrice        float64   `json:"stopPrice"`
-	RiskPerShare     float64   `json:"riskPerShare"`
-	EntryATR         float64   `json:"entryAtr"`
-	SetupType        string    `json:"setupType"`
-	Reason           string    `json:"reason"`
-	OrderType          string  `json:"orderType"` // "limit" (default) or "market"
-	SlippageMultiplier float64 `json:"slippageMultiplier"` // multiplier for limit price slippage (1.0 = normal, 2.0 = 2x wider, etc.)
-	MarketRegime       string  `json:"marketRegime"`
-	RegimeConfidence float64   `json:"regimeConfidence"`
-	Playbook         string    `json:"playbook"`
-	Sector           string    `json:"sector"`
-	AvgDailyVolume   float64   `json:"avgDailyVolume"`
-	Timestamp        time.Time `json:"timestamp"`
+	Symbol             string    `json:"symbol"`
+	Side               string    `json:"side"`
+	Intent             string    `json:"intent"`
+	PositionSide       string    `json:"positionSide"`
+	Price              float64   `json:"price"`
+	Quantity           int64     `json:"quantity"`
+	StopPrice          float64   `json:"stopPrice"`
+	RiskPerShare       float64   `json:"riskPerShare"`
+	EntryATR           float64   `json:"entryAtr"`
+	SetupType          string    `json:"setupType"`
+	Reason             string    `json:"reason"`
+	OrderType          string    `json:"orderType"`          // "limit" (default) or "market"
+	SlippageMultiplier float64   `json:"slippageMultiplier"` // multiplier for limit price slippage (1.0 = normal, 2.0 = 2x wider, etc.)
+	MarketRegime       string    `json:"marketRegime"`
+	RegimeConfidence   float64   `json:"regimeConfidence"`
+	Playbook           string    `json:"playbook"`
+	Sector             string    `json:"sector"`
+	AvgDailyVolume     float64   `json:"avgDailyVolume"`
+	Timestamp          time.Time `json:"timestamp"`
 }
 
 // ExecutionReport represents a broker-confirmed fill.
@@ -207,6 +224,8 @@ type ClosedTrade struct {
 	ExitPrice        float64   `json:"exitPrice"`
 	PnL              float64   `json:"pnl"`
 	RMultiple        float64   `json:"rMultiple"`
+	MFER             float64   `json:"mfeR"`  // max favorable excursion in R-multiples
+	MAER             float64   `json:"maeR"`  // max adverse excursion in R-multiples
 	SetupType        string    `json:"setupType"`
 	OpenedAt         time.Time `json:"openedAt"`
 	ClosedAt         time.Time `json:"closedAt"`

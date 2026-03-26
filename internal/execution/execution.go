@@ -20,18 +20,49 @@ type BrokerClient interface {
 
 // Engine submits approved orders to the broker and polls for fills.
 type Engine struct {
-	broker   BrokerClient
-	runtime  *runtime.State
-	recorder domain.EventRecorder
+	broker       BrokerClient
+	runtime      *runtime.State
+	recorder     domain.EventRecorder
+	pollInterval time.Duration
+	pollTimeout  time.Duration
+	nowFunc      func() time.Time
+}
+
+// EngineOption configures optional Engine behavior.
+type EngineOption func(*Engine)
+
+// WithPollInterval sets the polling interval for order status checks.
+// Default is 500ms. Use a smaller value (e.g. 1ms) for paper/backtest brokers.
+func WithPollInterval(d time.Duration) EngineOption {
+	return func(e *Engine) { e.pollInterval = d }
+}
+
+// WithPollTimeout sets the maximum time to wait for an order fill before cancelling.
+// Default is 30s.
+func WithPollTimeout(d time.Duration) EngineOption {
+	return func(e *Engine) { e.pollTimeout = d }
+}
+
+// WithNowFunc overrides the clock used for FilledAt timestamps.
+// Default is time.Now. Use this for backtest simulated time.
+func WithNowFunc(fn func() time.Time) EngineOption {
+	return func(e *Engine) { e.nowFunc = fn }
 }
 
 // NewEngine creates an execution engine.
-func NewEngine(broker BrokerClient, runtimeState *runtime.State, recorder domain.EventRecorder) *Engine {
-	return &Engine{
-		broker:   broker,
-		runtime:  runtimeState,
-		recorder: recorder,
+func NewEngine(broker BrokerClient, runtimeState *runtime.State, recorder domain.EventRecorder, opts ...EngineOption) *Engine {
+	e := &Engine{
+		broker:       broker,
+		runtime:      runtimeState,
+		recorder:     recorder,
+		pollInterval: 500 * time.Millisecond,
+		pollTimeout:  30 * time.Second,
+		nowFunc:      time.Now,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // Start processes order requests from the pipeline.
@@ -125,11 +156,10 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 		return false
 	}
 
-	pollTimeout := 30 * time.Second
-	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	pollCtx, cancel := context.WithTimeout(ctx, e.pollTimeout)
 	defer cancel()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(e.pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -165,7 +195,7 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 					Playbook:         order.Playbook,
 					BrokerOrderID:    orderID,
 					BrokerStatus:     finalStatus,
-					FilledAt:         time.Now(),
+					FilledAt:         e.nowFunc(),
 				}
 				if e.recorder != nil {
 					e.recorder.RecordExecution(report)
@@ -202,7 +232,7 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 					Playbook:         order.Playbook,
 					BrokerOrderID:    orderID,
 					BrokerStatus:     status,
-					FilledAt:         time.Now(),
+					FilledAt:         e.nowFunc(),
 				}
 				if e.recorder != nil {
 					e.recorder.RecordExecution(report)

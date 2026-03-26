@@ -19,7 +19,6 @@ type AppConfig struct {
 	ControlPlaneAuthToken    string
 	ListenAddr               string
 	TradingProfilePath       string
-	FloatDataURL             string
 }
 
 // LoadAppConfig reads configuration from environment variables.
@@ -33,7 +32,6 @@ func LoadAppConfig() (AppConfig, error) {
 		ControlPlaneAuthToken:    strings.TrimSpace(os.Getenv("CONTROL_PLANE_AUTH_TOKEN")),
 		ListenAddr:               envString("LISTEN_ADDR", ":8080"),
 		TradingProfilePath:       strings.TrimSpace(os.Getenv("TRADING_PROFILE_PATH")),
-		FloatDataURL:             strings.TrimSpace(os.Getenv("FLOAT_DATA_URL")),
 	}
 
 	if symbols := strings.TrimSpace(os.Getenv("ALPACA_SYMBOLS")); symbols != "" {

@@ -54,6 +54,36 @@ func (m *Manager) SetDriftDetector(dd *ml.DriftDetector) {
 	m.driftDetector = dd
 }
 
+// computeExcursion calculates MFE and MAE in R-multiples from the position's
+// tracked high and low prices relative to entry and risk.
+func computeExcursion(pos domain.Position) (mfeR, maeR float64) {
+	if pos.RiskPerShare <= 0 || pos.AvgPrice <= 0 {
+		return 0, 0
+	}
+	if domain.IsLong(pos.Side) {
+		if pos.HighestPrice > 0 {
+			mfeR = (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+		}
+		if pos.LowestPrice > 0 {
+			maeR = (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
+		}
+	} else {
+		if pos.LowestPrice > 0 {
+			mfeR = (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
+		}
+		if pos.HighestPrice > 0 {
+			maeR = (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+		}
+	}
+	if mfeR < 0 {
+		mfeR = 0
+	}
+	if maeR < 0 {
+		maeR = 0
+	}
+	return mfeR, maeR
+}
+
 // recordDriftReturn feeds a closed trade's return to the drift detector.
 // Must be called with m.mu held.
 func (m *Manager) recordDriftReturn(pnl, entryPrice float64, quantity int64) {
@@ -174,6 +204,8 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 		rMultiple = pnl / (pos.RiskPerShare * float64(pos.Quantity))
 	}
 
+	mfeR, maeR := computeExcursion(pos)
+
 	trade := domain.ClosedTrade{
 		Symbol:           pos.Symbol,
 		Side:             pos.Side,
@@ -182,6 +214,8 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 		ExitPrice:        report.Price,
 		PnL:              pnl,
 		RMultiple:        rMultiple,
+		MFER:             mfeR,
+		MAER:             maeR,
 		SetupType:        pos.SetupType,
 		OpenedAt:         pos.OpenedAt,
 		ClosedAt:         report.FilledAt,
@@ -493,6 +527,8 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 		rMultiple = pnl / (pos.RiskPerShare * float64(exitQty))
 	}
 
+	mfeR, maeR := computeExcursion(pos)
+
 	trade := domain.ClosedTrade{
 		Symbol:           pos.Symbol,
 		Side:             pos.Side,
@@ -501,6 +537,8 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 		ExitPrice:        report.Price,
 		PnL:              pnl,
 		RMultiple:        rMultiple,
+		MFER:             mfeR,
+		MAER:             maeR,
 		SetupType:        pos.SetupType,
 		OpenedAt:         pos.OpenedAt,
 		ClosedAt:         report.FilledAt,
