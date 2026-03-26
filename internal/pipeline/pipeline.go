@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
@@ -74,6 +75,11 @@ type Pipeline struct {
 	wg         sync.WaitGroup
 }
 
+type deterministicPendingOrder struct {
+	orderID string
+	order   domain.OrderRequest
+}
+
 // New creates a pipeline but does not start it.
 func New(cfg Config) *Pipeline {
 	return &Pipeline{
@@ -112,6 +118,10 @@ func (p *Pipeline) hasDiagnostics() bool {
 // It returns immediately; call Close() then Wait() to drain.
 func (p *Pipeline) Start(ctx context.Context) {
 	diagnostics := p.hasDiagnostics()
+	if p.cfg.Deterministic {
+		p.startDeterministic(ctx, diagnostics)
+		return
+	}
 	tickCh := make(chan domain.Tick, 1024)
 	candidateCh := make(chan domain.Candidate, 256)
 	signalCh := make(chan domain.TradeSignal, 64)
@@ -248,6 +258,234 @@ func (p *Pipeline) sendTick(ctx context.Context, ch chan domain.Tick, tick domai
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func (p *Pipeline) startDeterministic(ctx context.Context, diagnostics bool) {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		pendingEntries := make([]deterministicPendingOrder, 0, 16)
+
+		barCh := p.barCh
+		closeAllCh := p.closeAllCh
+
+		for barCh != nil || closeAllCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case order, ok := <-closeAllCh:
+				if !ok {
+					closeAllCh = nil
+					continue
+				}
+				if !p.processDeterministicOrder(ctx, order, time.Time{}, &pendingEntries) {
+					return
+				}
+			case bar, ok := <-barCh:
+				if !ok {
+					barCh = nil
+					continue
+				}
+				if !p.processDeterministicBar(ctx, bar, diagnostics, &pendingEntries) {
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (p *Pipeline) processDeterministicBar(
+	ctx context.Context,
+	bar domain.Bar,
+	diagnostics bool,
+	pendingEntries *[]deterministicPendingOrder,
+) bool {
+	tick := p.cfg.Normalizer.Normalize(bar)
+	if p.cfg.FloatLookup != nil {
+		tick.Float = p.cfg.FloatLookup(tick.Symbol)
+	}
+	if p.cfg.OnTick != nil {
+		p.cfg.OnTick(tick, bar)
+	}
+	if !p.resolveDeterministicEntries(ctx, tick.Timestamp, pendingEntries) {
+		return false
+	}
+
+	if p.cfg.RegimeTracker != nil && p.cfg.RegimeTracker.IsBenchmark(tick.Symbol) {
+		p.cfg.RegimeTracker.UpdateTick(tick)
+	}
+	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
+	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
+	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
+	p.cfg.VolEstimator.UpdatePrice(tick.Symbol, tick.Price)
+	p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
+	if p.cfg.OnTickFanOut != nil {
+		p.cfg.OnTickFanOut(tick)
+	}
+
+	if p.cfg.TickFilter != nil && !p.cfg.TickFilter(tick) {
+		return true
+	}
+
+	if diagnostics {
+		candidate, ok, reason := p.cfg.Scanner.EvaluateTickDetailed(tick)
+		if p.cfg.OnScanResult != nil {
+			p.cfg.OnScanResult(tick, candidate, ok, reason)
+		}
+		if ok {
+			p.cfg.Runtime.AddCandidate(candidate)
+			decision := p.cfg.Strategy.EvaluateCandidateDecision(candidate)
+			if p.cfg.OnEntryDecision != nil {
+				p.cfg.OnEntryDecision(candidate, decision)
+			}
+			if decision.Emit && !p.processDeterministicSignal(ctx, decision.Signal, tick.Timestamp, pendingEntries) {
+				return false
+			}
+		}
+
+		signal, shouldExit, exitReason := p.cfg.Strategy.EvaluateExitDetailed(tick)
+		if p.cfg.OnExitCheck != nil {
+			p.cfg.OnExitCheck(tick, signal, shouldExit, exitReason)
+		}
+		if shouldExit && !p.processDeterministicSignal(ctx, signal, tick.Timestamp, pendingEntries) {
+			return false
+		}
+		return true
+	}
+
+	candidate, ok := p.cfg.Scanner.Evaluate(tick)
+	if ok {
+		p.cfg.Runtime.AddCandidate(candidate)
+		signal, shouldEmit := p.cfg.Strategy.EvaluateCandidate(candidate)
+		if shouldEmit && !p.processDeterministicSignal(ctx, signal, tick.Timestamp, pendingEntries) {
+			return false
+		}
+	}
+
+	signal, shouldExit := p.cfg.Strategy.EvaluateExit(tick)
+	if shouldExit && !p.processDeterministicSignal(ctx, signal, tick.Timestamp, pendingEntries) {
+		return false
+	}
+
+	return true
+}
+
+func (p *Pipeline) processDeterministicSignal(
+	ctx context.Context,
+	signal domain.TradeSignal,
+	fillTime time.Time,
+	pendingEntries *[]deterministicPendingOrder,
+) bool {
+	order, approved, reason := p.cfg.RiskEngine.Evaluate(signal)
+	if p.cfg.OnRiskDecision != nil {
+		p.cfg.OnRiskDecision(signal, order, approved, reason)
+	}
+	if !approved {
+		return true
+	}
+	return p.processDeterministicOrder(ctx, order, fillTime, pendingEntries)
+}
+
+func (p *Pipeline) processDeterministicOrder(
+	ctx context.Context,
+	order domain.OrderRequest,
+	fillTime time.Time,
+	pendingEntries *[]deterministicPendingOrder,
+) bool {
+	p.cfg.Portfolio.MarkPendingOrder(order)
+	orderID, err := p.cfg.Broker.SubmitOrder(ctx, order)
+	if err != nil {
+		p.cfg.Portfolio.ClearPendingOrder(order.Symbol)
+		log.Printf("pipeline/execution: submit failed for %s %s: %v", order.Symbol, order.Side, err)
+		return true
+	}
+
+	if domain.IsOpeningIntent(order.Intent) {
+		*pendingEntries = append(*pendingEntries, deterministicPendingOrder{
+			orderID: orderID,
+			order:   order,
+		})
+		return true
+	}
+
+	fill, filled := p.pollDeterministicOrder(ctx, order, orderID, fillTime)
+	if !filled {
+		p.cfg.Portfolio.ClearPendingOrder(order.Symbol)
+		return true
+	}
+	p.cfg.Portfolio.ApplyExecution(fill)
+	if p.cfg.Recorder != nil {
+		p.cfg.Recorder.RecordExecution(fill)
+	}
+	return true
+}
+
+func (p *Pipeline) resolveDeterministicEntries(
+	ctx context.Context,
+	fillTime time.Time,
+	pendingEntries *[]deterministicPendingOrder,
+) bool {
+	if len(*pendingEntries) == 0 {
+		return true
+	}
+
+	active := (*pendingEntries)[:0]
+	for _, pending := range *pendingEntries {
+		fill, filled := p.pollDeterministicOrder(ctx, pending.order, pending.orderID, fillTime)
+		if filled {
+			p.cfg.Portfolio.ApplyExecution(fill)
+			if p.cfg.Recorder != nil {
+				p.cfg.Recorder.RecordExecution(fill)
+			}
+			continue
+		}
+
+		status, _, err := p.cfg.Broker.PollOrderStatus(ctx, pending.orderID)
+		if err != nil || status == "new" {
+			active = append(active, pending)
+			continue
+		}
+
+		p.cfg.Portfolio.ClearPendingOrder(pending.order.Symbol)
+	}
+	*pendingEntries = active
+	return true
+}
+
+func (p *Pipeline) pollDeterministicOrder(
+	ctx context.Context,
+	order domain.OrderRequest,
+	orderID string,
+	fillTime time.Time,
+) (domain.ExecutionReport, bool) {
+	status, fillPrice, err := p.cfg.Broker.PollOrderStatus(ctx, orderID)
+	if err != nil {
+		log.Printf("pipeline/execution: poll failed for %s %s orderID=%s: %v", order.Symbol, order.Side, orderID, err)
+		return domain.ExecutionReport{}, false
+	}
+	if status != "filled" {
+		return domain.ExecutionReport{}, false
+	}
+	return domain.ExecutionReport{
+		Symbol:           order.Symbol,
+		Side:             order.Side,
+		Intent:           order.Intent,
+		PositionSide:     order.PositionSide,
+		Price:            fillPrice,
+		Quantity:         order.Quantity,
+		StopPrice:        order.StopPrice,
+		RiskPerShare:     order.RiskPerShare,
+		EntryATR:         order.EntryATR,
+		SetupType:        order.SetupType,
+		Reason:           order.Reason,
+		MarketRegime:     order.MarketRegime,
+		RegimeConfidence: order.RegimeConfidence,
+		Playbook:         order.Playbook,
+		Sector:           order.Sector,
+		BrokerOrderID:    orderID,
+		BrokerStatus:     status,
+		FilledAt:         fillTime,
+	}, true
 }
 
 // startProductionStages uses component Start() methods (efficient, no diagnostic overhead).
