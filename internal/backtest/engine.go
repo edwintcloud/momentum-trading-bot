@@ -26,15 +26,16 @@ import (
 
 // RunConfig controls a historical simulation.
 type RunConfig struct {
-	DataPath     string
-	Bars         []InputBar
-	Iterator     InputBarIterator
-	IteratorFn   IteratorFactory // factory for creating bounded iterators (streaming mode)
-	Start        time.Time
-	End          time.Time
-	Recorder     domain.EventRecorder
-	DebugSymbols []string           // symbols to trace per-bar through scanner/strategy
-	FloatStore   *alpaca.FloatStore // optional float data for tick enrichment
+	DataPath       string
+	Bars           []InputBar
+	Iterator       InputBarIterator
+	IteratorFn     IteratorFactory // factory for creating bounded iterators (streaming mode)
+	Start          time.Time
+	End            time.Time
+	Recorder       domain.EventRecorder
+	DebugSymbols   []string           // symbols to trace per-bar through scanner/strategy
+	FloatStore     *alpaca.FloatStore // optional float data for tick enrichment
+	BlockedSymbols map[string]string  // optional hard blocklist for ETF/derivative instruments
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -135,6 +136,7 @@ type EntrySample struct {
 	AllowedDistanceHighPct float64
 	OneMinuteReturnPct     float64
 	ThreeMinuteReturnPct   float64
+	FiveMinuteReturnPct    float64
 	VolumeRate             float64
 	VolumeLeaderPct        float64
 	LeaderRank             int
@@ -204,6 +206,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		regimeTracker = regime.NewTracker(cfg, runtimeState)
 	}
 	scan := scanner.NewScanner(cfg, runtimeState)
+	scan.SetBlockedSymbols(runCfg.BlockedSymbols)
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState)
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
@@ -234,10 +237,12 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		EngineOptions: []execution.EngineOption{
 			execution.WithPollInterval(1 * time.Millisecond),
 			execution.WithPollTimeout(5 * time.Second),
+			execution.WithSynchronous(true),
 			execution.WithNowFunc(func() time.Time {
 				return time.Unix(0, simTimeNano.Load())
 			}),
 		},
+		Deterministic: true,
 		OnTick: func(tick domain.Tick, domBar domain.Bar) {
 			broker.UpdateBar(domBar)
 			simTimeNano.Store(domBar.Timestamp.UnixNano())
@@ -373,7 +378,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		return Result{}, fmt.Errorf("no bars found for requested backtest window")
 	}
 
-	closedTrades := book.GetClosedTrades()
+	closedTrades := book.GetTradeHistory()
 	for _, trade := range closedTrades {
 		diagnostics.ByRegime[normalizeKey(trade.MarketRegime)] = updateBreakdown(diagnostics.ByRegime[normalizeKey(trade.MarketRegime)], trade)
 		diagnostics.BySetup[normalizeKey(trade.SetupType)] = updateBreakdown(diagnostics.BySetup[normalizeKey(trade.SetupType)], trade)
@@ -661,6 +666,7 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		AllowedDistanceHighPct: round2(decision.AllowedDistanceHighPct),
 		OneMinuteReturnPct:     round2(candidate.OneMinuteReturnPct),
 		ThreeMinuteReturnPct:   round2(candidate.ThreeMinuteReturnPct),
+		FiveMinuteReturnPct:    round2(candidate.FiveMinuteReturnPct),
 		VolumeRate:             round2(candidate.VolumeRate),
 		VolumeLeaderPct:        candidate.VolumeLeaderPct,
 		LeaderRank:             candidate.LeaderRank,

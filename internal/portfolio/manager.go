@@ -16,9 +16,12 @@ type Manager struct {
 	config        config.TradingConfig
 	mu            sync.RWMutex
 	positions     map[string]domain.Position
+	pendingOrders map[string]domain.OrderRequest
 	closedTrades  []domain.ClosedTrade
+	tradeHistory  []domain.ClosedTrade
 	dayKey        string
 	dayPnL        float64
+	realizedPnL   float64
 	brokerEquity  float64
 	tradesToday   int
 	entriesToday  int
@@ -39,7 +42,9 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 	return &Manager{
 		config:        cfg,
 		positions:     make(map[string]domain.Position),
+		pendingOrders: make(map[string]domain.OrderRequest),
 		closedTrades:  make([]domain.ClosedTrade, 0),
+		tradeHistory:  make([]domain.ClosedTrade, 0),
 		dayKey:        markethours.TradingDay(time.Now()),
 		recorder:      recorder,
 		highWaterMark: cfg.StartingCapital,
@@ -125,6 +130,15 @@ func (m *Manager) GetClosedTrades() []domain.ClosedTrade {
 	defer m.mu.RUnlock()
 	out := make([]domain.ClosedTrade, len(m.closedTrades))
 	copy(out, m.closedTrades)
+	return out
+}
+
+// GetTradeHistory returns all closed trades recorded since the manager was created.
+func (m *Manager) GetTradeHistory() []domain.ClosedTrade {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]domain.ClosedTrade, len(m.tradeHistory))
+	copy(out, m.tradeHistory)
 	return out
 }
 
@@ -227,7 +241,9 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)
+	m.tradeHistory = append(m.tradeHistory, trade)
 	m.dayPnL += pnl
+	m.realizedPnL += pnl
 	m.tradesToday++
 	delete(m.positions, pos.Symbol)
 
@@ -268,8 +284,13 @@ func (m *Manager) SeedClosedTrades(trades []domain.ClosedTrade) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closedTrades = append(m.closedTrades, trades...)
-	// Recompute day PnL from all closed trades.
+	m.tradeHistory = append(m.tradeHistory, trades...)
+	// Recompute realized/day PnL from the restored trades.
 	m.dayPnL = 0
+	m.realizedPnL = 0
+	for _, t := range m.tradeHistory {
+		m.realizedPnL += t.PnL
+	}
 	for _, t := range m.closedTrades {
 		m.dayPnL += t.PnL
 	}
@@ -387,9 +408,9 @@ func (m *Manager) StatusSnapshot() domain.StatusSnapshot {
 		StartingCapital:  m.config.StartingCapital,
 		BrokerEquity:     m.brokerEquity,
 		DayPnL:           m.dayPnL,
-		RealizedPnL:      m.dayPnL,
+		RealizedPnL:      m.realizedPnL,
 		UnrealizedPnL:    unrealized,
-		NetPnL:           m.dayPnL + unrealized,
+		NetPnL:           m.realizedPnL + unrealized,
 		Exposure:         exposure,
 		LongExposure:     longExposure,
 		ShortExposure:    shortExposure,
@@ -409,7 +430,7 @@ func (m *Manager) PerformanceMetrics() domain.PerformanceMetrics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if len(m.closedTrades) == 0 {
+	if len(m.tradeHistory) == 0 {
 		return domain.PerformanceMetrics{}
 	}
 
@@ -419,7 +440,7 @@ func (m *Manager) PerformanceMetrics() domain.PerformanceMetrics {
 	var largest, smallest float64
 	var holdTime int64
 
-	for _, t := range m.closedTrades {
+	for _, t := range m.tradeHistory {
 		totalR += t.RMultiple
 		holdTime += t.ClosedAt.Sub(t.OpenedAt).Milliseconds()
 		if t.PnL >= 0 {
@@ -437,7 +458,7 @@ func (m *Manager) PerformanceMetrics() domain.PerformanceMetrics {
 		}
 	}
 
-	n := len(m.closedTrades)
+	n := len(m.tradeHistory)
 	avgWin := float64(0)
 	avgLoss := float64(0)
 	if wins > 0 {
@@ -550,7 +571,9 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)
+	m.tradeHistory = append(m.tradeHistory, trade)
 	m.dayPnL += pnl
+	m.realizedPnL += pnl
 
 	pos.Quantity -= exitQty
 	pos.PartialsExecuted++
@@ -571,6 +594,7 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 
 // ApplyExecution processes an execution report, opening or closing positions as appropriate.
 func (m *Manager) ApplyExecution(report domain.ExecutionReport) {
+	m.ClearPendingOrder(report.Symbol)
 	if domain.IsOpeningIntent(report.Intent) {
 		m.OpenPosition(report)
 	} else if domain.IsPartialIntent(report.Intent) {
@@ -586,6 +610,36 @@ func (m *Manager) HasPosition(symbol string) bool {
 	defer m.mu.RUnlock()
 	_, ok := m.positions[symbol]
 	return ok
+}
+
+// MarkPendingOrder records an in-flight order so strategy/risk can suppress duplicates.
+func (m *Manager) MarkPendingOrder(order domain.OrderRequest) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingOrders[order.Symbol] = order
+}
+
+// ClearPendingOrder removes any in-flight order record for the symbol.
+func (m *Manager) ClearPendingOrder(symbol string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.pendingOrders, symbol)
+}
+
+// HasPendingOrder returns true when any in-flight order exists for the symbol.
+func (m *Manager) HasPendingOrder(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.pendingOrders[symbol]
+	return ok
+}
+
+// HasPendingClose returns true when an in-flight close/partial order exists for the symbol.
+func (m *Manager) HasPendingClose(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	order, ok := m.pendingOrders[symbol]
+	return ok && domain.IsClosingIntent(order.Intent)
 }
 
 // SymbolHadLossToday returns true if the symbol has any closed trade with negative PnL today.
@@ -648,7 +702,9 @@ func (m *Manager) RemoveStalePosition(symbol string) {
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)
+	m.tradeHistory = append(m.tradeHistory, trade)
 	m.dayPnL += pnl
+	m.realizedPnL += pnl
 	m.tradesToday++
 	delete(m.positions, symbol)
 
@@ -687,11 +743,7 @@ func (m *Manager) MarkPriceAt(symbol string, price float64, at time.Time) {
 func (m *Manager) RealizedPnL() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var total float64
-	for _, t := range m.closedTrades {
-		total += t.PnL
-	}
-	return total
+	return m.realizedPnL
 }
 
 // OpenPositionCount returns the number of open positions.
@@ -705,7 +757,7 @@ func (m *Manager) OpenPositionCount() int {
 func (m *Manager) CurrentEquity() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	equity := m.config.StartingCapital + m.dayPnL
+	equity := m.config.StartingCapital + m.realizedPnL
 	for _, pos := range m.positions {
 		equity += pos.UnrealizedPnL
 	}
@@ -778,7 +830,7 @@ func (m *Manager) CurrentDrawdown() float64 {
 
 // currentEquityLocked computes equity without acquiring the lock (caller must hold lock).
 func (m *Manager) currentEquityLocked() float64 {
-	equity := m.config.StartingCapital + m.dayPnL
+	equity := m.config.StartingCapital + m.realizedPnL
 	for _, pos := range m.positions {
 		equity += pos.UnrealizedPnL
 	}
@@ -801,7 +853,7 @@ func (m *Manager) RollingTradeStats(windowSize int) (winRate float64, avgWinLoss
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	trades := m.closedTrades
+	trades := m.tradeHistory
 	if len(trades) > windowSize {
 		trades = trades[len(trades)-windowSize:]
 	}

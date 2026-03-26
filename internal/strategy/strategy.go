@@ -135,7 +135,7 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 			}
 			signal, shouldEmit, reason := s.evaluateCandidate(candidate)
 			if !shouldEmit {
-				if reason != "" && reason != "market-closed"  && reason != "system-paused" {
+				if reason != "" && reason != "market-closed" && reason != "system-paused" {
 					s.runtime.RecordLog("debug", "strategy", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
 				}
 				continue
@@ -278,6 +278,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if _, exists := s.portfolio.GetPosition(c.Symbol); exists {
 		return domain.TradeSignal{}, false, "existing-position"
 	}
+	if s.portfolio.HasPendingOrder(c.Symbol) {
+		return domain.TradeSignal{}, false, "pending-order"
+	}
 
 	// Day state
 	dayKey := markethours.TradingDay(now)
@@ -291,6 +294,69 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	// Too many losses on this symbol today
 	if state.lossExits >= 2 && now.Sub(state.lastLossAt) < 30*time.Minute {
 		return domain.TradeSignal{}, false, "loss-cooldown"
+	}
+
+	// Candidate-quality gate: only take higher-conviction momentum setups.
+	scoreThreshold := cfg.MinEntryScore
+	if domain.IsShort(c.Direction) {
+		scoreThreshold = cfg.ShortMinEntryScore
+	}
+	if cfg.TimeOfDayEnabled && scoreThreshold > 0 {
+		twCfg := defaultTimeWindowConfigs[currentTimeWindow(now)]
+		scoreThreshold *= twCfg.ScoreThresholdMultiplier
+	}
+	if scoreThreshold > 0 && c.Score < scoreThreshold {
+		return domain.TradeSignal{}, false, "low-score"
+	}
+
+	// Generic pullbacks need a meaningful intraday trend behind them.
+	if domain.IsLong(c.Direction) && c.SetupType == "pullback" && c.IntradayReturnPct < math.Max(cfg.MinGapPercent*1.5, 5.0) {
+		return domain.TradeSignal{}, false, "weak-intraday-trend"
+	}
+
+	// Regular-hours momentum longs behave better when we let the opening drive
+	// establish itself before chasing. During the opening burst, only the
+	// strongest leader-style setups are allowed through.
+	if domain.IsLong(c.Direction) && markethours.IsMarketOpen(now) {
+		minutesSinceOpen := c.MinutesSinceOpen
+		switch c.SetupType {
+		case "orb_breakout":
+			if minutesSinceOpen < 5 {
+				return domain.TradeSignal{}, false, "open-drive-breakout-wait"
+			}
+			if minutesSinceOpen > 30 || c.RelativeVolume < 4.5 || c.LeaderRank > 6 || c.FiveMinuteReturnPct < 1.0 || c.PriceVsVWAPPct < 0.5 || c.BreakoutPct > 2.5 {
+				return domain.TradeSignal{}, false, "open-drive-breakout-filter"
+			}
+		case "orb_reclaim":
+			if minutesSinceOpen < 6 {
+				return domain.TradeSignal{}, false, "open-drive-pullback-wait"
+			}
+			if c.RelativeVolume < 3.0 || c.LeaderRank > 10 || c.OneMinuteReturnPct <= 0 || c.FiveMinuteReturnPct < 0.15 || c.PriceVsVWAPPct < 0.1 || c.DistanceFromHighPct > 2.0 {
+				return domain.TradeSignal{}, false, "open-drive-pullback-filter"
+			}
+		case "hod_breakout", "breakout":
+			if minutesSinceOpen <= 60 {
+				if c.LeaderRank > 2 || c.RelativeVolume < 7 || c.OneMinuteReturnPct <= 0 || c.FiveMinuteReturnPct < 1.5 || c.IntradayReturnPct < 10 || c.PriceVsVWAPPct < 1.25 {
+					return domain.TradeSignal{}, false, "prefer-structured-open"
+				}
+			}
+			if minutesSinceOpen < 20 {
+				return domain.TradeSignal{}, false, "open-drive-breakout-wait"
+			}
+			if minutesSinceOpen < 60 {
+				if c.LeaderRank > 3 || c.RelativeVolume < 6 || c.OneMinuteReturnPct <= 0 || c.FiveMinuteReturnPct < 1.5 || c.IntradayReturnPct < 9 || c.PriceVsVWAPPct < 1.0 {
+					return domain.TradeSignal{}, false, "open-drive-breakout-filter"
+				}
+			}
+		case "pullback":
+			if minutesSinceOpen <= 120 {
+				return domain.TradeSignal{}, false, "prefer-structured-open"
+			}
+		case "hod_pullback":
+			if minutesSinceOpen <= 150 {
+				return domain.TradeSignal{}, false, "prefer-structured-open"
+			}
+		}
 	}
 
 	// --- Hard indicator filters (rules-based entry) ---
@@ -326,8 +392,8 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "low-volume"
 	}
 
-	// 3-minute return confirmation for longs
-	if domain.IsLong(c.Direction) && c.ThreeMinuteReturnPct < cfg.MinThreeMinuteReturnPct {
+	// Use the aligned 5-minute candle return for long-side momentum confirmation.
+	if domain.IsLong(c.Direction) && c.FiveMinuteReturnPct < cfg.MinThreeMinuteReturnPct {
 		return domain.TradeSignal{}, false, "no-confirmation"
 	}
 
@@ -363,7 +429,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		var estimatedReward float64
 		if domain.IsLong(c.Direction) {
 			estimatedReward = c.HighOfDay - c.Price
-			if estimatedReward <= 0 || c.SetupType == "hod_breakout" {
+			if estimatedReward <= 0 || c.SetupType == "hod_breakout" || c.SetupType == "orb_breakout" {
 				estimatedReward = c.ATR * 2.0
 			}
 		} else {
@@ -422,6 +488,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 		riskBudget *= drawdownFactor
 	}
+	riskBudget *= entryRiskMultiplier(c, now)
 
 	// Update HWM tracking
 	s.portfolio.UpdateEquityTracking()
@@ -444,11 +511,21 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
+	entryPrice := c.Price
+	if domain.IsLong(c.Direction) && markethours.IsMarketOpen(now) {
+		switch c.SetupType {
+		case "orb_reclaim":
+			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.003, 0.15)
+		case "orb_breakout":
+			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.002, 0.10)
+		}
+	}
+
 	var stopPrice float64
 	if domain.IsLong(c.Direction) {
-		stopPrice = c.Price - riskPerShare
+		stopPrice = entryPrice - riskPerShare
 	} else {
-		stopPrice = c.Price + riskPerShare
+		stopPrice = entryPrice + riskPerShare
 	}
 
 	// Resolve sector for the candidate
@@ -472,14 +549,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		Side:             domain.OpenBrokerSide(c.Direction),
 		Intent:           domain.IntentOpen,
 		PositionSide:     c.Direction,
-		Price:            c.Price,
+		Price:            entryPrice,
 		Quantity:         quantity,
 		StopPrice:        stopPrice,
 		RiskPerShare:     riskPerShare,
 		EntryATR:         c.ATR,
 		SetupType:        c.SetupType,
 		Reason:           fmt.Sprintf("setup=%s", c.SetupType),
-		Confidence:       0.5,
+		Confidence:       math.Min(1.0, c.Score/5.0),
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
 		Playbook:         c.Playbook,
@@ -499,6 +576,9 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	cfg := s.getConfig()
 	pos, exists := s.portfolio.GetPosition(tick.Symbol)
 	if !exists {
+		return domain.TradeSignal{}, false
+	}
+	if s.portfolio.HasPendingClose(tick.Symbol) {
 		return domain.TradeSignal{}, false
 	}
 
@@ -636,7 +716,7 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 
 	// Safety: if stop price is zero (shouldn't happen but defensive), compute one
 	if pos.StopPrice == 0 {
-		fallbackRisk := pos.AvgPrice * cfg.EntryATRPercentFallback / 100.0
+		fallbackRisk := pos.AvgPrice * normalizedFallbackRiskPct(cfg) / 100.0
 		if fallbackRisk <= 0 {
 			fallbackRisk = pos.AvgPrice * 0.02
 		}
@@ -716,6 +796,14 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	peakR := s.peakR(pos)
 	if holdMinutes > float64(exitCfg.StagnationWindowMin) && peakR < exitCfg.StagnationMinPeakR {
 		return "stagnation", true
+	}
+
+	// Momentum day trades should not sit for hours without proving themselves.
+	if holdMinutes > 60 && peakR < 0.5 && r < 0.2 {
+		return "momentum-faded", true
+	}
+	if holdMinutes > 180 && peakR < 1.0 {
+		return "stale-position", true
 	}
 
 	return "", false
@@ -864,7 +952,62 @@ func (s *Strategy) computeRiskPerShare(c domain.Candidate) float64 {
 		}
 		return risk
 	}
-	return c.Price * cfg.EntryATRPercentFallback / 100
+	return c.Price * normalizedFallbackRiskPct(cfg) / 100
+}
+
+func normalizedFallbackRiskPct(cfg config.TradingConfig) float64 {
+	riskPct := cfg.EntryATRPercentFallback
+	switch {
+	case riskPct <= 0:
+		return 2.0
+	case riskPct < 0.5:
+		// Guard against decimal-vs-percent mistakes like 0.05 meaning 0.05%.
+		return 2.0
+	default:
+		return riskPct
+	}
+}
+
+func entryRiskMultiplier(c domain.Candidate, now time.Time) float64 {
+	if !domain.IsLong(c.Direction) {
+		return 1.0
+	}
+	if markethours.IsMarketOpen(now) {
+		switch c.SetupType {
+		case "orb_reclaim":
+			return 1.75
+		case "orb_breakout":
+			return 1.50
+		case "hod_breakout", "breakout":
+			if c.LeaderRank <= 2 && c.RelativeVolume >= 8 && c.PriceVsVWAPPct >= 1.5 {
+				return 1.15
+			}
+			return 0.85
+		case "hod_pullback", "pullback":
+			return 0.60
+		}
+	}
+	if c.SetupType == "hod_breakout" && c.LeaderRank <= 3 && c.RelativeVolume >= 8 {
+		return 1.20
+	}
+	return 1.0
+}
+
+func aggressiveEntryLimit(price, atr, pctBuffer, atrFraction float64) float64 {
+	if price <= 0 {
+		return price
+	}
+	buffer := price * pctBuffer
+	if atr > 0 {
+		atrBuffer := atr * atrFraction
+		if atrBuffer > 0 && (buffer == 0 || atrBuffer < buffer) {
+			buffer = atrBuffer
+		}
+	}
+	if buffer <= 0 {
+		return price
+	}
+	return price + buffer
 }
 
 func (s *Strategy) getSymbolState(symbol, dayKey string) symbolTradeState {

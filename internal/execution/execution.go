@@ -20,12 +20,17 @@ type BrokerClient interface {
 
 // Engine submits approved orders to the broker and polls for fills.
 type Engine struct {
-	broker       BrokerClient
-	runtime      *runtime.State
-	recorder     domain.EventRecorder
-	pollInterval time.Duration
-	pollTimeout  time.Duration
-	nowFunc      func() time.Time
+	broker         BrokerClient
+	runtime        *runtime.State
+	recorder       domain.EventRecorder
+	pollInterval   time.Duration
+	pollTimeout    time.Duration
+	nowFunc        func() time.Time
+	synchronous    bool
+	mu             sync.Mutex
+	activeBySymbol map[string]domain.OrderRequest
+	onAccepted     func(domain.OrderRequest)
+	onFailed       func(domain.OrderRequest)
 }
 
 // EngineOption configures optional Engine behavior.
@@ -49,15 +54,30 @@ func WithNowFunc(fn func() time.Time) EngineOption {
 	return func(e *Engine) { e.nowFunc = fn }
 }
 
+// WithSynchronous forces the execution engine to process orders serially.
+// Useful for deterministic backtests.
+func WithSynchronous(enabled bool) EngineOption {
+	return func(e *Engine) { e.synchronous = enabled }
+}
+
+// WithOrderCallbacks installs lifecycle callbacks for accepted and failed orders.
+func WithOrderCallbacks(onAccepted func(domain.OrderRequest), onFailed func(domain.OrderRequest)) EngineOption {
+	return func(e *Engine) {
+		e.onAccepted = onAccepted
+		e.onFailed = onFailed
+	}
+}
+
 // NewEngine creates an execution engine.
 func NewEngine(broker BrokerClient, runtimeState *runtime.State, recorder domain.EventRecorder, opts ...EngineOption) *Engine {
 	e := &Engine{
-		broker:       broker,
-		runtime:      runtimeState,
-		recorder:     recorder,
-		pollInterval: 500 * time.Millisecond,
-		pollTimeout:  30 * time.Second,
-		nowFunc:      time.Now,
+		broker:         broker,
+		runtime:        runtimeState,
+		recorder:       recorder,
+		pollInterval:   500 * time.Millisecond,
+		pollTimeout:    30 * time.Second,
+		nowFunc:        time.Now,
+		activeBySymbol: make(map[string]domain.OrderRequest),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -77,10 +97,28 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, fills
 			if !ok {
 				return fmt.Errorf("execution order channel closed")
 			}
+			if !e.tryBeginOrder(order) {
+				continue
+			}
+			if e.onAccepted != nil {
+				e.onAccepted(order)
+			}
+			if e.synchronous {
+				filled := e.executeOrder(ctx, order, fills)
+				if !filled && e.onFailed != nil {
+					e.onFailed(order)
+				}
+				e.finishOrder(order.Symbol)
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				e.executeOrder(ctx, order, fills)
+				filled := e.executeOrder(ctx, order, fills)
+				if !filled && e.onFailed != nil {
+					e.onFailed(order)
+				}
+				defer e.finishOrder(order.Symbol)
 			}()
 		}
 	}
@@ -88,7 +126,7 @@ func (e *Engine) Start(ctx context.Context, in <-chan domain.OrderRequest, fills
 
 const defaultExitMaxAttempts = 5
 
-func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport) {
+func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport) bool {
 	isExit := domain.IsClosingIntent(order.Intent) || domain.IsPartialIntent(order.Intent)
 	maxAttempts := 1
 	if isExit {
@@ -106,22 +144,23 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 
 		filled := e.submitAndPoll(ctx, order, fills, attempt)
 		if filled {
-			return
+			return true
 		}
 
 		if !isExit {
-			return
+			return false
 		}
 
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(2 * time.Second):
 		}
 	}
 
 	e.runtime.RecordLog("error", "execution",
 		fmt.Sprintf("FAILED to exit %s %s after %d attempts", order.Symbol, order.Side, maxAttempts))
+	return false
 }
 
 func slippageForAttempt(attempt int) float64 {
@@ -252,3 +291,21 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 	}
 }
 
+func (e *Engine) tryBeginOrder(order domain.OrderRequest) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if existing, ok := e.activeBySymbol[order.Symbol]; ok {
+		e.runtime.RecordLog("warn", "execution",
+			fmt.Sprintf("skipping duplicate order for %s intent=%s side=%s while %s/%s is active",
+				order.Symbol, order.Intent, order.Side, existing.Intent, existing.Side))
+		return false
+	}
+	e.activeBySymbol[order.Symbol] = order
+	return true
+}
+
+func (e *Engine) finishOrder(symbol string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.activeBySymbol, symbol)
+}

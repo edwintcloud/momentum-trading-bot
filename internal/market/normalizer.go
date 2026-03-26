@@ -19,17 +19,29 @@ type SeedState struct {
 	PreMarketVol  int64
 }
 
+type minuteBar struct {
+	timestamp time.Time
+	high      float64
+	volume    int64
+}
+
 // symbolState tracks per-symbol daily state for normalization.
 type symbolState struct {
-	day           string
-	previousClose float64
-	open          float64
-	highOfDay     float64
-	totalVolume   int64
-	preMarketVol  int64
-	prevDayVolume int64
-	recentVolumes []int64
-	lastClose     float64
+	day              string
+	previousClose    float64
+	open             float64
+	highOfDay        float64
+	totalVolume      int64
+	preMarketVol     int64
+	prevDayVolume    int64
+	lastClose        float64
+	seedDay          string
+	seedHighOfDay    float64
+	seedTotalVolume  int64
+	seedPreMarketVol int64
+	dailyHigh        float64
+	dailyVolume      int64
+	minuteBars       []minuteBar
 }
 
 // Normalizer converts raw Alpaca StreamBars into enriched domain.Ticks.
@@ -53,14 +65,18 @@ func NewNormalizer() *Normalizer {
 func (n *Normalizer) Seed(symbol string, seed SeedState, now time.Time) {
 	day := now.In(markethours.Location()).Format("2006-01-02")
 	state := &symbolState{
-		day:           day,
-		previousClose: seed.PreviousClose,
-		lastClose:     seed.PreviousClose,
-		open:          seed.TodayOpen,
-		highOfDay:     seed.TodayHigh,
-		totalVolume:   seed.TodayVolume,
-		preMarketVol:  seed.PreMarketVol,
-		prevDayVolume: seed.PrevDayVolume,
+		day:              day,
+		previousClose:    seed.PreviousClose,
+		lastClose:        seed.PreviousClose,
+		open:             seed.TodayOpen,
+		highOfDay:        seed.TodayHigh,
+		totalVolume:      seed.TodayVolume,
+		preMarketVol:     seed.PreMarketVol,
+		prevDayVolume:    seed.PrevDayVolume,
+		seedDay:          day,
+		seedHighOfDay:    seed.TodayHigh,
+		seedTotalVolume:  seed.TodayVolume,
+		seedPreMarketVol: seed.PreMarketVol,
 	}
 	n.states[symbol] = state
 }
@@ -91,26 +107,23 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 		state.highOfDay = 0
 		state.totalVolume = 0
 		state.preMarketVol = 0
-		state.recentVolumes = nil
+		state.seedDay = ""
+		state.seedHighOfDay = 0
+		state.seedTotalVolume = 0
+		state.seedPreMarketVol = 0
+		state.dailyHigh = 0
+		state.dailyVolume = 0
+		state.minuteBars = nil
 	}
 
-	state.totalVolume += bar.Volume
 	state.lastClose = bar.Close
-	if bar.High > state.highOfDay {
-		state.highOfDay = bar.High
-	}
-	if state.highOfDay == 0 {
-		state.highOfDay = bar.High
-	}
-
-	if isPremarket(bar.Timestamp) {
-		state.preMarketVol += bar.Volume
-	}
-
-	state.recentVolumes = append(state.recentVolumes, bar.Volume)
-	if len(state.recentVolumes) > 5 {
-		state.recentVolumes = state.recentVolumes[len(state.recentVolumes)-5:]
-	}
+	state.open = firstPositive(state.open, bar.Open)
+	state.minuteBars = upsertMinuteBar(state.minuteBars, minuteBar{
+		timestamp: bar.Timestamp,
+		high:      bar.High,
+		volume:    bar.Volume,
+	})
+	state.recomputeSessionMetrics()
 
 	gapPercent := 0.0
 	if state.previousClose > 0 && state.open > 0 {
@@ -118,14 +131,9 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 	}
 
 	relativeVolume := calculateRelativeVolume(state, bar.Timestamp)
-	volumeSpike := isVolumeSpike(state.recentVolumes, bar.Volume, relativeVolume)
-	get5MinVol := func() int64 {
-		s := int64(0)
-		for _, v := range state.recentVolumes {
-			s += v
-		}
-		return s
-	}
+	recentVolumes := lastNMinuteVolumes(state.minuteBars, 5)
+	volumeSpike := isVolumeSpike(recentVolumes, bar.Volume, relativeVolume)
+	fiveMinuteVolume := currentFiveMinuteVolume(state.minuteBars, bar.Timestamp)
 
 	return domain.Tick{
 		Symbol:           bar.Symbol,
@@ -133,6 +141,7 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 		BarOpen:          round2(bar.Open),
 		BarHigh:          round2(bar.High),
 		BarLow:           round2(bar.Low),
+		BarVolume:        bar.Volume,
 		Open:             round2(state.open),
 		HighOfDay:        round2(state.highOfDay),
 		Volume:           state.totalVolume,
@@ -144,7 +153,7 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 		Catalyst:         bar.Catalyst,
 		CatalystURL:      bar.CatalystURL,
 		Timestamp:        bar.Timestamp,
-		FiveMinuteVolume: get5MinVol(),
+		FiveMinuteVolume: fiveMinuteVolume,
 	}
 }
 
@@ -155,16 +164,16 @@ func (n *Normalizer) UpdateDailyBar(symbol string, high float64, volume int64, o
 	if state == nil {
 		return
 	}
-	if high > state.highOfDay {
-		state.highOfDay = high
-	}
 	if open > 0 && state.open == 0 {
 		state.open = open
 	}
-	// Daily bar volume is cumulative for the session
-	if volume > state.totalVolume {
-		state.totalVolume = volume
+	if high > state.dailyHigh {
+		state.dailyHigh = high
 	}
+	if volume > state.dailyVolume {
+		state.dailyVolume = volume
+	}
+	state.recomputeSessionMetrics()
 }
 
 func isPremarket(timestamp time.Time) bool {
@@ -201,4 +210,88 @@ func isVolumeSpike(recent []int64, latest int64, relativeVolume float64) bool {
 
 func round2(v float64) float64 {
 	return math.Round(v*100) / 100
+}
+
+func (s *symbolState) recomputeSessionMetrics() {
+	totalVolume := int64(0)
+	preMarketVol := int64(0)
+	highOfDay := 0.0
+	for _, bar := range s.minuteBars {
+		totalVolume += bar.volume
+		if isPremarket(bar.timestamp) {
+			preMarketVol += bar.volume
+		}
+		if bar.high > highOfDay {
+			highOfDay = bar.high
+		}
+	}
+	if s.seedDay == s.day {
+		totalVolume += s.seedTotalVolume
+		preMarketVol += s.seedPreMarketVol
+		if s.seedHighOfDay > highOfDay {
+			highOfDay = s.seedHighOfDay
+		}
+	}
+	if s.dailyVolume > totalVolume {
+		totalVolume = s.dailyVolume
+	}
+	if s.dailyHigh > highOfDay {
+		highOfDay = s.dailyHigh
+	}
+	s.totalVolume = totalVolume
+	s.preMarketVol = preMarketVol
+	s.highOfDay = highOfDay
+}
+
+func upsertMinuteBar(bars []minuteBar, next minuteBar) []minuteBar {
+	n := len(bars)
+	if n > 0 && bars[n-1].timestamp.Equal(next.timestamp) {
+		bars[n-1] = next
+		return bars
+	}
+	return append(bars, next)
+}
+
+func lastNMinuteVolumes(bars []minuteBar, n int) []int64 {
+	if n <= 0 || len(bars) == 0 {
+		return nil
+	}
+	if len(bars) > n {
+		bars = bars[len(bars)-n:]
+	}
+	out := make([]int64, 0, len(bars))
+	for _, bar := range bars {
+		out = append(out, bar.volume)
+	}
+	return out
+}
+
+func currentFiveMinuteVolume(bars []minuteBar, ts time.Time) int64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	bucket := fiveMinuteBucketStart(ts)
+	total := int64(0)
+	for i := len(bars) - 1; i >= 0; i-- {
+		if !fiveMinuteBucketStart(bars[i].timestamp).Equal(bucket) {
+			break
+		}
+		total += bars[i].volume
+	}
+	return total
+}
+
+func fiveMinuteBucketStart(ts time.Time) time.Time {
+	et := ts.In(markethours.Location())
+	minute := et.Minute() - (et.Minute() % 5)
+	return time.Date(et.Year(), et.Month(), et.Day(), et.Hour(), minute, 0, 0, markethours.Location())
+}
+
+func firstPositive(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }

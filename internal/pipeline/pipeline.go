@@ -58,6 +58,10 @@ type Config struct {
 
 	// OnTickFanOut is called after portfolio price updates in the fan-out stage.
 	OnTickFanOut func(domain.Tick)
+
+	// Deterministic forces blocking handoffs and ordered diagnostic processing.
+	// Use this for backtests where reproducibility matters more than throughput.
+	Deterministic bool
 }
 
 // Pipeline is a reusable channel-based trading pipeline shared
@@ -107,6 +111,7 @@ func (p *Pipeline) hasDiagnostics() bool {
 // Start wires all pipeline stages and launches goroutines.
 // It returns immediately; call Close() then Wait() to drain.
 func (p *Pipeline) Start(ctx context.Context) {
+	diagnostics := p.hasDiagnostics()
 	tickCh := make(chan domain.Tick, 1024)
 	candidateCh := make(chan domain.Candidate, 256)
 	signalCh := make(chan domain.TradeSignal, 64)
@@ -128,9 +133,8 @@ func (p *Pipeline) Start(ctx context.Context) {
 			if p.cfg.OnTick != nil {
 				p.cfg.OnTick(tick, bar)
 			}
-			select {
-			case tickCh <- tick:
-			default:
+			if !p.sendTick(ctx, tickCh, tick) {
+				return
 			}
 		}
 	}()
@@ -158,13 +162,17 @@ func (p *Pipeline) Start(ctx context.Context) {
 				continue
 			}
 
-			select {
-			case scannerTicks <- tick:
-			default:
+			if diagnostics {
+				if !p.sendTick(ctx, scannerTicks, tick) {
+					return
+				}
+				continue
 			}
-			select {
-			case strategyTicks <- tick:
-			default:
+			if !p.sendTick(ctx, scannerTicks, tick) {
+				return
+			}
+			if !p.sendTick(ctx, strategyTicks, tick) {
+				return
 			}
 		}
 	}()
@@ -173,7 +181,7 @@ func (p *Pipeline) Start(ctx context.Context) {
 	// A coordinator closes orderCh only after both writers finish.
 	var orderWriters sync.WaitGroup
 
-	if p.hasDiagnostics() {
+	if diagnostics {
 		p.startDiagnosticStages(ctx, scannerTicks, strategyTicks, candidateCh, signalCh, orderCh, &orderWriters)
 	} else {
 		p.startProductionStages(ctx, scannerTicks, strategyTicks, candidateCh, signalCh, orderCh, &orderWriters)
@@ -207,7 +215,14 @@ func (p *Pipeline) Start(ctx context.Context) {
 	go func() {
 		defer p.wg.Done()
 		defer close(p.fillCh)
-		execEngine := execution.NewEngine(p.cfg.Broker, p.cfg.Runtime, p.cfg.Recorder, p.cfg.EngineOptions...)
+		engineOpts := append([]execution.EngineOption{}, p.cfg.EngineOptions...)
+		engineOpts = append(engineOpts, execution.WithOrderCallbacks(
+			p.cfg.Portfolio.MarkPendingOrder,
+			func(order domain.OrderRequest) {
+				p.cfg.Portfolio.ClearPendingOrder(order.Symbol)
+			},
+		))
+		execEngine := execution.NewEngine(p.cfg.Broker, p.cfg.Runtime, p.cfg.Recorder, engineOpts...)
 		if err := execEngine.Start(ctx, orderCh, p.fillCh); err != nil {
 			log.Printf("pipeline/execution: %v", err)
 		}
@@ -224,6 +239,23 @@ func (p *Pipeline) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (p *Pipeline) sendTick(ctx context.Context, ch chan domain.Tick, tick domain.Tick) bool {
+	if p.cfg.Deterministic {
+		select {
+		case ch <- tick:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	select {
+	case ch <- tick:
+		return true
+	default:
+		return true
+	}
 }
 
 // startProductionStages uses component Start() methods (efficient, no diagnostic overhead).
@@ -281,57 +313,21 @@ func (p *Pipeline) startDiagnosticStages(ctx context.Context,
 	orderCh chan<- domain.OrderRequest,
 	orderWriters *sync.WaitGroup,
 ) {
-	// Scanner (inline: single-threaded, calls EvaluateTickDetailed)
+	_ = strategyTicks
+	_ = candidateCh
+
+	// Diagnostic path: process each tick fully in order so backtests are reproducible.
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		defer close(candidateCh)
+		defer close(signalCh)
 		for tick := range scannerTicks {
 			candidate, ok, reason := p.cfg.Scanner.EvaluateTickDetailed(tick)
 			if p.cfg.OnScanResult != nil {
 				p.cfg.OnScanResult(tick, candidate, ok, reason)
 			}
 			if ok {
-				select {
-				case candidateCh <- candidate:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-
-	// Candidate tap
-	strategyCandidates := make(chan domain.Candidate, 256)
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		defer close(strategyCandidates)
-		for c := range candidateCh {
-			p.cfg.Runtime.AddCandidate(c)
-			select {
-			case strategyCandidates <- c:
-			default:
-			}
-		}
-	}()
-
-	// Strategy (inline: calls EvaluateCandidateDecision + EvaluateExitDetailed)
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		defer close(signalCh)
-		sc := strategyCandidates
-		st := strategyTicks
-		for sc != nil || st != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case candidate, ok := <-sc:
-				if !ok {
-					sc = nil
-					continue
-				}
+				p.cfg.Runtime.AddCandidate(candidate)
 				decision := p.cfg.Strategy.EvaluateCandidateDecision(candidate)
 				if p.cfg.OnEntryDecision != nil {
 					p.cfg.OnEntryDecision(candidate, decision)
@@ -343,21 +339,17 @@ func (p *Pipeline) startDiagnosticStages(ctx context.Context,
 						return
 					}
 				}
-			case tick, ok := <-st:
-				if !ok {
-					st = nil
-					continue
-				}
-				signal, shouldExit, reason := p.cfg.Strategy.EvaluateExitDetailed(tick)
-				if p.cfg.OnExitCheck != nil {
-					p.cfg.OnExitCheck(tick, signal, shouldExit, reason)
-				}
-				if shouldExit {
-					select {
-					case signalCh <- signal:
-					case <-ctx.Done():
-						return
-					}
+			}
+
+			signal, shouldExit, exitReason := p.cfg.Strategy.EvaluateExitDetailed(tick)
+			if p.cfg.OnExitCheck != nil {
+				p.cfg.OnExitCheck(tick, signal, shouldExit, exitReason)
+			}
+			if shouldExit {
+				select {
+				case signalCh <- signal:
+				case <-ctx.Done():
+					return
 				}
 			}
 		}
@@ -386,9 +378,11 @@ func (p *Pipeline) startRiskWriter(ctx context.Context,
 				onDecision(signal, order, approved, reason)
 			}
 			if approved {
+				p.cfg.Portfolio.MarkPendingOrder(order)
 				select {
 				case orderCh <- order:
 				case <-ctx.Done():
+					p.cfg.Portfolio.ClearPendingOrder(order.Symbol)
 					return
 				}
 			}

@@ -14,41 +14,62 @@ import (
 )
 
 type symbolBar struct {
-	timestamp        time.Time
-	open             float64
-	high             float64
-	low              float64
-	close            float64
-	volume           int64
-	cumulativeVolume int64
-	vwap             float64
+	timestamp time.Time
+	open      float64
+	high      float64
+	low       float64
+	close     float64
+	volume    int64
+	vwap      float64
 }
 
 type symbolState struct {
-	day                  string
-	bars                 []symbolBar
-	cumulativeDollarFlow float64
-	cumulativeVolume     float64
+	day  string
+	bars []symbolBar
+}
+
+type structuredSetup struct {
+	setupType   string
+	setupHigh   float64
+	setupLow    float64
+	breakoutPct float64
 }
 
 // Scanner scans market ticks for momentum candidates.
 type Scanner struct {
-	config        config.TradingConfig
-	runtime       *runtime.State
-	mu            sync.Mutex
-	state         map[string]*symbolState
-	leaderDay     string
-	leaderMetrics map[string]float64 // symbol → cumulative dollar volume for current day
+	config         config.TradingConfig
+	runtime        *runtime.State
+	mu             sync.Mutex
+	state          map[string]*symbolState
+	blockedSymbols map[string]string
+	leaderDay      string
+	leaderMetrics  map[string]float64 // symbol → cumulative dollar volume for current day
 }
 
 // NewScanner creates a scanner with the configured filters.
 func NewScanner(cfg config.TradingConfig, runtimeState *runtime.State) *Scanner {
 	return &Scanner{
-		config:        cfg,
-		runtime:       runtimeState,
-		state:         make(map[string]*symbolState),
-		leaderMetrics: make(map[string]float64),
+		config:         cfg,
+		runtime:        runtimeState,
+		state:          make(map[string]*symbolState),
+		blockedSymbols: make(map[string]string),
+		leaderMetrics:  make(map[string]float64),
 	}
+}
+
+// SetBlockedSymbols installs a hard blocklist for symbols the scanner should never trade.
+func (s *Scanner) SetBlockedSymbols(blocked map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(blocked) == 0 {
+		s.blockedSymbols = make(map[string]string)
+		return
+	}
+	copyMap := make(map[string]string, len(blocked))
+	for symbol, reason := range blocked {
+		copyMap[symbol] = reason
+	}
+	s.blockedSymbols = copyMap
 }
 
 // isVolumeLeader returns true if the symbol ranks within the top MaxVolumeLeaders
@@ -73,6 +94,30 @@ func (s *Scanner) isVolumeLeader(symbol string) bool {
 		}
 	}
 	return true
+}
+
+// volumeLeaderStats returns the daily dollar-volume rank and normalized strength
+// for a symbol using the scanner's running intraday leaderboard.
+func (s *Scanner) volumeLeaderStats(symbol string) (int, float64) {
+	myVol := s.leaderMetrics[symbol]
+	if myVol <= 0 {
+		return 0, 0
+	}
+	rank := 1
+	topVol := myVol
+	for sym, vol := range s.leaderMetrics {
+		if vol > topVol {
+			topVol = vol
+		}
+		if sym != symbol && vol > myVol {
+			rank++
+		}
+	}
+	strengthPct := 0.0
+	if topVol > 0 {
+		strengthPct = (myVol / topVol) * 100
+	}
+	return rank, strengthPct
 }
 
 // trackDollarVolume accumulates dollar volume for the symbol on the current day.
@@ -148,6 +193,9 @@ func (s *Scanner) Evaluate(tick domain.Tick) (domain.Candidate, bool) {
 // EvaluateTickDetailed tests a tick against scanner filters and returns
 // the rejection reason when the tick is not a candidate.
 func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
+	if reason, blocked := s.instrumentBlockReason(tick.Symbol); blocked {
+		return domain.Candidate{}, false, reason
+	}
 	candidate, ok := s.evaluate(tick)
 	if ok {
 		return candidate, true, ""
@@ -223,6 +271,9 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 }
 
 func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
+	if _, blocked := s.instrumentBlockReason(tick.Symbol); blocked {
+		return domain.Candidate{}, false
+	}
 	if tick.Price <= 0 || tick.Volume <= 0 {
 		return domain.Candidate{}, false
 	}
@@ -302,9 +353,11 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 
 	// Update bar state
 	s.mu.Lock()
+	s.trackDollarVolume(tick)
 	state := s.getOrCreateState(tick)
 	s.updateBars(state, tick)
 	metrics := s.computeMetrics(state, tick)
+	leaderRank, leaderStrengthPct := s.volumeLeaderStats(tick.Symbol)
 	s.mu.Unlock()
 
 	// Determine direction
@@ -373,7 +426,17 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		}
 	}
 
+	if direction == domain.DirectionLong {
+		if structured, ok := s.classifyStructuredLongSetup(state, tick, metrics, cfg); ok {
+			metrics.setupType = structured.setupType
+			metrics.setupHigh = structured.setupHigh
+			metrics.setupLow = structured.setupLow
+			metrics.breakoutPct = structured.breakoutPct
+		}
+	}
+
 	setupType := metrics.setupType
+	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct)
 
 	candidate := domain.Candidate{
 		Symbol:                tick.Symbol,
@@ -389,12 +452,15 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		DistanceFromHighPct:   distFromHighPct,
 		OneMinuteReturnPct:    metrics.oneMinuteReturn,
 		ThreeMinuteReturnPct:  metrics.threeMinuteReturn,
+		FiveMinuteReturnPct:   metrics.fiveMinuteReturn,
 		VolumeRate:            metrics.volumeRate,
 		MinutesSinceOpen:      markethours.MinutesSinceOpen(tick.Timestamp),
 		ATR:                   metrics.atr,
 		ATRPct:                safePct(metrics.atr, tick.Price) * 100,
 		VWAP:                  metrics.vwap,
 		PriceVsVWAPPct:        priceVsVWAPPct,
+		VolumeLeaderPct:       leaderStrengthPct,
+		LeaderRank:            leaderRank,
 		BreakoutPct:           metrics.breakoutPct,
 		ConsolidationRangePct: metrics.consolidationRangePct,
 		PullbackDepthPct:      metrics.pullbackDepthPct,
@@ -410,7 +476,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		MACDHistogram:         metrics.macdHistogram,
 		IntradayReturnPct:     intradayReturnPct,
 		SetupType:             setupType,
-		Score:                 1.0,
+		Score:                 score,
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
 		Playbook:              s.selectPlaybookFromSetupType(direction, setupType),
@@ -422,6 +488,153 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	}
 
 	return candidate, true
+}
+
+func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics, direction string, setupType string, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64) float64 {
+	score := 0.0
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+
+	if domain.IsLong(direction) {
+		switch setupType {
+		case "orb_breakout":
+			score += 1.35
+		case "orb_reclaim":
+			score += 1.55
+		case "hod_breakout", "breakout":
+			score += 1.25
+		case "hod_pullback":
+			score += 0.9
+		case "pullback":
+			score += 0.2
+		}
+
+		switch {
+		case tick.HighOfDay > 0 && distFromHighPct <= 0.5:
+			score += 1.25
+		case tick.HighOfDay > 0 && distFromHighPct <= 1.5:
+			score += 0.95
+		case tick.HighOfDay > 0 && distFromHighPct <= 3.0:
+			score += 0.45
+		}
+
+		switch {
+		case metrics.fiveMinuteReturn >= 2.5:
+			score += 1.1
+		case metrics.fiveMinuteReturn >= 1.2:
+			score += 0.8
+		case metrics.fiveMinuteReturn >= max(cfg.MinThreeMinuteReturnPct, 0.6):
+			score += 0.35
+		}
+
+		switch {
+		case intradayReturnPct >= 15:
+			score += 1.1
+		case intradayReturnPct >= 8:
+			score += 0.75
+		case intradayReturnPct >= max(cfg.MinGapPercent, 4.0):
+			score += 0.35
+		}
+
+		switch {
+		case tick.RelativeVolume >= 10:
+			score += 1.0
+		case tick.RelativeVolume >= 5:
+			score += 0.75
+		case tick.RelativeVolume >= max(cfg.MinRelativeVolume, 2.5):
+			score += 0.35
+		}
+
+		switch {
+		case metrics.volumeRate >= 20000:
+			score += 0.35
+		case metrics.volumeRate >= 10000:
+			score += 0.2
+		}
+
+		switch {
+		case tick.Float > 0 && tick.Float <= 50_000_000:
+			score += 0.9
+		case tick.Float > 0 && tick.Float <= 100_000_000:
+			score += 0.55
+		case tick.Float > 0 && tick.Float <= 250_000_000:
+			score += 0.2
+		case tick.Float > 250_000_000:
+			score -= 0.6
+		default:
+			score -= 0.15
+		}
+
+		switch {
+		case tick.Price >= cfg.MinPrice && tick.Price <= 15:
+			score += 0.55
+		case tick.Price > 15 && tick.Price <= 25:
+			score += 0.2
+		case tick.Price > 25:
+			score -= 0.2
+		}
+
+		if leaderRank > 0 {
+			switch {
+			case leaderRank <= 3:
+				score += 0.55
+			case leaderRank <= max(cfg.MaxVolumeLeaders, 5):
+				score += 0.3
+			}
+			if leaderStrengthPct >= 60 {
+				score += 0.15
+			}
+		}
+
+		if metrics.macdHistogram > 0 {
+			score += 0.25
+		}
+		if metrics.ema9 > 0 && tick.Price > metrics.ema9 {
+			score += 0.2
+		}
+		if metrics.vwap > 0 && tick.Price > metrics.vwap {
+			score += 0.15
+		}
+		if tick.Catalyst != "" {
+			score += 0.35
+		}
+		if markethours.IsMarketOpen(tick.Timestamp) && setupType == "hod_pullback" {
+			score -= 0.35
+		}
+	} else {
+		switch setupType {
+		case "parabolic-failed-reclaim-short":
+			score += 1.0
+		case "breakdown":
+			score += 0.6
+		}
+		if metrics.oneMinuteReturn <= -0.5 {
+			score += 0.5
+		}
+		if metrics.threeMinuteReturn <= -1.0 {
+			score += 0.5
+		}
+		if metrics.macdHistogram < 0 {
+			score += 0.3
+		}
+		if metrics.vwap > 0 && tick.Price < metrics.vwap {
+			score += 0.2
+		}
+	}
+
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func (s *Scanner) instrumentBlockReason(symbol string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reason, blocked := s.blockedSymbols[symbol]
+	return reason, blocked
 }
 
 func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT float64, metrics scanMetrics) bool {
@@ -477,52 +690,59 @@ func (s *Scanner) getOrCreateState(tick domain.Tick) *symbolState {
 
 func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 	bar := symbolBar{
-		timestamp:        tick.Timestamp,
-		open:             tick.BarOpen,
-		high:             tick.BarHigh,
-		low:              tick.BarLow,
-		close:            tick.Price,
-		volume:           tick.Volume,
-		cumulativeVolume: tick.Volume,
+		timestamp: tick.Timestamp,
+		open:      tick.BarOpen,
+		high:      tick.BarHigh,
+		low:       tick.BarLow,
+		close:     tick.Price,
+		volume:    tick.BarVolume,
 	}
-	if tick.BarHigh > 0 && tick.BarLow > 0 {
-		typical := (tick.BarHigh + tick.BarLow + tick.Price) / 3
-		// Derive per-bar volume from cumulative session volume
-		barVol := tick.Volume
-		if len(state.bars) > 0 {
-			barVol = tick.Volume - state.bars[len(state.bars)-1].cumulativeVolume
+	if len(state.bars) > 0 && state.bars[len(state.bars)-1].timestamp.Equal(tick.Timestamp) {
+		state.bars[len(state.bars)-1] = bar
+	} else {
+		state.bars = append(state.bars, bar)
+	}
+	s.recomputeVWAP(state)
+}
+
+func (s *Scanner) recomputeVWAP(state *symbolState) {
+	cumulativeDollarFlow := 0.0
+	cumulativeVolume := 0.0
+	for i := range state.bars {
+		bar := &state.bars[i]
+		bar.vwap = 0
+		if bar.high <= 0 || bar.low <= 0 || bar.volume <= 0 {
+			continue
 		}
-		if barVol < 0 {
-			barVol = 0
-		}
-		state.cumulativeDollarFlow += typical * float64(barVol)
-		state.cumulativeVolume += float64(barVol)
-		if state.cumulativeVolume > 0 {
-			bar.vwap = state.cumulativeDollarFlow / state.cumulativeVolume
+		typical := (bar.high + bar.low + bar.close) / 3
+		cumulativeDollarFlow += typical * float64(bar.volume)
+		cumulativeVolume += float64(bar.volume)
+		if cumulativeVolume > 0 {
+			bar.vwap = cumulativeDollarFlow / cumulativeVolume
 		}
 	}
-	state.bars = append(state.bars, bar)
 }
 
 type scanMetrics struct {
-	oneMinuteReturn       float64
-	threeMinuteReturn     float64
-	volumeRate            float64
-	atr                   float64
-	vwap                  float64
-	breakoutPct           float64
-	consolidationRangePct float64
-	pullbackDepthPct      float64
-	closeOffHighPct       float64
-	setupHigh             float64
-	setupLow              float64
-	setupType             string
-	rsi                   float64
-	rsiMASlope            float64
-	fiveMinRange          float64
-	ema9                  float64
-	emaFast               float64
-	emaSlow               float64
+	oneMinuteReturn            float64
+	threeMinuteReturn          float64
+	fiveMinuteReturn           float64
+	volumeRate                 float64
+	atr                        float64
+	vwap                       float64
+	breakoutPct                float64
+	consolidationRangePct      float64
+	pullbackDepthPct           float64
+	closeOffHighPct            float64
+	setupHigh                  float64
+	setupLow                   float64
+	setupType                  string
+	rsi                        float64
+	rsiMASlope                 float64
+	fiveMinRange               float64
+	ema9                       float64
+	emaFast                    float64
+	emaSlow                    float64
 	macdHistogram              float64
 	adx                        float64
 	bbUpper                    float64
@@ -535,6 +755,8 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	var m scanMetrics
 	bars := state.bars
 	n := len(bars)
+	bars5 := aggregate5MinBars(bars)
+	n5 := len(bars5)
 
 	// Returns
 	if n >= 2 {
@@ -542,6 +764,9 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	}
 	if n >= 4 {
 		m.threeMinuteReturn = safePct(tick.Price-bars[n-4].close, bars[n-4].close) * 100
+	}
+	if n5 >= 1 && bars5[n5-1].open > 0 {
+		m.fiveMinuteReturn = safePct(bars5[n5-1].close-bars5[n5-1].open, bars5[n5-1].open) * 100
 	}
 
 	// Volume rate
@@ -552,9 +777,9 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 		}
 	}
 
-	// ATR (14-period) — require minimum bars for reliable ATR
-	m.atr = computeATR(bars, 14)
-	if n < s.config.MinATRBars {
+	// ATR (14-period) on aligned 5-minute candles — require minimum bars for reliable ATR
+	m.atr = computeATR(bars5, 14)
+	if n5 < s.config.MinATRBars {
 		m.atr = 0 // force percentage fallback in strategy
 	}
 
@@ -563,25 +788,24 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 		m.vwap = bars[n-1].vwap
 	}
 
-	// EMAs
-	m.ema9 = computeEMA(bars, 9)
-	m.emaFast = computeEMA(bars, s.config.MarketRegimeEMAFastPeriod)
-	m.emaSlow = computeEMA(bars, s.config.MarketRegimeEMASlowPeriod)
+	// EMAs on aligned 5-minute candles
+	m.ema9 = computeEMA(bars5, 9)
+	m.emaFast = computeEMA(bars5, s.config.MarketRegimeEMAFastPeriod)
+	m.emaSlow = computeEMA(bars5, s.config.MarketRegimeEMASlowPeriod)
 
 	// MACD histogram (standard 12, 26, 9 on 5-minute candles)
-	bars5 := aggregate5MinBars(bars)
 	m.macdHistogram = computeMACDHistogram(bars5, s.config.MACDFastPeriod, s.config.MACDSlowPeriod, s.config.MACDSignalPeriod)
 
-	// RSI and RSI MA Slope (14-period Wilder RSI)
-	m.rsi = computeRSI(bars, 14)
-	if n >= 15 {
+	// RSI and RSI MA Slope (14-period Wilder RSI) on aligned 5-minute candles
+	m.rsi = computeRSI(bars5, 14)
+	if n5 >= 15 {
 		rsiValues := make([]float64, 0, 10)
-		start := n - 10
+		start := n5 - 10
 		if start < 0 {
 			start = 0
 		}
-		for i := start; i < n; i++ {
-			subBars := bars[:i+1]
+		for i := start; i < n5; i++ {
+			subBars := bars5[:i+1]
 			rsiValues = append(rsiValues, computeRSI(subBars, 14))
 		}
 		if len(rsiValues) >= 2 {
@@ -590,7 +814,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	}
 
 	// ADX for mean-reversion detection
-	m.adx = computeADX(bars, 14)
+	m.adx = computeADX(bars5, 14)
 
 	// Bollinger Bands
 	bbPeriod := s.config.BollingerPeriod
@@ -601,7 +825,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	if bbK == 0 {
 		bbK = 2.0
 	}
-	m.bbUpper, m.bbMiddle, m.bbLower = computeBollingerBands(bars, bbPeriod, bbK)
+	m.bbUpper, m.bbMiddle, m.bbLower = computeBollingerBands(bars5, bbPeriod, bbK)
 
 	// Setup detection
 	m.setupType = "early" // default when insufficient bars
@@ -673,14 +897,9 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 		// Volume-on-pullback: check if recent bars have decreasing volume
 		if m.setupType == "pullback" && n >= 5 {
-			// Derive per-bar volumes from cumulative session volumes
 			barVols := make([]int64, n)
-			barVols[0] = bars[0].volume
-			for i := 1; i < n; i++ {
-				barVols[i] = bars[i].volume - bars[i-1].volume
-				if barVols[i] < 0 {
-					barVols[i] = 0
-				}
+			for i := 0; i < n; i++ {
+				barVols[i] = max(bars[i].volume, 0)
 			}
 			peakVolIdx := n - 5
 			for i := n - 4; i < n; i++ {
@@ -706,8 +925,10 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string) string {
 	switch setupType {
-	case "hod_breakout", "breakout", "breakdown":
+	case "orb_breakout", "hod_breakout", "breakout", "breakdown":
 		return "breakout"
+	case "orb_reclaim":
+		return "continuation"
 	case "hod_pullback", "pullback":
 		return "pullback"
 	case "parabolic-failed-reclaim-short":
@@ -717,6 +938,155 @@ func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string
 		return "continuation"
 	}
 	return "reversal"
+}
+
+func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Tick, metrics scanMetrics, cfg config.TradingConfig) (structuredSetup, bool) {
+	if !markethours.IsMarketOpen(tick.Timestamp) {
+		return structuredSetup{}, false
+	}
+	minutesSinceOpen := markethours.MinutesSinceOpen(tick.Timestamp)
+	if minutesSinceOpen < 5 || minutesSinceOpen > 90 {
+		return structuredSetup{}, false
+	}
+
+	window := cfg.ORBWindowMinutes
+	if window <= 0 {
+		window = 5
+	}
+	if window < 5 {
+		window = 5
+	}
+	if window > 15 {
+		window = 15
+	}
+
+	bufferPct := cfg.ORBBufferPct
+	if bufferPct <= 0 {
+		bufferPct = 0.001
+	}
+
+	bars := regularSessionBars(state.bars)
+	if len(bars) <= window {
+		return structuredSetup{}, false
+	}
+
+	rangeBars := bars[:window]
+	rangeHigh := maxBarHigh(rangeBars)
+	rangeLow := minBarLow(rangeBars)
+	rangeWidth := rangeHigh - rangeLow
+	if rangeHigh <= 0 || rangeWidth <= 0 {
+		return structuredSetup{}, false
+	}
+
+	avgRangeVolume := averageBarVolume(rangeBars)
+	volumeMultiplier := cfg.ORBVolumeMultiplier
+	if volumeMultiplier <= 0 {
+		volumeMultiplier = 1.2
+	}
+	volumeThreshold := avgRangeVolume * max(volumeMultiplier*0.75, 1.0)
+	breakoutLevel := rangeHigh * (1 + bufferPct)
+	currentIdx := len(bars) - 1
+	currentBar := bars[currentIdx]
+
+	breakoutIdx := -1
+	for i := window; i < len(bars); i++ {
+		if bars[i].close > breakoutLevel && float64(max(bars[i].volume, 0)) >= volumeThreshold {
+			breakoutIdx = i
+			break
+		}
+	}
+	if breakoutIdx == -1 {
+		return structuredSetup{}, false
+	}
+
+	if breakoutIdx == currentIdx {
+		breakoutPct := safePct(currentBar.close-breakoutLevel, breakoutLevel) * 100
+		if metrics.oneMinuteReturn > 0 &&
+			metrics.threeMinuteReturn > 0 &&
+			metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct, 1.0) &&
+			breakoutPct <= 3.5 {
+			return structuredSetup{
+				setupType:   "orb_breakout",
+				setupHigh:   rangeHigh,
+				setupLow:    rangeLow,
+				breakoutPct: breakoutPct,
+			}, true
+		}
+		return structuredSetup{}, false
+	}
+
+	if currentIdx-breakoutIdx < 2 {
+		return structuredSetup{}, false
+	}
+
+	postBreakoutBars := bars[breakoutIdx : currentIdx+1]
+	peakHigh := maxBarHigh(postBreakoutBars)
+	pullbackLow := minBarLow(bars[breakoutIdx+1 : currentIdx])
+	if peakHigh <= 0 || pullbackLow <= 0 || pullbackLow >= peakHigh {
+		return structuredSetup{}, false
+	}
+
+	pullbackDepthPct := safePct(peakHigh-pullbackLow, peakHigh) * 100
+	if pullbackDepthPct < 0.5 || pullbackDepthPct > 4.5 {
+		return structuredSetup{}, false
+	}
+	if pullbackLow < rangeHigh*(1-0.003) {
+		return structuredSetup{}, false
+	}
+
+	reclaimLookback := 3
+	if currentIdx-breakoutIdx < reclaimLookback {
+		reclaimLookback = currentIdx - breakoutIdx
+	}
+	if reclaimLookback < 2 {
+		return structuredSetup{}, false
+	}
+	reclaimHigh := maxBarHigh(bars[currentIdx-reclaimLookback : currentIdx])
+	if reclaimHigh <= 0 {
+		return structuredSetup{}, false
+	}
+
+	reclaimPct := safePct(currentBar.close-reclaimHigh, reclaimHigh) * 100
+	if currentBar.close > reclaimHigh &&
+		currentBar.close > breakoutLevel &&
+		metrics.oneMinuteReturn > 0 &&
+		metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct*0.75, 0.5) &&
+		tick.Price > metrics.vwap &&
+		reclaimPct <= 2.5 {
+		return structuredSetup{
+			setupType:   "orb_reclaim",
+			setupHigh:   reclaimHigh,
+			setupLow:    pullbackLow,
+			breakoutPct: reclaimPct,
+		}, true
+	}
+
+	return structuredSetup{}, false
+}
+
+func regularSessionBars(bars []symbolBar) []symbolBar {
+	sessionBars := make([]symbolBar, 0, len(bars))
+	loc := markethours.Location()
+	for _, bar := range bars {
+		barET := bar.timestamp.In(loc)
+		minutes := float64(barET.Hour()*60 + barET.Minute())
+		if minutes < 570 || minutes >= 960 {
+			continue
+		}
+		sessionBars = append(sessionBars, bar)
+	}
+	return sessionBars
+}
+
+func averageBarVolume(bars []symbolBar) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	total := int64(0)
+	for _, bar := range bars {
+		total += max(bar.volume, 0)
+	}
+	return float64(total) / float64(len(bars))
 }
 
 func computeATR(bars []symbolBar, period int) float64 {
@@ -743,38 +1113,42 @@ func computeATR(bars []symbolBar, period int) float64 {
 	return sum / float64(count)
 }
 
-// aggregate5MinBars collapses 1-minute bars into 5-minute OHLCV candles.
+// aggregate5MinBars collapses 1-minute bars into aligned 5-minute OHLCV candles.
 func aggregate5MinBars(bars []symbolBar) []symbolBar {
 	if len(bars) == 0 {
 		return nil
 	}
 	out := make([]symbolBar, 0, len(bars)/5+1)
-	for i := 0; i < len(bars); i += 5 {
-		end := i + 5
-		if end > len(bars) {
-			end = len(bars)
+	for _, bar := range bars {
+		bucket := fiveMinuteBucketStart(bar.timestamp)
+		if len(out) == 0 || !out[len(out)-1].timestamp.Equal(bucket) {
+			out = append(out, symbolBar{
+				timestamp: bucket,
+				open:      bar.open,
+				high:      bar.high,
+				low:       bar.low,
+				close:     bar.close,
+				volume:    max(bar.volume, 0),
+			})
+			continue
 		}
-		chunk := bars[i:end]
-		agg := symbolBar{
-			timestamp: chunk[0].timestamp,
-			open:      chunk[0].open,
-			high:      chunk[0].high,
-			low:       chunk[0].low,
-			close:     chunk[len(chunk)-1].close,
-			volume:    0,
+		agg := &out[len(out)-1]
+		if bar.high > agg.high {
+			agg.high = bar.high
 		}
-		for _, b := range chunk {
-			if b.high > agg.high {
-				agg.high = b.high
-			}
-			if b.low < agg.low || agg.low == 0 {
-				agg.low = b.low
-			}
-			agg.volume += b.volume
+		if bar.low < agg.low || agg.low == 0 {
+			agg.low = bar.low
 		}
-		out = append(out, agg)
+		agg.close = bar.close
+		agg.volume += max(bar.volume, 0)
 	}
 	return out
+}
+
+func fiveMinuteBucketStart(ts time.Time) time.Time {
+	et := ts.In(markethours.Location())
+	minute := et.Minute() - (et.Minute() % 5)
+	return time.Date(et.Year(), et.Month(), et.Day(), et.Hour(), minute, 0, 0, markethours.Location())
 }
 
 // computeMACDHistogram returns the MACD histogram (MACD line - signal line).
@@ -1071,4 +1445,3 @@ func minBarLow(bars []symbolBar) float64 {
 	}
 	return l
 }
-

@@ -114,7 +114,14 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 
 	// If the original signal was a close/partial, always allow the exit
 	if domain.IsClosingIntent(originalIntent) || domain.IsClosingIntent(signal.Intent) {
+		if e.portfolio.HasPendingClose(signal.Symbol) {
+			return domain.OrderRequest{}, false, "pending-close"
+		}
 		return e.toOrderRequest(signal), true, ""
+	}
+
+	if e.portfolio.HasPendingOrder(signal.Symbol) {
+		return domain.OrderRequest{}, false, "pending-order"
 	}
 
 	// Gate checks for opening trades
