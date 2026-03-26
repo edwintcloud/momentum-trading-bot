@@ -135,6 +135,7 @@ type EntrySample struct {
 	AllowedDistanceHighPct float64
 	OneMinuteReturnPct     float64
 	ThreeMinuteReturnPct   float64
+	FiveMinuteReturnPct    float64
 	VolumeRate             float64
 	VolumeLeaderPct        float64
 	LeaderRank             int
@@ -661,6 +662,7 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		AllowedDistanceHighPct: round2(decision.AllowedDistanceHighPct),
 		OneMinuteReturnPct:     round2(candidate.OneMinuteReturnPct),
 		ThreeMinuteReturnPct:   round2(candidate.ThreeMinuteReturnPct),
+		FiveMinuteReturnPct:    round2(candidate.FiveMinuteReturnPct),
 		VolumeRate:             round2(candidate.VolumeRate),
 		VolumeLeaderPct:        candidate.VolumeLeaderPct,
 		LeaderRank:             candidate.LeaderRank,

@@ -135,7 +135,7 @@ func (s *Strategy) Start(ctx context.Context, candidates <-chan domain.Candidate
 			}
 			signal, shouldEmit, reason := s.evaluateCandidate(candidate)
 			if !shouldEmit {
-				if reason != "" && reason != "market-closed"  && reason != "system-paused" {
+				if reason != "" && reason != "market-closed" && reason != "system-paused" {
 					s.runtime.RecordLog("debug", "strategy", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
 				}
 				continue
@@ -326,8 +326,8 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "low-volume"
 	}
 
-	// 3-minute return confirmation for longs
-	if domain.IsLong(c.Direction) && c.ThreeMinuteReturnPct < cfg.MinThreeMinuteReturnPct {
+	// Use the aligned 5-minute candle return for long-side momentum confirmation.
+	if domain.IsLong(c.Direction) && c.FiveMinuteReturnPct < cfg.MinThreeMinuteReturnPct {
 		return domain.TradeSignal{}, false, "no-confirmation"
 	}
 

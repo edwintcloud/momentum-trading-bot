@@ -39,6 +39,7 @@ type Tick struct {
 	BarOpen          float64   `json:"barOpen"`
 	BarHigh          float64   `json:"barHigh"`
 	BarLow           float64   `json:"barLow"`
+	BarVolume        int64     `json:"barVolume"`
 	Open             float64   `json:"open"`
 	HighOfDay        float64   `json:"highOfDay"`
 	Volume           int64     `json:"volume"`
@@ -85,6 +86,7 @@ type Candidate struct {
 	DistanceFromHighPct   float64   `json:"distanceFromHighPct"`
 	OneMinuteReturnPct    float64   `json:"oneMinuteReturnPct"`
 	ThreeMinuteReturnPct  float64   `json:"threeMinuteReturnPct"`
+	FiveMinuteReturnPct   float64   `json:"fiveMinuteReturnPct"`
 	VolumeRate            float64   `json:"volumeRate"`
 	VolumeLeaderPct       float64   `json:"volumeLeaderPct"`
 	LeaderRank            int       `json:"leaderRank"`
@@ -224,8 +226,8 @@ type ClosedTrade struct {
 	ExitPrice        float64   `json:"exitPrice"`
 	PnL              float64   `json:"pnl"`
 	RMultiple        float64   `json:"rMultiple"`
-	MFER             float64   `json:"mfeR"`  // max favorable excursion in R-multiples
-	MAER             float64   `json:"maeR"`  // max adverse excursion in R-multiples
+	MFER             float64   `json:"mfeR"` // max favorable excursion in R-multiples
+	MAER             float64   `json:"maeR"` // max adverse excursion in R-multiples
 	SetupType        string    `json:"setupType"`
 	OpenedAt         time.Time `json:"openedAt"`
 	ClosedAt         time.Time `json:"closedAt"`

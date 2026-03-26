@@ -34,3 +34,4 @@ docker-compose.override.yml
 *.log
 .cache/
 .data/
+logs/
