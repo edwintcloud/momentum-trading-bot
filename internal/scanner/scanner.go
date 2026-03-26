@@ -27,8 +27,22 @@ type symbolState struct {
 	day             string
 	bars            []symbolBar
 	bars5           []symbolBar
+	regularBars     []symbolBar
 	vwapDollarFlow  float64
 	vwapTotalVolume float64
+	orbState        openingRangeState
+}
+
+type openingRangeState struct {
+	window        int
+	bufferPct     float64
+	rangeHigh     float64
+	rangeLow      float64
+	avgRangeVol   float64
+	breakoutLevel float64
+	breakoutIdx   int
+	processedBars int
+	ready         bool
 }
 
 type structuredSetup struct {
@@ -687,9 +701,10 @@ func (s *Scanner) getOrCreateState(tick domain.Tick) *symbolState {
 	state, ok := s.state[tick.Symbol]
 	if !ok || state.day != day {
 		state = &symbolState{
-			day:   day,
-			bars:  make([]symbolBar, 0, 390),
-			bars5: make([]symbolBar, 0, 80),
+			day:         day,
+			bars:        make([]symbolBar, 0, 390),
+			bars5:       make([]symbolBar, 0, 80),
+			regularBars: make([]symbolBar, 0, 390),
 		}
 		s.state[tick.Symbol] = state
 	}
@@ -710,10 +725,12 @@ func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 		state.bars[len(state.bars)-1] = bar
 		s.updateVWAP(state, &prev)
 		s.updateFiveMinuteBars(state)
+		s.updateRegularSessionBars(state)
 	} else {
 		state.bars = append(state.bars, bar)
 		s.updateVWAP(state, nil)
 		s.updateFiveMinuteBars(state)
+		s.updateRegularSessionBars(state)
 	}
 }
 
@@ -755,6 +772,19 @@ func (s *Scanner) updateFiveMinuteBars(state *symbolState) {
 		return
 	}
 	state.bars5[n5-1] = buildFiveMinuteBar(state.bars, bucket)
+}
+
+func (s *Scanner) updateRegularSessionBars(state *symbolState) {
+	last := state.bars[len(state.bars)-1]
+	if !isRegularSessionBar(last.timestamp) {
+		return
+	}
+	n := len(state.regularBars)
+	if n > 0 && state.regularBars[n-1].timestamp.Equal(last.timestamp) {
+		state.regularBars[n-1] = last
+		return
+	}
+	state.regularBars = append(state.regularBars, last)
 }
 
 func buildFiveMinuteBar(bars []symbolBar, bucket time.Time) symbolBar {
@@ -1028,36 +1058,31 @@ func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Ti
 		bufferPct = 0.001
 	}
 
-	bars := regularSessionBars(state.bars)
+	bars := state.regularBars
 	if len(bars) <= window {
 		return structuredSetup{}, false
 	}
 
-	rangeBars := bars[:window]
-	rangeHigh := maxBarHigh(rangeBars)
-	rangeLow := minBarLow(rangeBars)
+	orbState, ready := s.refreshOpeningRangeState(state, bars, cfg, window, bufferPct)
+	if !ready {
+		return structuredSetup{}, false
+	}
+
+	rangeHigh := orbState.rangeHigh
+	rangeLow := orbState.rangeLow
 	rangeWidth := rangeHigh - rangeLow
 	if rangeHigh <= 0 || rangeWidth <= 0 {
 		return structuredSetup{}, false
 	}
-
-	avgRangeVolume := averageBarVolume(rangeBars)
 	volumeMultiplier := cfg.ORBVolumeMultiplier
 	if volumeMultiplier <= 0 {
 		volumeMultiplier = 1.2
 	}
-	volumeThreshold := avgRangeVolume * max(volumeMultiplier*0.75, 1.0)
-	breakoutLevel := rangeHigh * (1 + bufferPct)
+	breakoutLevel := orbState.breakoutLevel
 	currentIdx := len(bars) - 1
 	currentBar := bars[currentIdx]
 
-	breakoutIdx := -1
-	for i := window; i < len(bars); i++ {
-		if bars[i].close > breakoutLevel && float64(max(bars[i].volume, 0)) >= volumeThreshold {
-			breakoutIdx = i
-			break
-		}
-	}
+	breakoutIdx := orbState.breakoutIdx
 	if breakoutIdx == -1 {
 		return structuredSetup{}, false
 	}
@@ -1127,18 +1152,65 @@ func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Ti
 	return structuredSetup{}, false
 }
 
-func regularSessionBars(bars []symbolBar) []symbolBar {
-	sessionBars := make([]symbolBar, 0, len(bars))
-	loc := markethours.Location()
-	for _, bar := range bars {
-		barET := bar.timestamp.In(loc)
-		minutes := float64(barET.Hour()*60 + barET.Minute())
-		if minutes < 570 || minutes >= 960 {
-			continue
-		}
-		sessionBars = append(sessionBars, bar)
+func (s *Scanner) refreshOpeningRangeState(
+	state *symbolState,
+	bars []symbolBar,
+	cfg config.TradingConfig,
+	window int,
+	bufferPct float64,
+) (openingRangeState, bool) {
+	if len(bars) <= window {
+		return openingRangeState{}, false
 	}
-	return sessionBars
+
+	cache := &state.orbState
+	reset := !cache.ready || cache.window != window || cache.bufferPct != bufferPct || cache.processedBars > len(bars)
+	if reset {
+		rangeBars := bars[:window]
+		rangeHigh := maxBarHigh(rangeBars)
+		rangeLow := minBarLow(rangeBars)
+		rangeWidth := rangeHigh - rangeLow
+		if rangeHigh <= 0 || rangeWidth <= 0 {
+			cache.ready = false
+			return openingRangeState{}, false
+		}
+		cache.window = window
+		cache.bufferPct = bufferPct
+		cache.rangeHigh = rangeHigh
+		cache.rangeLow = rangeLow
+		cache.avgRangeVol = averageBarVolume(rangeBars)
+		cache.breakoutLevel = rangeHigh * (1 + bufferPct)
+		cache.breakoutIdx = -1
+		cache.processedBars = window
+		cache.ready = true
+	}
+
+	volumeMultiplier := cfg.ORBVolumeMultiplier
+	if volumeMultiplier <= 0 {
+		volumeMultiplier = 1.2
+	}
+	volumeThreshold := cache.avgRangeVol * max(volumeMultiplier*0.75, 1.0)
+	start := max(window, cache.processedBars-1)
+	if cache.breakoutIdx == len(bars)-1 {
+		cache.breakoutIdx = -1
+		start = max(window, len(bars)-1)
+	}
+	if cache.breakoutIdx == -1 {
+		for i := start; i < len(bars); i++ {
+			if bars[i].close > cache.breakoutLevel && float64(max(bars[i].volume, 0)) >= volumeThreshold {
+				cache.breakoutIdx = i
+				break
+			}
+		}
+	}
+	cache.processedBars = len(bars)
+	return *cache, cache.ready
+}
+
+func isRegularSessionBar(ts time.Time) bool {
+	et := ts.In(markethours.Location())
+	minutes := et.Hour()*60 + et.Minute()
+	return minutes >= 570 && minutes < 960
 }
 
 func averageBarVolume(bars []symbolBar) float64 {
