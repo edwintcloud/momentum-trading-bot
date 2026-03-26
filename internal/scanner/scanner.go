@@ -175,7 +175,8 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 				}
 				select {
 				case work <- tick:
-				default:
+				case <-ctx.Done():
+					return
 				}
 			}
 		}

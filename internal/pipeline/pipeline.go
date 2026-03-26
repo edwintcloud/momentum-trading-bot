@@ -242,19 +242,11 @@ func (p *Pipeline) Start(ctx context.Context) {
 }
 
 func (p *Pipeline) sendTick(ctx context.Context, ch chan domain.Tick, tick domain.Tick) bool {
-	if p.cfg.Deterministic {
-		select {
-		case ch <- tick:
-			return true
-		case <-ctx.Done():
-			return false
-		}
-	}
 	select {
 	case ch <- tick:
 		return true
-	default:
-		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -286,7 +278,8 @@ func (p *Pipeline) startProductionStages(ctx context.Context,
 			p.cfg.Runtime.AddCandidate(c)
 			select {
 			case strategyCandidates <- c:
-			default:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
