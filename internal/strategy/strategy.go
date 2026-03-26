@@ -464,6 +464,15 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.003, 0.15)
 		case "orb_breakout":
 			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.002, 0.10)
+		case "hod_breakout":
+			if c.Score >= 9.0 &&
+				c.OneMinuteReturnPct >= 2.0 &&
+				c.ThreeMinuteReturnPct >= 5.0 &&
+				c.RelativeVolume >= 12.0 &&
+				c.PriceVsVWAPPct <= 10.0 &&
+				c.DistanceFromHighPct <= 0.6 {
+				entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.006, 0.25)
+			}
 		}
 	}
 
@@ -947,12 +956,25 @@ func entryRiskMultiplier(c domain.Candidate) float64 {
 	case "orb_breakout":
 		return 1.35
 	case "hod_breakout":
-		if c.BreakoutPct >= 0.25 &&
+		if c.Score >= 9.0 &&
+			c.OneMinuteReturnPct >= 2.0 &&
+			c.ThreeMinuteReturnPct >= 5.0 &&
+			c.RelativeVolume >= 12.0 &&
 			c.LeaderRank > 0 &&
 			c.LeaderRank <= 2 &&
-			c.RelativeVolume >= 8 &&
 			c.PriceVsVWAPPct >= 1.0 &&
-			c.PriceVsVWAPPct <= 12.0 {
+			c.PriceVsVWAPPct <= 10.0 &&
+			c.DistanceFromHighPct <= 0.6 {
+			return 1.10
+		}
+		if c.Score >= 8.5 &&
+			c.OneMinuteReturnPct >= 5.0 &&
+			c.ThreeMinuteReturnPct >= 7.0 &&
+			c.RelativeVolume >= 25.0 &&
+			c.VolumeLeaderPct >= 25.0 &&
+			c.PriceVsVWAPPct >= 1.0 &&
+			c.PriceVsVWAPPct <= 8.0 &&
+			c.DistanceFromHighPct <= 0.6 {
 			return 0.95
 		}
 		if c.BreakoutPct >= 0.10 &&
@@ -968,13 +990,24 @@ func entryRiskMultiplier(c domain.Candidate) float64 {
 		return 0.80
 	case "hod_pullback":
 		if isStructuredHODPullback(c) {
-			return 0.65
+			if c.LeaderRank > 0 &&
+				c.LeaderRank <= 2 &&
+				c.RelativeVolume >= 10.0 &&
+				c.PriceVsVWAPPct >= 1.5 &&
+				c.PriceVsVWAPPct <= 10.5 &&
+				c.CloseOffHighPct >= 0.8 {
+				return 0.85
+			}
+			return 0.70
 		}
 		if isExplosiveHODPullback(c) {
 			return 0.35
 		}
 		return 0.25
 	case "pullback":
+		if isLeaderOpenDrivePullback(c) {
+			return 0.80
+		}
 		return 0.55
 	}
 	return 1.0
@@ -1028,6 +1061,12 @@ func isLeaderOpenDrivePullback(c domain.Candidate) bool {
 	if c.ConsolidationRangePct > 9.0 {
 		return false
 	}
+	if c.PullbackDepthPct < 8.0 {
+		return false
+	}
+	if c.CloseOffHighPct < 0.75 {
+		return false
+	}
 	if c.PullbackDepthPct > 50 {
 		return false
 	}
@@ -1066,6 +1105,21 @@ func rejectWeakLongStockSelection(c domain.Candidate) (string, bool) {
 		!isLeaderOpenDrivePullback(c) &&
 		c.PriceVsVWAPPct > 12.0 &&
 		(c.LeaderRank == 0 || c.LeaderRank > 3 || c.VolumeLeaderPct < 50) {
+		return "pullback-late-extension", true
+	}
+
+	if c.SetupType == "pullback" &&
+		!isLeaderOpenDrivePullback(c) &&
+		c.ConsolidationRangePct >= 8.0 &&
+		c.PullbackDepthPct < math.Max(4.0, c.ConsolidationRangePct*0.65) {
+		return "pullback-reclaim-filter", true
+	}
+
+	if c.SetupType == "pullback" &&
+		!isLeaderOpenDrivePullback(c) &&
+		c.PriceVsVWAPPct > 14.0 &&
+		c.ConsolidationRangePct > 14.0 &&
+		c.PullbackDepthPct < 10.0 {
 		return "pullback-late-extension", true
 	}
 
@@ -1181,6 +1235,18 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 		c.ThreeMinuteReturnPct < 3.0 {
 		return "hod-breakout-quality", true
 	}
+	if c.SetupType == "hod_breakout" &&
+		c.VolumeRate < 10000 &&
+		c.RelativeVolume < 20.0 {
+		return "hod-breakout-quality", true
+	}
+	if c.SetupType == "hod_breakout" &&
+		c.RelativeVolume < 6.5 &&
+		c.FiveMinuteReturnPct < 1.6 &&
+		c.ThreeMinuteReturnPct < 5.0 &&
+		c.PriceVsVWAPPct > 5.0 {
+		return "hod-breakout-quality", true
+	}
 	if c.DistanceFromHighPct > 0.6 {
 		return "hod-breakout-quality", true
 	}
@@ -1278,6 +1344,18 @@ func rejectWeakHODPullback(c domain.Candidate, cfg config.TradingConfig) (string
 		return "pullback-late-extension", true
 	}
 	if explosiveReclaim && c.PriceVsVWAPPct > lateChaseVWAPCap+4.0 {
+		return "pullback-late-extension", true
+	}
+	if c.DistanceFromHighPct > 3.25 &&
+		c.PriceVsVWAPPct > 3.5 &&
+		c.CloseOffHighPct < 0.75 &&
+		c.PullbackDepthPct < 15.0 {
+		return "pullback-reclaim-filter", true
+	}
+	if c.DistanceFromHighPct > 4.75 &&
+		c.PriceVsVWAPPct > 9.0 &&
+		c.OneMinuteReturnPct > 4.0 &&
+		c.PullbackDepthPct < 15.0 {
 		return "pullback-late-extension", true
 	}
 
