@@ -21,6 +21,12 @@ func (c *CompositeRecorder) RecordCandidate(candidate domain.Candidate) {
 	}
 }
 
+func (c *CompositeRecorder) RecordCandidateEvaluation(candidate domain.CandidateEvaluation) {
+	for _, r := range c.recorders {
+		r.RecordCandidateEvaluation(candidate)
+	}
+}
+
 // RecordLog delegates to underlying recorders.
 func (c *CompositeRecorder) RecordLog(entry domain.LogEntry) {
 	for _, r := range c.recorders {

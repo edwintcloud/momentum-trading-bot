@@ -24,6 +24,12 @@ func (l *Logger) RecordCandidate(c domain.Candidate) {
 	}
 }
 
+func (l *Logger) RecordCandidateEvaluation(c domain.CandidateEvaluation) {
+	if l.storage != nil {
+		l.storage.RecordCandidateEvaluation(c)
+	}
+}
+
 func (l *Logger) RecordLog(entry domain.LogEntry) {
 	log.Printf("[%s] %s: %s", entry.Level, entry.Component, entry.Message)
 	if l.storage != nil {

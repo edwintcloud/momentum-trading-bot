@@ -21,6 +21,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/market"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/optimizer"
 	"github.com/edwintcloud/momentum-trading-bot/internal/pipeline"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
@@ -43,6 +44,11 @@ func main() {
 				log.Fatalf("backtest: %v", err)
 			}
 			return
+		case "batch-backtest":
+			if err := runBatchBacktest(os.Args[2:]); err != nil {
+				log.Fatalf("batch-backtest: %v", err)
+			}
+			return
 		case "optimize":
 			if err := runOptimize(os.Args[2:]); err != nil {
 				log.Fatalf("optimize: %v", err)
@@ -51,6 +57,21 @@ func main() {
 		case "auto-optimize":
 			if err := runAutoOptimize(os.Args[2:]); err != nil {
 				log.Fatalf("auto-optimize: %v", err)
+			}
+			return
+		case "label-candidates":
+			if err := runLabelCandidates(os.Args[2:]); err != nil {
+				log.Fatalf("label-candidates: %v", err)
+			}
+			return
+		case "train-ml":
+			if err := runTrainML(os.Args[2:]); err != nil {
+				log.Fatalf("train-ml: %v", err)
+			}
+			return
+		case "prepare-ml-dataset":
+			if err := runPrepareMLDataset(os.Args[2:]); err != nil {
+				log.Fatalf("prepare-ml-dataset: %v", err)
 			}
 			return
 		case "live":
@@ -181,20 +202,26 @@ func runLive() {
 	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
 	normalizer := market.NewNormalizer()
+	scorer, err := ml.ResolveScorer(tradingCfg.MLScoringEnabled, tradingCfg.MLModelPath)
+	if err != nil {
+		log.Fatalf("ml scorer: %v", err)
+	}
 
 	pipe := pipeline.New(pipeline.Config{
-		TradingCfg:    tradingCfg,
-		Runtime:       runtimeState,
-		Portfolio:     portfolioMgr,
-		Normalizer:    normalizer,
-		Scanner:       scannerInst,
-		Strategy:      strategyInst,
-		RiskEngine:    riskEngine,
-		VolEstimator:  volEstimator,
-		Broker:        alpacaClient,
-		Recorder:      logger,
-		RegimeTracker: regimeTracker,
-		FloatLookup:   floatStore.Get,
+		TradingCfg:                tradingCfg,
+		Runtime:                   runtimeState,
+		Portfolio:                 portfolioMgr,
+		Normalizer:                normalizer,
+		Scanner:                   scannerInst,
+		Strategy:                  strategyInst,
+		RiskEngine:                riskEngine,
+		VolEstimator:              volEstimator,
+		Broker:                    alpacaClient,
+		Recorder:                  logger,
+		Scorer:                    scorer,
+		RegimeTracker:             regimeTracker,
+		FloatLookup:               floatStore.Get,
+		CandidateEvaluationSource: "live",
 	})
 	pipe.Start(ctx)
 

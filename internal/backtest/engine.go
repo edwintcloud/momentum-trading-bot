@@ -3,6 +3,7 @@ package backtest
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/market"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/pipeline"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
@@ -100,28 +102,38 @@ type TradeBreakdown struct {
 
 // Diagnostics summarizes how bars moved through the backtest decision funnel.
 type Diagnostics struct {
-	BarsLoaded         int
-	BarsInWindow       int
-	EntryCandidates    int
-	EntrySignals       int
-	EntryRiskApproved  int
-	FillExpiries       int
-	ExitChecks         int
-	ExitSignals        int
-	ExitRiskApproved   int
-	ScannerRejects     map[string]int
-	EntryRejects       map[string]int
-	EntryRiskRejects   map[string]int
-	ExitRejects        map[string]int
-	ExitRiskRejects    map[string]int
-	ByRegime           map[string]TradeBreakdown
-	BySetup            map[string]TradeBreakdown
-	BySide             map[string]TradeBreakdown
-	EntrySignalSamples []EntrySample
-	EntryRejectSamples map[string]EntrySample
-	RiskRejectSamples  []RiskRejectSample
-	FillExpirySamples  []FillExpirySample
-	DebugTrace         []DebugTraceEvent
+	BarsLoaded          int
+	BarsInWindow        int
+	EntryCandidates     int
+	EntrySignals        int
+	EntryRiskApproved   int
+	FillExpiries        int
+	ExitChecks          int
+	ExitSignals         int
+	ExitRiskApproved    int
+	ScannerRejects      map[string]int
+	EntryRejects        map[string]int
+	EntryRiskRejects    map[string]int
+	ExitRejects         map[string]int
+	ExitRiskRejects     map[string]int
+	ByRegime            map[string]TradeBreakdown
+	BySetup             map[string]TradeBreakdown
+	BySide              map[string]TradeBreakdown
+	EntrySignalSamples  []EntrySample
+	EntryRejectSamples  map[string]EntrySample
+	RiskRejectSamples   []RiskRejectSample
+	FillExpirySamples   []FillExpirySample
+	DebugTrace          []DebugTraceEvent
+	MLShadowScored      int
+	MLShadowVetos       int
+	MLShadowUpsizes     int
+	MLShadowSamples     []MLShadowSample
+	MLAdvisoryEvaluated int
+	MLAdvisoryApplied   int
+	MLAdvisoryVetos     int
+	MLAdvisoryUpsizes   int
+	MLAdvisoryDownsizes int
+	MLAdvisorySamples   []MLAdvisorySample
 }
 
 // EntrySample captures a representative entry decision for diagnostics.
@@ -199,6 +211,34 @@ type DebugTraceEvent struct {
 	CloseOffHighPct       float64   `json:"closeOffHighPct,omitempty"`
 }
 
+type MLShadowSample struct {
+	Symbol          string    `json:"symbol"`
+	Timestamp       time.Time `json:"timestamp"`
+	SetupType       string    `json:"setupType"`
+	StrategyReason  string    `json:"strategyReason"`
+	Probability     float64   `json:"probability"`
+	Threshold       float64   `json:"threshold"`
+	Decision        string    `json:"decision"`
+	DayRankSoFar    int       `json:"dayRankSoFar"`
+	BarRankSoFar    int       `json:"barRankSoFar"`
+	StrategyEmitted bool      `json:"strategyEmitted"`
+	RiskApproved    bool      `json:"riskApproved"`
+}
+
+type MLAdvisorySample struct {
+	Symbol           string    `json:"symbol"`
+	Timestamp        time.Time `json:"timestamp"`
+	SetupType        string    `json:"setupType"`
+	StrategyReason   string    `json:"strategyReason"`
+	Probability      float64   `json:"probability"`
+	Threshold        float64   `json:"threshold"`
+	Decision         string    `json:"decision"`
+	OriginalQuantity int64     `json:"originalQuantity"`
+	AdjustedQuantity int64     `json:"adjustedQuantity"`
+	SizeMultiplier   float64   `json:"sizeMultiplier"`
+	RiskApproved     bool      `json:"riskApproved"`
+}
+
 type bar = InputBar
 
 // Run executes a historical backtest by wiring components through the shared Pipeline.
@@ -243,22 +283,28 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
 	broker := execution.NewPaperBroker()
 	normalizer := market.NewNormalizer()
+	scorer, err := ml.ResolveScorer(cfg.MLScoringEnabled, cfg.MLModelPath)
+	if err != nil {
+		return Result{}, err
+	}
 
 	peakEquity := cfg.StartingCapital
 	maxDrawdown := 0.0
 
 	pipe := pipeline.New(pipeline.Config{
-		TradingCfg:    cfg,
-		Runtime:       runtimeState,
-		Portfolio:     book,
-		Normalizer:    normalizer,
-		Scanner:       scan,
-		Strategy:      strat,
-		RiskEngine:    riskEngine,
-		VolEstimator:  volEstimator,
-		Broker:        broker,
-		Recorder:      runCfg.Recorder,
-		RegimeTracker: regimeTracker,
+		TradingCfg:                cfg,
+		Runtime:                   runtimeState,
+		Portfolio:                 book,
+		Normalizer:                normalizer,
+		Scanner:                   scan,
+		Strategy:                  strat,
+		RiskEngine:                riskEngine,
+		VolEstimator:              volEstimator,
+		Broker:                    broker,
+		Recorder:                  runCfg.Recorder,
+		Scorer:                    scorer,
+		RegimeTracker:             regimeTracker,
+		CandidateEvaluationSource: "backtest",
 		FloatLookup: func(sym string) int64 {
 			if runCfg.FloatStore != nil {
 				return runCfg.FloatStore.Get(sym)
@@ -277,6 +323,63 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		OnTick: func(tick domain.Tick, domBar domain.Bar) {
 			broker.UpdateBar(domBar)
 			simTimeNano.Store(domBar.Timestamp.UnixNano())
+		},
+		OnCandidateEvaluation: func(eval domain.CandidateEvaluation) {
+			mu.Lock()
+			defer mu.Unlock()
+			if eval.MLScored {
+				diagnostics.MLShadowScored++
+				if eval.MLShadowVeto {
+					diagnostics.MLShadowVetos++
+				}
+				if eval.MLShadowUpsize {
+					diagnostics.MLShadowUpsizes++
+				}
+				if len(diagnostics.MLShadowSamples) < 8 {
+					diagnostics.MLShadowSamples = append(diagnostics.MLShadowSamples, MLShadowSample{
+						Symbol:          eval.Candidate.Symbol,
+						Timestamp:       eval.RecordedAt,
+						SetupType:       eval.Candidate.SetupType,
+						StrategyReason:  eval.StrategyReason,
+						Probability:     eval.MLProbability,
+						Threshold:       eval.MLThreshold,
+						Decision:        eval.MLShadowDecision,
+						DayRankSoFar:    eval.MLDayRankSoFar,
+						BarRankSoFar:    eval.MLBarRankSoFar,
+						StrategyEmitted: eval.StrategyEmitted,
+						RiskApproved:    eval.RiskApproved,
+					})
+				}
+			}
+			if eval.MLAdvisoryEnabled && eval.StrategyEmitted {
+				diagnostics.MLAdvisoryEvaluated++
+				if eval.MLAdvisoryApplied {
+					diagnostics.MLAdvisoryApplied++
+					switch eval.MLAdvisoryDecision {
+					case "veto":
+						diagnostics.MLAdvisoryVetos++
+					case "upsize":
+						diagnostics.MLAdvisoryUpsizes++
+					case "downsize":
+						diagnostics.MLAdvisoryDownsizes++
+					}
+					if len(diagnostics.MLAdvisorySamples) < 8 {
+						diagnostics.MLAdvisorySamples = append(diagnostics.MLAdvisorySamples, MLAdvisorySample{
+							Symbol:           eval.Candidate.Symbol,
+							Timestamp:        eval.RecordedAt,
+							SetupType:        eval.Candidate.SetupType,
+							StrategyReason:   eval.StrategyReason,
+							Probability:      eval.MLProbability,
+							Threshold:        eval.MLThreshold,
+							Decision:         eval.MLAdvisoryDecision,
+							OriginalQuantity: eval.MLAdvisoryOriginalQuantity,
+							AdjustedQuantity: eval.MLAdvisoryAdjustedQuantity,
+							SizeMultiplier:   eval.MLAdvisorySizeMultiplier,
+							RiskApproved:     eval.RiskApproved,
+						})
+					}
+				}
+			}
 		},
 		TickFilter: func(t domain.Tick) bool {
 			return withinWindow(t.Timestamp, runCfg.Start, runCfg.End)
@@ -433,6 +536,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	// Feed bars from iterator into the pipeline.
 	barsLoaded := 0
 	barsInWindow := 0
+	progressEvery := 250000
+	lastProgressAt := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -451,6 +556,16 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		if withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
 			barsInWindow++
 		}
+		if barsLoaded%progressEvery == 0 && time.Since(lastProgressAt) >= 15*time.Second {
+			log.Printf(
+				"Backtest progress bars_loaded=%d bars_in_window=%d last_bar=%s %s",
+				barsLoaded,
+				barsInWindow,
+				currentBar.Symbol,
+				currentBar.Timestamp.Format(time.RFC3339),
+			)
+			lastProgressAt = time.Now()
+		}
 		pipe.BarCh() <- domain.Bar{
 			Symbol:      currentBar.Symbol,
 			Timestamp:   currentBar.Timestamp,
@@ -464,8 +579,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			CatalystURL: currentBar.CatalystURL,
 		}
 	}
+	log.Printf("Backtest bar feed complete bars_loaded=%d bars_in_window=%d waiting_for_pipeline=true", barsLoaded, barsInWindow)
 	pipe.Close()
 	pipe.Wait()
+	log.Printf("Backtest pipeline drain complete bars_loaded=%d bars_in_window=%d", barsLoaded, barsInWindow)
 
 	diagnostics.BarsLoaded = barsLoaded
 	diagnostics.BarsInWindow = barsInWindow

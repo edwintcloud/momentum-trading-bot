@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "generatedAt": "2026-03-26T23:43:19.570806-04:00",
+  "inputPaths": [
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_01_02_2025_01_15_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_01_30_2025_02_12_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_02_27_2025_03_12_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_03_27_2025_04_09_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_04_24_2025_05_07_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_05_22_2025_06_04_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_06_19_2025_07_02_labels.jsonl",
+    ".cache/ml/rolling_2025_sampled_dataset/sampled2025_2025_07_17_2025_07_30_labels.jsonl"
+  ],
+  "config": {
+    "windowSpec": {
+      "trainDays": 24,
+      "validDays": 8,
+      "purgeDays": 2,
+      "stepDays": 8
+    },
+    "sampleScope": "risk_approved",
+    "minTrainSamples": 50,
+    "minValidSamples": 10,
+    "epochs": 50,
+    "learningRate": 0.05,
+    "l2": 0.0001,
+    "calibrationBins": 10
+  },
+  "tradingDays": [
+    "2025-01-02",
+    "2025-01-03",
+    "2025-01-06",
+    "2025-01-07",
+    "2025-01-08",
+    "2025-01-10",
+    "2025-01-13",
+    "2025-01-14",
+    "2025-01-15",
+    "2025-01-30",
+    "2025-01-31",
+    "2025-02-03",
+    "2025-02-04",
+    "2025-02-05",
+    "2025-02-06",
+    "2025-02-07",
+    "2025-02-10",
+    "2025-02-11",
+    "2025-02-12",
+    "2025-02-27",
+    "2025-02-28",
+    "2025-03-04",
+    "2025-03-05",
+    "2025-03-06",
+    "2025-03-07",
+    "2025-03-10",
+    "2025-03-11",
+    "2025-03-12",
+    "2025-03-27",
+    "2025-03-28",
+    "2025-03-31",
+    "2025-04-01",
+    "2025-04-02",
+    "2025-04-03",
+    "2025-04-07",
+    "2025-04-08",
+    "2025-04-09",
+    "2025-04-24",
+    "2025-04-25",
+    "2025-04-28",
+    "2025-04-29",
+    "2025-04-30",
+    "2025-05-01",
+    "2025-05-02",
+    "2025-05-05",
+    "2025-05-06",
+    "2025-05-07",
+    "2025-05-22",
+    "2025-05-23",
+    "2025-05-27",
+    "2025-05-28",
+    "2025-05-29",
+    "2025-05-30",
+    "2025-06-02",
+    "2025-06-03",
+    "2025-06-04",
+    "2025-06-20",
+    "2025-06-23",
+    "2025-06-24",
+    "2025-06-25",
+    "2025-06-26",
+    "2025-06-27",
+    "2025-06-30",
+    "2025-07-01",
+    "2025-07-02",
+    "2025-07-17",
+    "2025-07-18",
+    "2025-07-21",
+    "2025-07-22",
+    "2025-07-23",
+    "2025-07-24",
+    "2025-07-25",
+    "2025-07-28",
+    "2025-07-29",
+    "2025-07-30"
+  ],
+  "sideReports": {
+    "long": {
+      "side": "long",
+      "windows": [
+        {
+          "side": "long",
+          "trainStart": "2025-01-02T00:00:00-05:00",
+          "trainEnd": "2025-03-06T00:00:00-05:00",
+          "validStart": "2025-03-11T00:00:00-04:00",
+          "validEnd": "2025-04-03T00:00:00-04:00",
+          "trainCount": 61,
+          "validCount": 12,
+          "metrics": {
+            "count": 12,
+            "winRate": 0.3333333333333333,
+            "brierScore": 0.3299897119341564,
+            "logLoss": 2.726551870925493,
+            "avgReturn": -0.010591940796170457
+          }
+        },
+        {
+          "side": "long",
+          "trainStart": "2025-01-15T00:00:00-05:00",
+          "trainEnd": "2025-04-01T00:00:00-04:00",
+          "validStart": "2025-04-07T00:00:00-04:00",
+          "validEnd": "2025-04-30T00:00:00-04:00",
+          "trainCount": 54,
+          "validCount": 16,
+          "metrics": {
+            "count": 16,
+            "winRate": 0.3125,
+            "brierScore": 0.19835206450195628,
+            "logLoss": 1.2555783858970393,
+            "avgReturn": -0.003400948121957152
+          }
+        },
+        {
+          "side": "long",
+          "trainStart": "2025-04-29T00:00:00-04:00",
+          "trainEnd": "2025-07-01T00:00:00-04:00",
+          "validStart": "2025-07-18T00:00:00-04:00",
+          "validEnd": "2025-07-29T00:00:00-04:00",
+          "trainCount": 54,
+          "validCount": 18,
+          "metrics": {
+            "count": 18,
+            "winRate": 0.4444444444444444,
+            "brierScore": 0.4752623456790124,
+            "logLoss": 5.612559278842982,
+            "avgReturn": 0.0028119943430530503
+          }
+        }
+      ],
+      "aggregate": {
+        "count": 46,
+        "winRate": 0.3695652173913043,
+        "brierScore": 0.3410485173361608,
+        "logLoss": 3.3442161661876577,
+        "avgReturn": -0.002845707855008803
+      },
+      "finalModelPath": "artifacts/ml/rolling_2025_sampled_model_risk_approved_wide/long_model.json"
+    },
+    "short": {
+      "side": "short",
+      "windows": [
+        {
+          "side": "short",
+          "trainStart": "2025-04-02T00:00:00-04:00",
+          "trainEnd": "2025-06-04T00:00:00-04:00",
+          "validStart": "2025-06-24T00:00:00-04:00",
+          "validEnd": "2025-07-17T00:00:00-04:00",
+          "trainCount": 50,
+          "validCount": 25,
+          "metrics": {
+            "count": 25,
+            "winRate": 0.24,
+            "brierScore": 0.23336456599286565,
+            "logLoss": 1.567879787258943,
+            "avgReturn": -0.012079681274900403
+          }
+        },
+        {
+          "side": "short",
+          "trainStart": "2025-04-29T00:00:00-04:00",
+          "trainEnd": "2025-07-01T00:00:00-04:00",
+          "validStart": "2025-07-18T00:00:00-04:00",
+          "validEnd": "2025-07-29T00:00:00-04:00",
+          "trainCount": 56,
+          "validCount": 27,
+          "metrics": {
+            "count": 27,
+            "winRate": 0.2962962962962963,
+            "brierScore": 0.46226526413034347,
+            "logLoss": 3.202948546006625,
+            "avgReturn": -0.017139591563768458
+          }
+        }
+      ],
+      "aggregate": {
+        "count": 52,
+        "winRate": 0.2692307692307692,
+        "brierScore": 0.35221685156424837,
+        "logLoss": 2.416857796608701,
+        "avgReturn": -0.014706942386428059
+      },
+      "finalModelPath": "artifacts/ml/rolling_2025_sampled_model_risk_approved_wide/short_model.json"
+    }
+  },
+  "aggregateMetrics": {
+    "long": {
+      "count": 46,
+      "winRate": 0.3695652173913043,
+      "brierScore": 0.3410485173361608,
+      "logLoss": 3.3442161661876577,
+      "avgReturn": -0.002845707855008803
+    },
+    "short": {
+      "count": 52,
+      "winRate": 0.2692307692307692,
+      "brierScore": 0.35221685156424837,
+      "logLoss": 2.416857796608701,
+      "avgReturn": -0.014706942386428059
+    }
+  }
+}

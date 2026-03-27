@@ -19,6 +19,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/storage"
+	"github.com/edwintcloud/momentum-trading-bot/internal/telemetry"
 )
 
 var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -31,6 +32,12 @@ func runBacktest(args []string) error {
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
 	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
 	reportOut := flags.String("report-out", ".cache/backtest/latest-report.json", "Optional JSON report artifact path; set empty string to disable")
+	candidateOut := flags.String("candidate-out", "", "Optional JSONL candidate evaluation export path")
+	mlModelPath := flags.String("ml-model", "", "Optional ML model artifact path or directory for shadow scoring")
+	mlThreshold := flags.Float64("ml-threshold", 0, "Optional ML shadow scoring threshold override")
+	mlAdvisory := flags.Bool("ml-advisory", false, "Enable ML advisory mode (veto/downsize/upsize) on top of rules")
+	mlAdvisoryMinProb := flags.Float64("ml-advisory-min-prob", 0, "Optional ML advisory minimum probability override")
+	mlAdvisoryMaxVetos := flags.Int("ml-advisory-max-vetos", 0, "Optional ML advisory max daily vetos override")
 	debugSymbols := flags.String("debug", "", "Comma-separated symbols to trace per-bar through scanner/strategy")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -67,6 +74,19 @@ func runBacktest(args []string) error {
 	} else {
 		log.Printf("Backtest logs writing to %s", logDir)
 	}
+	recorder := fsRecorder
+	if *candidateOut != "" {
+		candidateRecorder, err := storage.NewCandidateEvaluationFileRecorder(*candidateOut)
+		if err != nil {
+			return err
+		}
+		if recorder != nil {
+			recorder = telemetry.NewCompositeRecorder(recorder, candidateRecorder)
+		} else {
+			recorder = candidateRecorder
+		}
+		log.Printf("Backtest candidate evaluations writing to %s", *candidateOut)
+	}
 
 	// Load float data for backtest tick enrichment
 	floatStore := alpaca.NewFloatStore()
@@ -78,7 +98,7 @@ func runBacktest(args []string) error {
 		DataPath:   *dataPath,
 		Start:      start,
 		End:        end,
-		Recorder:   fsRecorder,
+		Recorder:   recorder,
 		FloatStore: floatStore,
 	}
 	if *debugSymbols != "" {
@@ -143,6 +163,40 @@ func runBacktest(args []string) error {
 		}
 	} else {
 		log.Printf("Backtest using broker-tuned baseline config (no bundled trading profile found)")
+	}
+	if *mlModelPath != "" {
+		cfg.MLScoringEnabled = true
+		cfg.MLModelPath = *mlModelPath
+	}
+	if *mlThreshold > 0 {
+		cfg.MLScoringEnabled = true
+		cfg.MLScoringThreshold = *mlThreshold
+	}
+	if *mlAdvisory {
+		cfg.MLScoringEnabled = true
+		cfg.MLAdvisoryEnabled = true
+	}
+	if *mlAdvisoryMinProb > 0 {
+		cfg.MLScoringEnabled = true
+		cfg.MLAdvisoryEnabled = true
+		cfg.MLAdvisoryMinProb = *mlAdvisoryMinProb
+	}
+	if *mlAdvisoryMaxVetos > 0 {
+		cfg.MLAdvisoryEnabled = true
+		cfg.MLAdvisoryMaxVetosPerDay = *mlAdvisoryMaxVetos
+	}
+	if cfg.MLScoringEnabled {
+		log.Printf("Backtest ML shadow scoring enabled model=%s threshold=%.4f", cfg.MLModelPath, cfg.MLScoringThreshold)
+	}
+	if cfg.MLAdvisoryEnabled {
+		log.Printf(
+			"Backtest ML advisory enabled min_prob=%.4f max_vetos_per_day=%d veto=%t downsize=%t upsize=%t",
+			cfg.MLAdvisoryMinProb,
+			cfg.MLAdvisoryMaxVetosPerDay,
+			cfg.MLAdvisoryVetoEnabled,
+			cfg.MLAdvisoryDownsizeEnabled,
+			cfg.MLAdvisoryUpsizeEnabled,
+		)
 	}
 	logBacktestConfig(cfg)
 
@@ -312,6 +366,21 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 		diag.ExitSignals,
 		diag.ExitRiskApproved,
 	)
+	if diag.MLShadowScored > 0 {
+		log.Printf("Backtest ML shadow scored=%d vetos=%d upsizes=%d", diag.MLShadowScored, diag.MLShadowVetos, diag.MLShadowUpsizes)
+		logMLShadowSamples(diag.MLShadowSamples)
+	}
+	if diag.MLAdvisoryEvaluated > 0 {
+		log.Printf(
+			"Backtest ML advisory evaluated=%d applied=%d vetos=%d downsizes=%d upsizes=%d",
+			diag.MLAdvisoryEvaluated,
+			diag.MLAdvisoryApplied,
+			diag.MLAdvisoryVetos,
+			diag.MLAdvisoryDownsizes,
+			diag.MLAdvisoryUpsizes,
+		)
+		logMLAdvisorySamples(diag.MLAdvisorySamples)
+	}
 	logReasonCounts("scanner rejects", diag.ScannerRejects, diag.BarsInWindow)
 	logReasonCounts("strategy entry rejects", diag.EntryRejects, diag.EntryCandidates)
 	logReasonCounts("risk entry rejects", diag.EntryRiskRejects, diag.EntrySignals)
@@ -321,6 +390,54 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	logEntryRejectSamples(diag)
 	logRiskRejectSamples(diag.RiskRejectSamples)
 	logFillExpirySamples(diag.FillExpirySamples)
+}
+
+func logMLShadowSamples(samples []backtest.MLShadowSample) {
+	if len(samples) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, fmt.Sprintf(
+			"%s@%s prob=%.3f thresh=%.3f decision=%s day_rank=%d bar_rank=%d setup=%s strategy=%s emitted=%t risk=%t",
+			sample.Symbol,
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
+			sample.Probability,
+			sample.Threshold,
+			sample.Decision,
+			sample.DayRankSoFar,
+			sample.BarRankSoFar,
+			sample.SetupType,
+			sample.StrategyReason,
+			sample.StrategyEmitted,
+			sample.RiskApproved,
+		))
+	}
+	log.Printf("Backtest ML shadow samples %s", strings.Join(parts, " | "))
+}
+
+func logMLAdvisorySamples(samples []backtest.MLAdvisorySample) {
+	if len(samples) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, fmt.Sprintf(
+			"%s@%s prob=%.3f thresh=%.3f decision=%s qty=%d->%d mult=%.2f setup=%s strategy=%s risk=%t",
+			sample.Symbol,
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
+			sample.Probability,
+			sample.Threshold,
+			sample.Decision,
+			sample.OriginalQuantity,
+			sample.AdjustedQuantity,
+			sample.SizeMultiplier,
+			sample.SetupType,
+			sample.StrategyReason,
+			sample.RiskApproved,
+		))
+	}
+	log.Printf("Backtest ML advisory samples %s", strings.Join(parts, " | "))
 }
 
 func logBacktestSummary(start, end time.Time, result backtest.Result) {

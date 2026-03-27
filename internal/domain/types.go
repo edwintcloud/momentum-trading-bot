@@ -5,6 +5,7 @@ import "time"
 // EventRecorder persists operator-visible and trading events.
 type EventRecorder interface {
 	RecordCandidate(Candidate)
+	RecordCandidateEvaluation(CandidateEvaluation)
 	RecordLog(LogEntry)
 	RecordExecution(ExecutionReport)
 	RecordClosedTrade(ClosedTrade)
@@ -121,6 +122,44 @@ type Candidate struct {
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
 	Timestamp             time.Time `json:"timestamp"`
+}
+
+// CandidateEvaluation captures a scanner-passed candidate plus the strategy and
+// risk decisions that followed. This is the core export row for ML training.
+type CandidateEvaluation struct {
+	RecordedAt                 time.Time    `json:"recordedAt"`
+	Source                     string       `json:"source"`
+	Candidate                  Candidate    `json:"candidate"`
+	StrategyEvaluated          bool         `json:"strategyEvaluated"`
+	StrategyEmitted            bool         `json:"strategyEmitted"`
+	StrategyReason             string       `json:"strategyReason"`
+	PredictedReturnPct         float64      `json:"predictedReturnPct"`
+	RequiredReturnPct          float64      `json:"requiredReturnPct"`
+	AllowedDistanceHighPct     float64      `json:"allowedDistanceHighPct"`
+	StrongSqueeze              bool         `json:"strongSqueeze"`
+	MLScored                   bool         `json:"mlScored"`
+	MLProbability              float64      `json:"mlProbability"`
+	MLThreshold                float64      `json:"mlThreshold"`
+	MLModelPath                string       `json:"mlModelPath"`
+	MLModelSide                string       `json:"mlModelSide"`
+	MLShadowDecision           string       `json:"mlShadowDecision"`
+	MLShadowVeto               bool         `json:"mlShadowVeto"`
+	MLShadowUpsize             bool         `json:"mlShadowUpsize"`
+	MLShadowSizeMultiplier     float64      `json:"mlShadowSizeMultiplier"`
+	MLDayRankSoFar             int          `json:"mlDayRankSoFar"`
+	MLBarRankSoFar             int          `json:"mlBarRankSoFar"`
+	MLAdvisoryEnabled          bool         `json:"mlAdvisoryEnabled"`
+	MLAdvisoryApplied          bool         `json:"mlAdvisoryApplied"`
+	MLAdvisoryDecision         string       `json:"mlAdvisoryDecision"`
+	MLAdvisoryVeto             bool         `json:"mlAdvisoryVeto"`
+	MLAdvisorySizeMultiplier   float64      `json:"mlAdvisorySizeMultiplier"`
+	MLAdvisoryOriginalQuantity int64        `json:"mlAdvisoryOriginalQuantity"`
+	MLAdvisoryAdjustedQuantity int64        `json:"mlAdvisoryAdjustedQuantity"`
+	Signal                     TradeSignal  `json:"signal"`
+	RiskEvaluated              bool         `json:"riskEvaluated"`
+	RiskApproved               bool         `json:"riskApproved"`
+	RiskReason                 string       `json:"riskReason"`
+	Order                      OrderRequest `json:"order"`
 }
 
 // TradeSignal is emitted by the strategy for both entries and exits.

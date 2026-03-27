@@ -379,7 +379,6 @@ This starts PostgreSQL + the bot + the auto-optimizer. The `.cache` directory is
 | `POSTGRES_DB` | PostgreSQL database name (Docker) | `momentum` |
 | `POSTGRES_USER` | PostgreSQL user (Docker) | `momentum` |
 | `POSTGRES_PASSWORD` | PostgreSQL password (Docker) | `momentum` |
-| `FLOAT_DATA_URL` | URL or file path to CSV with `symbol,float` per line | (optional) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | (optional) |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID for notifications | (optional) |
 

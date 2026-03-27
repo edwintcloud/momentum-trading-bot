@@ -237,6 +237,20 @@ type MLConfig struct {
 	MLModelPath                  string
 	MLScoreWeight                float64
 	MLScoringThreshold           float64
+	MLAdvisoryEnabled            bool
+	MLAdvisoryVetoEnabled        bool
+	MLAdvisoryUpsizeEnabled      bool
+	MLAdvisoryDownsizeEnabled    bool
+	MLAdvisoryMinProb            float64
+	MLAdvisoryUpsizeThreshold    float64
+	MLAdvisoryDownsizeThreshold  float64
+	MLAdvisoryLongDownsizeThreshold  float64
+	MLAdvisoryShortDownsizeThreshold float64
+	MLAdvisoryUpsizeMultiplier   float64
+	MLAdvisoryDownsizeMultiplier float64
+	MLAdvisoryMaxVetosPerDay     int
+	MLAdvisoryProtectTopDayRank  int
+	MLAdvisoryProtectTopBarRank  int
 	MLScoringWeightInEnsemble    float64
 	MetaLabelEnabled             bool
 	MetaLabelModelPath           string
