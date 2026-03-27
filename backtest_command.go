@@ -131,26 +131,32 @@ func runBacktest(args []string) error {
 		// account balance, otherwise ROI and sizing depend on whatever happened in the
 		// paper/live account outside the historical window.
 		cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
-		symbols, blockedSymbols, err := resolveBacktestSymbols(setupCtx, client, end)
+		universe, err := resolveBacktestSymbols(setupCtx, client, end)
 		if err != nil {
 			return err
 		}
-		runCfg.BlockedSymbols = blockedSymbols
+		runCfg.BlockedSymbols = universe.BlockedSymbols
+		runCfg.EasyToBorrow = universe.EasyToBorrow
 		// Go back 3 calendar days so the warmup window includes at least one
 		// prior trading day even when the backtest starts on Monday (−1 only
 		// reaches Sunday, which the weekend filter skips).
 		prevDayStart := start.AddDate(0, 0, -3)
-		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, end, historicalRateLimit)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
 		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(prevDayStart), formatLogTime(end))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, end, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
 		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
-		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
+		log.Printf(
+			"Historical dataset ready shards=%d symbols=%d easy_to_borrow=%d",
+			len(dataset.jobs),
+			len(universe.Symbols),
+			len(universe.EasyToBorrow),
+		)
 	}
 	profileLabel := ""
 	if profilePath != "" {
@@ -237,14 +243,21 @@ func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) 
 	return start, end, nil
 }
 
-func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time) ([]string, map[string]string, error) {
+type backtestUniverse struct {
+	Symbols        []string
+	BlockedSymbols map[string]string
+	EasyToBorrow   map[string]bool
+}
+
+func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time) (backtestUniverse, error) {
 	type symbolCache struct {
-		Version int      `json:"version"`
-		Date    string   `json:"date"`
-		Symbols []string `json:"symbols"`
+		Version             int      `json:"version"`
+		Date                string   `json:"date"`
+		Symbols             []string `json:"symbols"`
+		EasyToBorrowSymbols []string `json:"easyToBorrowSymbols,omitempty"`
 	}
 
-	const symbolCacheVersion = 2
+	const symbolCacheVersion = 3
 	cachePath := filepath.Join(".cache", "backtest", "symbols.json")
 
 	// Try to load cached symbols if backtest end date is not after cache date.
@@ -255,7 +268,10 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtest
 				if cacheDate, err := time.Parse("2006-01-02", cached.Date); err == nil {
 					if !backtestEnd.After(cacheDate.AddDate(0, 0, 1)) {
 						log.Printf("Using cached symbol list (%d symbols, cached %s)", len(cached.Symbols), cached.Date)
-						return cached.Symbols, nil, nil
+						return backtestUniverse{
+							Symbols:      cached.Symbols,
+							EasyToBorrow: sliceToSymbolSet(cached.EasyToBorrowSymbols),
+						}, nil
 					}
 				}
 			}
@@ -264,23 +280,67 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtest
 
 	assets, err := client.ListEquityAssets(ctx, false)
 	if err != nil {
-		return nil, nil, err
+		return backtestUniverse{}, err
 	}
 	symbols, blockedSymbols := filterScannerUniverseAssets(assets, nil)
+	easyToBorrow := easyToBorrowSymbolSet(assets)
 
 	// Write cache.
 	cache := symbolCache{
-		Version: symbolCacheVersion,
-		Date:    backtestEnd.Format("2006-01-02"),
-		Symbols: symbols,
+		Version:             symbolCacheVersion,
+		Date:                backtestEnd.Format("2006-01-02"),
+		Symbols:             symbols,
+		EasyToBorrowSymbols: sortedSymbolKeys(easyToBorrow),
 	}
 	if data, err := json.Marshal(cache); err == nil {
 		_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
 		_ = os.WriteFile(cachePath, data, 0o644)
-		log.Printf("Cached %d symbols for date %s (blocked %d ETF/derivative instruments)", len(symbols), cache.Date, len(blockedSymbols))
+		log.Printf(
+			"Cached %d symbols for date %s (easy_to_borrow=%d blocked %d ETF/derivative instruments)",
+			len(symbols),
+			cache.Date,
+			len(easyToBorrow),
+			len(blockedSymbols),
+		)
 	}
 
-	return symbols, blockedSymbols, nil
+	return backtestUniverse{
+		Symbols:        symbols,
+		BlockedSymbols: blockedSymbols,
+		EasyToBorrow:   easyToBorrow,
+	}, nil
+}
+
+func easyToBorrowSymbolSet(assets []alpaca.EquityAsset) map[string]bool {
+	out := make(map[string]bool)
+	for _, asset := range assets {
+		if asset.Shortable && asset.EasyToBorrow {
+			out[asset.Symbol] = true
+		}
+	}
+	return out
+}
+
+func sortedSymbolKeys(symbols map[string]bool) []string {
+	out := make([]string, 0, len(symbols))
+	for symbol, allowed := range symbols {
+		if allowed {
+			out = append(out, symbol)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sliceToSymbolSet(symbols []string) map[string]bool {
+	out := make(map[string]bool, len(symbols))
+	for _, symbol := range symbols {
+		if symbol == "" {
+			continue
+		}
+		out[symbol] = true
+	}
+	return out
 }
 
 func parseCLIBacktestTime(value string) (time.Time, bool, error) {

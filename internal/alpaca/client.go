@@ -49,11 +49,11 @@ func NewClient(cfg config.AppConfig) *Client {
 
 // Account represents an Alpaca account.
 type Account struct {
-	Equity       float64 `json:"equity,string"`
-	BuyingPower  float64 `json:"buying_power,string"`
-	Cash         float64 `json:"cash,string"`
-	DayPnL       float64 `json:"unrealized_intraday_pl,string"`
-	Status       string  `json:"status"`
+	Equity      float64 `json:"equity,string"`
+	BuyingPower float64 `json:"buying_power,string"`
+	Cash        float64 `json:"cash,string"`
+	DayPnL      float64 `json:"unrealized_intraday_pl,string"`
+	Status      string  `json:"status"`
 }
 
 // GetAccount fetches the trading account information.
@@ -65,13 +65,13 @@ func (c *Client) GetAccount(ctx context.Context) (Account, error) {
 
 // AlpacaPosition represents a broker position.
 type AlpacaPosition struct {
-	Symbol       string  `json:"symbol"`
-	Qty          string  `json:"qty"`
-	Side         string  `json:"side"`
+	Symbol        string `json:"symbol"`
+	Qty           string `json:"qty"`
+	Side          string `json:"side"`
 	AvgEntryPrice string `json:"avg_entry_price"`
-	CurrentPrice string  `json:"current_price"`
-	MarketValue  string  `json:"market_value"`
-	UnrealizedPL string  `json:"unrealized_pl"`
+	CurrentPrice  string `json:"current_price"`
+	MarketValue   string `json:"market_value"`
+	UnrealizedPL  string `json:"unrealized_pl"`
 }
 
 // GetPositions fetches current broker positions.
@@ -172,10 +172,11 @@ func (c *Client) PollOrderStatus(ctx context.Context, orderID string) (string, f
 	return result.Status, fillPrice, nil
 }
 
-// IsShortable checks if a symbol can be shorted.
-func (c *Client) IsShortable(symbol string) bool {
+// IsEasyToBorrow checks if a symbol is currently eligible for opening short positions.
+func (c *Client) IsEasyToBorrow(symbol string) bool {
 	var result struct {
-		Shortable bool `json:"shortable"`
+		Shortable    bool `json:"shortable"`
+		EasyToBorrow bool `json:"easy_to_borrow"`
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -183,7 +184,7 @@ func (c *Client) IsShortable(symbol string) bool {
 	if err != nil {
 		return false
 	}
-	return result.Shortable
+	return result.Shortable && result.EasyToBorrow
 }
 
 // CancelOrder cancels a pending order by ID.
@@ -226,14 +227,14 @@ func (c *Client) ClosePosition(ctx context.Context, symbol string) error {
 
 // HistoricalBar is a single bar from Alpaca.
 type HistoricalBar struct {
-	Timestamp time.Time `json:"t"`
-	Open      float64   `json:"o"`
-	High      float64   `json:"h"`
-	Low       float64   `json:"l"`
-	Close     float64   `json:"c"`
-	Volume    int64     `json:"v"`
-	TradeCount int64    `json:"n"`
-	VWAP      float64   `json:"vw"`
+	Timestamp  time.Time `json:"t"`
+	Open       float64   `json:"o"`
+	High       float64   `json:"h"`
+	Low        float64   `json:"l"`
+	Close      float64   `json:"c"`
+	Volume     int64     `json:"v"`
+	TradeCount int64     `json:"n"`
+	VWAP       float64   `json:"vw"`
 }
 
 // GetHistoricalBars fetches historical bars for a single symbol with automatic pagination.

@@ -131,25 +131,25 @@ type mlScopeComparisonSummary struct {
 }
 
 type mlScopeComparisonScopeEntry struct {
-	Scope                string                `json:"scope"`
-	ModelDir             string                `json:"modelDir"`
-	TrainingReportPath   string                `json:"trainingReportPath"`
-	RegressionSummaryPath string               `json:"regressionSummaryPath,omitempty"`
-	MustPassTotal        int                   `json:"mustPassTotal"`
-	MustPassPassed       int                   `json:"mustPassPassed"`
-	PassedAllMustPass    bool                  `json:"passedAllMustPass"`
-	NetDeltaTotal        float64               `json:"netDeltaTotal"`
-	RegressionChecks     []mlRegressionCheck   `json:"regressionChecks"`
+	Scope                 string              `json:"scope"`
+	ModelDir              string              `json:"modelDir"`
+	TrainingReportPath    string              `json:"trainingReportPath"`
+	RegressionSummaryPath string              `json:"regressionSummaryPath,omitempty"`
+	MustPassTotal         int                 `json:"mustPassTotal"`
+	MustPassPassed        int                 `json:"mustPassPassed"`
+	PassedAllMustPass     bool                `json:"passedAllMustPass"`
+	NetDeltaTotal         float64             `json:"netDeltaTotal"`
+	RegressionChecks      []mlRegressionCheck `json:"regressionChecks"`
 }
 
 type mlRegressionCheck struct {
-	WindowID       string   `json:"windowId"`
-	Passed         bool     `json:"passed"`
-	Required       bool     `json:"required"`
-	Reasons        []string `json:"reasons,omitempty"`
-	RulesOnlyNetPnL float64 `json:"rulesOnlyNetPnL"`
-	AdvisoryNetPnL  float64 `json:"advisoryNetPnL"`
-	NetDelta        float64 `json:"netDelta"`
+	WindowID        string   `json:"windowId"`
+	Passed          bool     `json:"passed"`
+	Required        bool     `json:"required"`
+	Reasons         []string `json:"reasons,omitempty"`
+	RulesOnlyNetPnL float64  `json:"rulesOnlyNetPnL"`
+	AdvisoryNetPnL  float64  `json:"advisoryNetPnL"`
+	NetDelta        float64  `json:"netDelta"`
 }
 
 type mlArtifactGuardrails struct {
@@ -227,11 +227,11 @@ func runTrainMLForScope(
 	}
 
 	runSummary := trainMLScopeRunSummary{
-		Scope:               cfg.SampleScope,
-		NormalizedScope:     normalizeSampleScopeLabel(cfg.SampleScope),
-		ModelDir:            outDir,
-		TrainingReportPath:  filepath.Join(outDir, "training_report.json"),
-		TrainingReport:      report,
+		Scope:              cfg.SampleScope,
+		NormalizedScope:    normalizeSampleScopeLabel(cfg.SampleScope),
+		ModelDir:           outDir,
+		TrainingReportPath: filepath.Join(outDir, "training_report.json"),
+		TrainingReport:     report,
 	}
 	log.Printf(
 		"train-ml: wrote report=%s scope=%s long_windows=%d short_windows=%d",
@@ -535,17 +535,17 @@ func buildRegressionBacktestConfig(start, end time.Time, profilePath string, deb
 	}
 	cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
 
-	symbols, blockedSymbols, err := resolveBacktestSymbols(setupCtx, client, end)
+	universe, err := resolveBacktestSymbols(setupCtx, client, end)
 	if err != nil {
 		return backtest.RunConfig{}, config.TradingConfig{}, err
 	}
 
 	prevDayStart := start.AddDate(0, 0, -3)
-	fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, end, historicalRateLimit)
+	fetchTimeout := estimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
 	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer fetchCancel()
 
-	dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, end, historicalRateLimit)
+	dataset, err := prepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
 	if err != nil {
 		return backtest.RunConfig{}, config.TradingConfig{}, err
 	}
@@ -556,7 +556,8 @@ func buildRegressionBacktestConfig(start, end time.Time, profilePath string, deb
 		Iterator:       newHistoricalDatasetIterator(dataset),
 		DebugSymbols:   append([]string(nil), debugSymbols...),
 		FloatStore:     floatStore,
-		BlockedSymbols: blockedSymbols,
+		BlockedSymbols: universe.BlockedSymbols,
+		EasyToBorrow:   universe.EasyToBorrow,
 	}
 	sort.Strings(runCfg.DebugSymbols)
 	return runCfg, cfg, nil

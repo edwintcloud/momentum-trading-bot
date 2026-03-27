@@ -15,7 +15,7 @@ type BrokerClient interface {
 	SubmitOrder(ctx context.Context, order domain.OrderRequest) (string, error)
 	PollOrderStatus(ctx context.Context, orderID string) (string, float64, error)
 	CancelOrder(ctx context.Context, orderID string) error
-	IsShortable(symbol string) bool
+	IsEasyToBorrow(symbol string) bool
 }
 
 // Engine submits approved orders to the broker and polls for fills.

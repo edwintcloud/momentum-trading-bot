@@ -38,6 +38,7 @@ type RunConfig struct {
 	DebugSymbols   []string           // symbols to trace per-bar through scanner/strategy
 	FloatStore     *alpaca.FloatStore // optional float data for tick enrichment
 	BlockedSymbols map[string]string  // optional hard blocklist for ETF/derivative instruments
+	EasyToBorrow   map[string]bool    // optional symbol set allowed for opening short positions
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -279,9 +280,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	scan := scanner.NewScanner(cfg, runtimeState)
 	scan.SetBlockedSymbols(runCfg.BlockedSymbols)
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
-	riskEngine := risk.NewEngine(cfg, book, runtimeState)
+	broker := execution.NewPaperBroker(runCfg.EasyToBorrow)
+	riskEngine := risk.NewEngine(cfg, book, runtimeState, broker)
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
-	broker := execution.NewPaperBroker()
 	normalizer := market.NewNormalizer()
 	scorer, err := ml.ResolveScorer(cfg.MLScoringEnabled, cfg.MLModelPath)
 	if err != nil {

@@ -524,10 +524,11 @@ func runOptimize(args []string) error {
 		log.Printf("Optimize capability detection failed, using defaults: %v", capErr)
 	}
 
-	symbols, _, err := resolveBacktestSymbols(setupCtx, client, time.Now())
+	universe, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 	if err != nil {
 		return err
 	}
+	symbols := universe.Symbols
 
 	if *maxSymbols > 0 && len(symbols) > *maxSymbols {
 		screened, screenErr := client.ListMostActiveSymbols(setupCtx, *maxSymbols)
@@ -672,10 +673,11 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 		log.Printf("auto-optimize: Alpaca feed=%s historical_limit=%d/min", client.DataFeed(), capabilities.HistoricalRateLimitPerMin)
 	}
 
-	symbols, _, err := resolveBacktestSymbols(setupCtx, client, time.Now())
+	universe, err := resolveBacktestSymbols(setupCtx, client, time.Now())
 	if err != nil {
 		return optimizer.Report{}, err
 	}
+	symbols := universe.Symbols
 
 	if maxSymbols > 0 && len(symbols) > maxSymbols {
 		screened, screenErr := client.ListMostActiveSymbols(setupCtx, maxSymbols)

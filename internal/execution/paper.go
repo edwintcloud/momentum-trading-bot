@@ -19,12 +19,13 @@ import (
 // Entry orders use OHLC fill logic on subsequent bars (not the bar
 // that generated the signal).
 type PaperBroker struct {
-	mu          sync.Mutex
-	nextID      atomic.Int64
-	pending     map[string]*paperOrder // orderID → order
-	bars        map[string]domain.Bar  // latest bar per symbol
-	maxBarsFill int                    // orders expire after this many bars (default 2)
-	expiries    int                    // count of expired entry orders
+	mu           sync.Mutex
+	nextID       atomic.Int64
+	pending      map[string]*paperOrder // orderID → order
+	bars         map[string]domain.Bar  // latest bar per symbol
+	easyToBorrow map[string]bool
+	maxBarsFill  int // orders expire after this many bars (default 2)
+	expiries     int // count of expired entry orders
 }
 
 type paperOrder struct {
@@ -37,11 +38,16 @@ type paperOrder struct {
 }
 
 // NewPaperBroker creates a paper broker for simulated execution.
-func NewPaperBroker() *PaperBroker {
+func NewPaperBroker(easyToBorrow map[string]bool) *PaperBroker {
+	normalized := make(map[string]bool, len(easyToBorrow))
+	for symbol, allowed := range easyToBorrow {
+		normalized[symbol] = allowed
+	}
 	return &PaperBroker{
-		pending:     make(map[string]*paperOrder),
-		bars:        make(map[string]domain.Bar),
-		maxBarsFill: 2,
+		pending:      make(map[string]*paperOrder),
+		bars:         make(map[string]domain.Bar),
+		easyToBorrow: normalized,
+		maxBarsFill:  2,
 	}
 }
 
@@ -120,9 +126,11 @@ func (pb *PaperBroker) CancelOrder(_ context.Context, orderID string) error {
 	return nil
 }
 
-// IsShortable always returns true for paper trading.
-func (pb *PaperBroker) IsShortable(_ string) bool {
-	return true
+// IsEasyToBorrow reports whether a symbol is eligible for short entries in backtests.
+func (pb *PaperBroker) IsEasyToBorrow(symbol string) bool {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	return pb.easyToBorrow[symbol]
 }
 
 // Expiries returns the number of entry orders that expired without filling.
