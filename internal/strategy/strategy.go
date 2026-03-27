@@ -560,6 +560,11 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		Playbook:         playbook,
 		Sector:           candidateSector,
 		AvgDailyVolume:   float64(c.PrevDayVolume),
+		LeaderRank:       c.LeaderRank,
+		VolumeLeaderPct:  c.VolumeLeaderPct,
+		StockSelectScore: c.StockSelectionScore,
+		PriceVsVWAPPct:   c.PriceVsVWAPPct,
+		DistanceHighPct:  c.DistanceFromHighPct,
 		Timestamp:        now,
 	}
 

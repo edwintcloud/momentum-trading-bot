@@ -162,6 +162,11 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 		RegimeConfidence: report.RegimeConfidence,
 		Playbook:         report.Playbook,
 		Sector:           report.Sector,
+		LeaderRank:       report.LeaderRank,
+		VolumeLeaderPct:  report.VolumeLeaderPct,
+		StockSelectScore: report.StockSelectScore,
+		PriceVsVWAPPct:   report.PriceVsVWAPPct,
+		DistanceHighPct:  report.DistanceHighPct,
 		LastPrice:        report.Price,
 		HighestPrice:     report.Price,
 		LowestPrice:      report.Price,
@@ -238,6 +243,11 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 		RegimeConfidence: pos.RegimeConfidence,
 		Playbook:         pos.Playbook,
 		Sector:           pos.Sector,
+		LeaderRank:       pos.LeaderRank,
+		VolumeLeaderPct:  pos.VolumeLeaderPct,
+		StockSelectScore: pos.StockSelectScore,
+		PriceVsVWAPPct:   pos.PriceVsVWAPPct,
+		DistanceHighPct:  pos.DistanceHighPct,
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)

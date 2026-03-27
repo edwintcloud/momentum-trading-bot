@@ -33,6 +33,7 @@ services:
       PORT: 8080
     volumes:
       - ./.cache:/app/.cache
+      - ./artifacts:/app/artifacts
       - ./profiles:/app/profiles
 
   auto-optimizer:
@@ -47,6 +48,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-momentum}:${POSTGRES_PASSWORD:-momentum}@postgres:5432/${POSTGRES_DB:-momentum}?sslmode=disable
     volumes:
       - ./.cache:/app/.cache
+      - ./artifacts:/app/artifacts
       - ./profiles:/app/profiles
     entrypoint: ["/app/momentum-bot"]
     command: ["auto-optimize", "-profile", "/app/profiles/default.json", "-now"]

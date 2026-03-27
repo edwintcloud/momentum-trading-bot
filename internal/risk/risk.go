@@ -424,6 +424,11 @@ func (e *Engine) toOrderRequest(signal domain.TradeSignal) domain.OrderRequest {
 		Playbook:         signal.Playbook,
 		Sector:           signal.Sector,
 		AvgDailyVolume:   signal.AvgDailyVolume,
+		LeaderRank:       signal.LeaderRank,
+		VolumeLeaderPct:  signal.VolumeLeaderPct,
+		StockSelectScore: signal.StockSelectScore,
+		PriceVsVWAPPct:   signal.PriceVsVWAPPct,
+		DistanceHighPct:  signal.DistanceHighPct,
 		Timestamp:        signal.Timestamp,
 	}
 }

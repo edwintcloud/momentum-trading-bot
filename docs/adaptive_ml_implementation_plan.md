@@ -349,7 +349,12 @@ Phase 5 progress notes:
     - keeps annual sweeps observable and bounded per window
     - avoids treating an entire year as one giant contiguous backtest when the practical review unit is weekly
 - Weekly annual validation is now complete on the current kept advisory baseline and should be treated as the canonical annual check:
-  - ML advisory weekly annual `2025`:
+  - current kept ML advisory weekly annual `2025`:
+    - [.cache/backtest/annual_2025_weekly_phase5_elite_short/summary.json](../.cache/backtest/annual_2025_weekly_phase5_elite_short/summary.json)
+    - `totalNetPnL=-145.93`
+    - `winningWeeks=23`
+    - `losingWeeks=30`
+  - prior kept ML advisory weekly annual `2025`:
     - [.cache/backtest/annual_2025_weekly/summary.json](../.cache/backtest/annual_2025_weekly/summary.json)
     - `totalNetPnL=-1633.09`
     - `winningWeeks=22`
@@ -359,21 +364,53 @@ Phase 5 progress notes:
     - `totalNetPnL=-2073.21`
     - `winningWeeks=23`
     - `losingWeeks=30`
-  - net improvement from advisory versus rules-only:
-    - `+440.12`
+  - net improvement:
+    - current advisory versus prior kept ML: `+1487.16`
+    - current advisory versus rules-only: `+1927.28`
   - interpretation:
-    - current advisory is a keep versus rules-only on the proper annual weekly benchmark
-    - Phase 5 is still not complete because the year remains negative overall
-    - the next iteration should target the worst ML negative-delta weeks, not move on to Phase 6 yet
-- Highest-priority negative-delta weekly windows from the annual comparison:
-  - `2025-10-22` to `2025-10-28`
-  - `2025-05-07` to `2025-05-13`
-  - `2025-10-08` to `2025-10-14`
-  - `2025-07-02` to `2025-07-08`
-  - `2025-04-02` to `2025-04-08`
+    - elite-short protection was a major improvement and is the current kept Phase 5 baseline
+    - Phase 5 is still not complete because the year remains slightly negative overall
+    - the next iteration should target the worst remaining negative weeks from this new near-breakeven baseline, not the older `-1633.09` run
+- Highest-priority negative weekly windows from the current annual baseline:
+  - `2025-01-08` to `2025-01-14`
+  - `2025-10-29` to `2025-11-04`
+  - `2025-10-01` to `2025-10-07`
+  - `2025-05-28` to `2025-06-03`
+  - `2025-09-24` to `2025-09-30`
+- Latest kept Phase 5 refinement:
+  - protect only elite short fade candidates from ML downsizing instead of broadly protecting all shorts or all strong days
+  - current heuristic:
+    - short side only
+    - `MLProbability >= 0.20`
+    - `LeaderRank <= 2`
+    - `VolumeLeaderPct >= 25`
+    - candidate `Score >= 6.0`
+  - rationale:
+    - preserve stronger `parabolic-failed-reclaim-short` leaders in weeks where the short book is carrying the result
+    - still allow weak short fades to be downsized in poor tape
+  - validation on the target windows:
+    - `2025-10-22` to `2025-10-28`: `+1492.27 -> +1545.17`
+    - `2025-05-07` to `2025-05-13`: `+2094.05 -> +1979.21`
+    - `2025-10-08` to `2025-10-14`: `+1005.54 -> +1168.77`
+    - combined delta across those three windows: `+101.29`
+  - regression safety:
+    - `ANNA` unchanged at `+1298.18`
+    - `AFJK` unchanged at `+7139.50`
+    - September weak week essentially unchanged: `-489.74 -> -488.84`
+- Rejected follow-up experiment from the new annual baseline:
+  - block repeated same-day `parabolic-failed-reclaim-short` entries after a failed short fade
+  - targeted improvement looked promising on:
+    - `2025-01-08` to `2025-01-14`: `-3002.27 -> -2663.42`
+    - `2025-10-29` to `2025-11-04`: `-2420.43 -> -1550.15`
+    - `2025-05-28` to `2025-06-03`: `-1961.22 -> -1496.63`
+  - but it broke the required September weak-week regression too badly:
+    - `2025-09-17` to `2025-09-24`: `-488.84 -> -1275.98`
+  - outcome:
+    - rolled back
+    - current kept baseline remains the elite-short protection variant without repeat-short-fade blocking
 - Phase 5 current status:
   - implementation is functionally in place
-  - validation is directionally positive on the annual weekly benchmark
+  - validation is strongly positive on the annual weekly benchmark versus both rules-only and the prior ML baseline
   - promotion is still blocked because annual `2025` remains below breakeven
 - Why this is the current keep:
   - it improved the sampled-2025 weak September window while also improving October relative to the prior long-only-rank-protected baseline, without disturbing the key winner regressions

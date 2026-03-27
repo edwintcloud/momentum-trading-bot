@@ -246,6 +246,7 @@ type MLConfig struct {
 	MLAdvisoryDownsizeThreshold  float64
 	MLAdvisoryLongDownsizeThreshold  float64
 	MLAdvisoryShortDownsizeThreshold float64
+	MLAdvisoryProtectEliteShortMinProb  float64
 	MLAdvisoryUpsizeMultiplier   float64
 	MLAdvisoryDownsizeMultiplier float64
 	MLAdvisoryMaxVetosPerDay     int

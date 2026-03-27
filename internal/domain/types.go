@@ -182,6 +182,11 @@ type TradeSignal struct {
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
 	AvgDailyVolume   float64   `json:"avgDailyVolume"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 	Timestamp        time.Time `json:"timestamp"`
 }
 
@@ -205,6 +210,11 @@ type OrderRequest struct {
 	Playbook           string    `json:"playbook"`
 	Sector             string    `json:"sector"`
 	AvgDailyVolume     float64   `json:"avgDailyVolume"`
+	LeaderRank         int       `json:"leaderRank"`
+	VolumeLeaderPct    float64   `json:"volumeLeaderPct"`
+	StockSelectScore   float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct     float64   `json:"priceVsVwapPct"`
+	DistanceHighPct    float64   `json:"distanceFromHighPct"`
 	Timestamp          time.Time `json:"timestamp"`
 }
 
@@ -225,6 +235,11 @@ type ExecutionReport struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 	BrokerOrderID    string    `json:"brokerOrderId"`
 	BrokerStatus     string    `json:"brokerStatus"`
 	FilledAt         time.Time `json:"filledAt"`
@@ -247,6 +262,11 @@ type Position struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 	LastPrice        float64   `json:"lastPrice"`
 	HighestPrice     float64   `json:"highestPrice"`
 	LowestPrice      float64   `json:"lowestPrice"`
@@ -276,6 +296,11 @@ type ClosedTrade struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 }
 
 // LogEntry is a structured operational event.

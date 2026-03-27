@@ -407,10 +407,13 @@ func (p *Pipeline) protectMLAdvisoryDownsize(candidateEval *domain.CandidateEval
 	if candidateEval == nil {
 		return false
 	}
+	cfg := p.cfg.TradingCfg
+	if p.protectEliteShortDownsize(candidateEval) {
+		return true
+	}
 	if !strings.EqualFold(candidateEval.Signal.Side, "buy") {
 		return false
 	}
-	cfg := p.cfg.TradingCfg
 	if cfg.MLAdvisoryProtectTopDayRank > 0 && candidateEval.MLDayRankSoFar > 0 && candidateEval.MLDayRankSoFar <= cfg.MLAdvisoryProtectTopDayRank {
 		return true
 	}
@@ -436,6 +439,30 @@ func (p *Pipeline) mlAdvisoryDownsizeThreshold(signal domain.TradeSignal, minPro
 		return cfg.MLAdvisoryLongDownsizeThreshold
 	}
 	return defaultThreshold
+}
+
+func (p *Pipeline) protectEliteShortDownsize(candidateEval *domain.CandidateEvaluation) bool {
+	if candidateEval == nil || !strings.EqualFold(candidateEval.Signal.Side, "sell") {
+		return false
+	}
+	minProb := p.cfg.TradingCfg.MLAdvisoryProtectEliteShortMinProb
+	if minProb <= 0 {
+		minProb = 0.20
+	}
+	c := candidateEval.Candidate
+	if candidateEval.MLProbability < minProb {
+		return false
+	}
+	if c.LeaderRank <= 0 || c.LeaderRank > 2 {
+		return false
+	}
+	if c.VolumeLeaderPct < 25 {
+		return false
+	}
+	if c.Score < 6.0 {
+		return false
+	}
+	return true
 }
 
 func (p *Pipeline) shadowDecision(probability float64) (string, float64) {
@@ -786,6 +813,11 @@ func (p *Pipeline) pollDeterministicOrder(
 		RegimeConfidence: order.RegimeConfidence,
 		Playbook:         order.Playbook,
 		Sector:           order.Sector,
+		LeaderRank:       order.LeaderRank,
+		VolumeLeaderPct:  order.VolumeLeaderPct,
+		StockSelectScore: order.StockSelectScore,
+		PriceVsVWAPPct:   order.PriceVsVWAPPct,
+		DistanceHighPct:  order.DistanceHighPct,
 		BrokerOrderID:    orderID,
 		BrokerStatus:     status,
 		FilledAt:         fillTime,

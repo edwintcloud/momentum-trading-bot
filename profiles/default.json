@@ -281,6 +281,7 @@
       "MLAdvisoryDownsizeThreshold": 0.62,
       "MLAdvisoryLongDownsizeThreshold": 0.62,
       "MLAdvisoryShortDownsizeThreshold": 0.45,
+      "MLAdvisoryProtectEliteShortMinProb": 0.2,
       "MLAdvisoryUpsizeMultiplier": 1.1,
       "MLAdvisoryDownsizeMultiplier": 0.75,
       "MLAdvisoryMaxVetosPerDay": 3,
