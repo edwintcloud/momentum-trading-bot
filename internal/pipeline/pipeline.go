@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"strings"
@@ -91,6 +92,9 @@ type Pipeline struct {
 	mlBarTime       time.Time
 	mlBarScores     []float64
 	mlAdvisoryVetos int
+	mlDrift         map[string]*ml.DriftDetector
+	mlPerfDrift     *ml.DriftDetector
+	mlDriftState    map[string]bool
 }
 
 type deterministicPendingOrder struct {
@@ -105,12 +109,16 @@ type signalEnvelope struct {
 
 // New creates a pipeline but does not start it.
 func New(cfg Config) *Pipeline {
-	return &Pipeline{
-		cfg:        cfg,
-		barCh:      make(chan domain.Bar, 1024),
-		closeAllCh: make(chan domain.OrderRequest, 64),
-		fillCh:     make(chan domain.ExecutionReport, 64),
+	p := &Pipeline{
+		cfg:          cfg,
+		barCh:        make(chan domain.Bar, 1024),
+		closeAllCh:   make(chan domain.OrderRequest, 64),
+		fillCh:       make(chan domain.ExecutionReport, 64),
+		mlDrift:      make(map[string]*ml.DriftDetector),
+		mlDriftState: make(map[string]bool),
 	}
+	p.initMLDrift()
+	return p
 }
 
 // BarCh returns the channel callers use to feed bars into the pipeline.
@@ -283,6 +291,138 @@ func (p *Pipeline) sendTick(ctx context.Context, ch chan domain.Tick, tick domai
 	}
 }
 
+func (p *Pipeline) initMLDrift() {
+	if !p.cfg.TradingCfg.ConceptDriftEnabled {
+		return
+	}
+	artifactScorer, ok := p.cfg.Scorer.(*ml.ArtifactScorer)
+	if !ok || artifactScorer == nil {
+		return
+	}
+	for _, side := range []string{"long", "short"} {
+		dist := artifactScorer.TrainingProbabilityDistribution(side)
+		if len(dist) == 0 {
+			continue
+		}
+		p.mlDrift[side] = ml.NewDriftDetector(dist, 0.95)
+	}
+	p.mlPerfDrift = ml.NewDriftDetector(nil, 0.95)
+	if p.cfg.Portfolio != nil {
+		p.cfg.Portfolio.SetDriftDetector(p.mlPerfDrift)
+	}
+}
+
+func (p *Pipeline) mlPSIThreshold() float64 {
+	threshold := p.cfg.TradingCfg.PSIThreshold
+	if threshold <= 0 {
+		return 0.2
+	}
+	return threshold
+}
+
+func (p *Pipeline) mlSharpeThreshold() float64 {
+	return p.cfg.TradingCfg.SharpeDecayThreshold
+}
+
+type mlDriftSnapshot struct {
+	Enabled              bool
+	Active               bool
+	PSI                  float64
+	PSIThreshold         float64
+	ProbabilitySamples   int
+	RollingSharpe        float64
+	SharpeThreshold      float64
+	ConfidenceMultiplier float64
+	PerformanceFallback  bool
+}
+
+func (p *Pipeline) updateMLDrift(side string, probability float64) mlDriftSnapshot {
+	side = strings.ToLower(strings.TrimSpace(side))
+	snapshot := mlDriftSnapshot{}
+	if !p.cfg.TradingCfg.ConceptDriftEnabled {
+		return snapshot
+	}
+
+	p.mlMu.Lock()
+	defer p.mlMu.Unlock()
+
+	detector := p.mlDrift[side]
+	if detector == nil {
+		return snapshot
+	}
+	detector.RecordProbability(probability)
+	snapshot = p.currentMLDriftSnapshotLocked(side)
+	p.logMLDriftTransitionLocked(side, snapshot)
+	return snapshot
+}
+
+func (p *Pipeline) currentMLDriftSnapshot(side string) mlDriftSnapshot {
+	if !p.cfg.TradingCfg.ConceptDriftEnabled {
+		return mlDriftSnapshot{}
+	}
+	p.mlMu.Lock()
+	defer p.mlMu.Unlock()
+	return p.currentMLDriftSnapshotLocked(strings.ToLower(strings.TrimSpace(side)))
+}
+
+func (p *Pipeline) currentMLDriftSnapshotLocked(side string) mlDriftSnapshot {
+	snapshot := mlDriftSnapshot{
+		Enabled:              p.cfg.TradingCfg.ConceptDriftEnabled,
+		PSIThreshold:         p.mlPSIThreshold(),
+		SharpeThreshold:      p.mlSharpeThreshold(),
+		ConfidenceMultiplier: 1.0,
+	}
+	detector := p.mlDrift[side]
+	if detector != nil {
+		snapshot.ProbabilitySamples = detector.ProbabilitySampleCount()
+		if snapshot.ProbabilitySamples >= 10 {
+			liveDist := detector.LiveProbabilityDistribution()
+			snapshot.PSI, _ = detector.CheckPSI(liveDist, snapshot.PSIThreshold)
+			if snapshot.PSI > snapshot.PSIThreshold {
+				snapshot.Active = true
+				snapshot.ConfidenceMultiplier = ml.ConfidenceMultiplier(snapshot.PSI, snapshot.PSIThreshold)
+			}
+		}
+	}
+	if p.mlPerfDrift != nil {
+		snapshot.RollingSharpe = p.mlPerfDrift.RollingSharpe()
+		if p.mlPerfDrift.CheckPerformanceDrift(snapshot.SharpeThreshold) {
+			snapshot.Active = true
+			snapshot.PerformanceFallback = true
+			snapshot.ConfidenceMultiplier = 0
+		}
+	}
+	return snapshot
+}
+
+func (p *Pipeline) logMLDriftTransitionLocked(side string, snapshot mlDriftSnapshot) {
+	if p.cfg.Runtime == nil {
+		return
+	}
+	active := snapshot.Active
+	if prev, ok := p.mlDriftState[side]; ok && prev == active {
+		return
+	}
+	p.mlDriftState[side] = active
+	if active {
+		p.cfg.Runtime.RecordLog(
+			"warn",
+			"ml-drift",
+			fmt.Sprintf(
+				"side=%s psi=%.4f psi_threshold=%.4f sharpe=%.4f sharpe_threshold=%.4f fallback=%t",
+				side,
+				snapshot.PSI,
+				snapshot.PSIThreshold,
+				snapshot.RollingSharpe,
+				snapshot.SharpeThreshold,
+				snapshot.PerformanceFallback,
+			),
+		)
+		return
+	}
+	p.cfg.Runtime.RecordLog("info", "ml-drift", fmt.Sprintf("side=%s cleared", side))
+}
+
 func (p *Pipeline) candidateEvaluationSource() string {
 	if p.cfg.CandidateEvaluationSource != "" {
 		return p.cfg.CandidateEvaluationSource
@@ -332,6 +472,7 @@ func (p *Pipeline) applyMLShadow(candidate domain.Candidate, candidateEval *doma
 	candidateEval.MLShadowVeto = candidateEval.MLShadowDecision == "veto"
 	candidateEval.MLShadowUpsize = candidateEval.MLShadowDecision == "upsize"
 	candidateEval.MLDayRankSoFar, candidateEval.MLBarRankSoFar = p.recordMLScore(candidate.Timestamp, probability)
+	p.applyMLDriftSnapshot(candidateEval, p.updateMLDrift(features.Direction, probability))
 }
 
 func (p *Pipeline) applyMLAdvisory(signal domain.TradeSignal, candidateEval *domain.CandidateEvaluation) (domain.TradeSignal, bool) {
@@ -345,8 +486,16 @@ func (p *Pipeline) applyMLAdvisory(signal domain.TradeSignal, candidateEval *dom
 	candidateEval.MLAdvisorySizeMultiplier = 1.0
 	candidateEval.MLAdvisoryOriginalQuantity = signal.Quantity
 	candidateEval.MLAdvisoryAdjustedQuantity = signal.Quantity
+	driftSnapshot := p.currentMLDriftSnapshot(candidateEval.MLModelSide)
+	p.applyMLDriftSnapshot(candidateEval, driftSnapshot)
 
 	if signal.Quantity <= 0 {
+		candidateEval.Signal = signal
+		return signal, true
+	}
+
+	if driftSnapshot.PerformanceFallback {
+		candidateEval.MLAdvisoryDecision = "drift-fallback"
 		candidateEval.Signal = signal
 		return signal, true
 	}
@@ -375,7 +524,8 @@ func (p *Pipeline) applyMLAdvisory(signal domain.TradeSignal, candidateEval *dom
 		upsizeThreshold = math.Max(minProb+0.10, 0.75)
 	}
 	if cfg.MLAdvisoryUpsizeEnabled && candidateEval.MLProbability >= upsizeThreshold {
-		adjusted, applied := applyQuantityMultiplier(signal, cfg.MLAdvisoryUpsizeMultiplier, 1.10)
+		upsizeMultiplier := p.mlAdvisoryUpsizeMultiplier(driftSnapshot)
+		adjusted, applied := applyQuantityMultiplier(signal, upsizeMultiplier, 1.10)
 		if applied {
 			candidateEval.MLAdvisoryApplied = true
 			candidateEval.MLAdvisoryDecision = "upsize"
@@ -388,7 +538,8 @@ func (p *Pipeline) applyMLAdvisory(signal domain.TradeSignal, candidateEval *dom
 
 	downsizeThreshold := p.mlAdvisoryDownsizeThreshold(signal, minProb)
 	if cfg.MLAdvisoryDownsizeEnabled && candidateEval.MLProbability < downsizeThreshold && !p.protectMLAdvisoryDownsize(candidateEval) {
-		adjusted, applied := applyQuantityMultiplier(signal, cfg.MLAdvisoryDownsizeMultiplier, 0.75)
+		downsizeMultiplier := p.mlAdvisoryDownsizeMultiplier(driftSnapshot)
+		adjusted, applied := applyQuantityMultiplier(signal, downsizeMultiplier, 0.75)
 		if applied {
 			candidateEval.MLAdvisoryApplied = true
 			candidateEval.MLAdvisoryDecision = "downsize"
@@ -421,6 +572,29 @@ func (p *Pipeline) protectMLAdvisoryDownsize(candidateEval *domain.CandidateEval
 		return true
 	}
 	return false
+}
+
+func (p *Pipeline) applyMLDriftSnapshot(candidateEval *domain.CandidateEvaluation, snapshot mlDriftSnapshot) {
+	if candidateEval == nil {
+		return
+	}
+	candidateEval.MLDriftEnabled = snapshot.Enabled
+	candidateEval.MLDriftActive = snapshot.Active
+	candidateEval.MLDriftPSI = snapshot.PSI
+	candidateEval.MLDriftPSIThreshold = snapshot.PSIThreshold
+	candidateEval.MLDriftProbabilitySamples = snapshot.ProbabilitySamples
+	candidateEval.MLDriftRollingSharpe = snapshot.RollingSharpe
+	candidateEval.MLDriftSharpeThreshold = snapshot.SharpeThreshold
+	candidateEval.MLDriftConfidenceMultiplier = snapshot.ConfidenceMultiplier
+	candidateEval.MLDriftPerformanceFallback = snapshot.PerformanceFallback
+}
+
+func (p *Pipeline) mlAdvisoryUpsizeMultiplier(snapshot mlDriftSnapshot) float64 {
+	return blendTowardNeutral(p.cfg.TradingCfg.MLAdvisoryUpsizeMultiplier, 1.10, snapshot.ConfidenceMultiplier)
+}
+
+func (p *Pipeline) mlAdvisoryDownsizeMultiplier(snapshot mlDriftSnapshot) float64 {
+	return blendTowardNeutral(p.cfg.TradingCfg.MLAdvisoryDownsizeMultiplier, 0.75, snapshot.ConfidenceMultiplier)
 }
 
 func (p *Pipeline) mlAdvisoryDownsizeThreshold(signal domain.TradeSignal, minProb float64) float64 {
@@ -538,6 +712,19 @@ func applyQuantityMultiplier(signal domain.TradeSignal, multiplier float64, fall
 	}
 	signal.Quantity = adjustedQty
 	return signal, true
+}
+
+func blendTowardNeutral(multiplier float64, fallback float64, confidence float64) float64 {
+	if multiplier <= 0 {
+		multiplier = fallback
+	}
+	if confidence >= 1 {
+		return multiplier
+	}
+	if confidence <= 0 {
+		return 1.0
+	}
+	return 1.0 + (multiplier-1.0)*confidence
 }
 
 func scoreRank(scores []float64, probability float64) int {

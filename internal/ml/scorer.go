@@ -138,6 +138,7 @@ type Scorer interface {
 type ArtifactScorer struct {
 	modelPath string
 	models    map[string]LogisticModelArtifact
+	report    *TrainingReport
 }
 
 // NewArtifactScorer loads one or more saved model artifacts from a directory or file.
@@ -157,6 +158,10 @@ func NewArtifactScorer(modelPath string) (*ArtifactScorer, error) {
 		models:    make(map[string]LogisticModelArtifact),
 	}
 	if info.IsDir() {
+		reportPath := filepath.Join(modelPath, "training_report.json")
+		if report, err := loadTrainingReport(reportPath); err == nil {
+			scorer.report = report
+		}
 		for _, side := range []string{"long", "short"} {
 			path := filepath.Join(modelPath, side+"_model.json")
 			model, err := loadLogisticModelArtifact(path)
@@ -205,6 +210,40 @@ func (s *ArtifactScorer) ModelPath() string {
 func (s *ArtifactScorer) HasSide(side string) bool {
 	_, ok := s.models[strings.ToLower(strings.TrimSpace(side))]
 	return ok
+}
+
+func (s *ArtifactScorer) TrainingProbabilityDistribution(side string) []float64 {
+	model, ok := s.models[strings.ToLower(strings.TrimSpace(side))]
+	if !ok || len(model.CalibrationBins) == 0 {
+		return nil
+	}
+	total := 0
+	for _, bin := range model.CalibrationBins {
+		total += bin.Count
+	}
+	if total <= 0 {
+		return nil
+	}
+	dist := make([]float64, 0, len(model.CalibrationBins))
+	for _, bin := range model.CalibrationBins {
+		p := float64(bin.Count) / float64(total)
+		if p == 0 {
+			p = 1e-8
+		}
+		dist = append(dist, p)
+	}
+	return dist
+}
+
+func (s *ArtifactScorer) AggregateAvgReturn(side string) float64 {
+	if s.report == nil {
+		return 0
+	}
+	report, ok := s.report.SideReports[strings.ToLower(strings.TrimSpace(side))]
+	if !ok {
+		return 0
+	}
+	return report.Aggregate.AvgReturn
 }
 
 // ResolveScorer returns the configured scorer implementation.
@@ -356,4 +395,16 @@ func loadLogisticModelArtifact(path string) (LogisticModelArtifact, error) {
 		return LogisticModelArtifact{}, err
 	}
 	return model, nil
+}
+
+func loadTrainingReport(path string) (*TrainingReport, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var report TrainingReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
 }

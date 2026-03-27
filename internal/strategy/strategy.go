@@ -84,6 +84,10 @@ type symbolTradeState struct {
 	entrySignals              int
 	lossExits                 int
 	lastLossAt                time.Time
+	dangerousShortFadeExits   int
+	lastDangerousShortFadeAt  time.Time
+	lastDangerousShortFadeVWAP float64
+	lastDangerousShortFadeDist float64
 	profitableShortExits      int
 	lastProfitableShortExitAt time.Time
 	lastProfitableShortSetup  string
@@ -317,6 +321,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 			return domain.TradeSignal{}, false, reason
 		}
 	} else {
+		if reason, blocked := rejectRepeatedDangerousShortFade(c, state); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
 		if reason, blocked := rejectWeakShortMomentum(c, cfg); blocked {
 			return domain.TradeSignal{}, false, reason
 		}
@@ -696,6 +703,12 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		if pnl < 0 {
 			state.lossExits++
 			state.lastLossAt = now
+			if isDangerousFailedShortFade(pos, reason) {
+				state.dangerousShortFadeExits++
+				state.lastDangerousShortFadeAt = now
+				state.lastDangerousShortFadeVWAP = pos.PriceVsVWAPPct
+				state.lastDangerousShortFadeDist = pos.DistanceHighPct
+			}
 			s.symbolStates[tick.Symbol] = state
 		} else if pnl > 0 && domain.IsShort(pos.Side) {
 			state.profitableShortExits++
@@ -1697,6 +1710,90 @@ func rejectWeakShortMomentum(c domain.Candidate, cfg config.TradingConfig) (stri
 	}
 
 	return "", false
+}
+
+func rejectRepeatedDangerousShortFade(c domain.Candidate, state symbolTradeState) (string, bool) {
+	if !domain.IsShort(c.Direction) || c.SetupType != "parabolic-failed-reclaim-short" {
+		return "", false
+	}
+	if state.dangerousShortFadeExits <= 0 || state.lastDangerousShortFadeAt.IsZero() {
+		return "", false
+	}
+	since := c.Timestamp.Sub(state.lastDangerousShortFadeAt)
+	if since < 0 || since > 2*time.Hour {
+		return "", false
+	}
+
+	stillStrongLeader := (c.LeaderRank > 0 && c.LeaderRank <= 2) || c.VolumeLeaderPct >= 25.0
+	if !stillStrongLeader {
+		return "", false
+	}
+
+	// Allow a retry only if the new candidate is materially more extended than the
+	// failed one, which indicates the squeeze has truly rolled over rather than
+	// simply bouncing after the first failed fade.
+	moreExtended := c.PriceVsVWAPPct <= state.lastDangerousShortFadeVWAP-4.0 &&
+		c.DistanceFromHighPct >= state.lastDangerousShortFadeDist+10.0
+	if moreExtended {
+		return "", false
+	}
+
+	hardFlush := c.BreakoutPct <= -4.0 || c.OneMinuteReturnPct <= -5.0 || c.ThreeMinuteReturnPct <= -6.0
+	if hardFlush &&
+		c.PriceVsVWAPPct <= -12.0 &&
+		c.DistanceFromHighPct >= 35.0 &&
+		c.FiveMinuteReturnPct <= -2.0 {
+		return "", false
+	}
+
+	return "repeat-short-fade-failure", true
+}
+
+func isDangerousFailedShortFade(pos domain.Position, exitReason string) bool {
+	if !domain.IsShort(pos.Side) || pos.SetupType != "parabolic-failed-reclaim-short" {
+		return false
+	}
+
+	leaderishEntry := (pos.LeaderRank > 0 && pos.LeaderRank <= 2) || pos.VolumeLeaderPct >= 25.0
+	if !leaderishEntry {
+		return false
+	}
+
+	mfeR, maeR := computePositionExcursion(pos)
+	switch exitReason {
+	case "stop-loss":
+		return maeR >= 1.0 && mfeR < 1.0
+	case "failed-breakout":
+		return mfeR < 0.5
+	case "stagnation":
+		return mfeR < 0.15 &&
+			pos.PriceVsVWAPPct > -12.0 &&
+			pos.DistanceHighPct < 35.0
+	default:
+		return false
+	}
+}
+
+func computePositionExcursion(pos domain.Position) (mfeR, maeR float64) {
+	if pos.RiskPerShare <= 0 || pos.AvgPrice <= 0 {
+		return 0, 0
+	}
+	if domain.IsShort(pos.Side) {
+		if pos.LowestPrice > 0 {
+			mfeR = (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
+		}
+		if pos.HighestPrice > 0 {
+			maeR = (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+		}
+		return max(mfeR, 0), max(maeR, 0)
+	}
+	if pos.HighestPrice > 0 {
+		mfeR = (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+	}
+	if pos.LowestPrice > 0 {
+		maeR = (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
+	}
+	return max(mfeR, 0), max(maeR, 0)
 }
 
 func rejectRepeatedLongImpulse(c domain.Candidate, state symbolTradeState) (string, bool) {

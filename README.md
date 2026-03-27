@@ -282,10 +282,10 @@ go run . auto-optimize \
 
 ### Docker
 
-The auto-optimizer runs automatically as a sidecar in Docker Compose with the `-now` flag, so it runs an immediate optimization on startup and then continues on the weekly schedule. Both the bot and optimizer share the `profiles/` volume, so promoted profiles are picked up via hot-reload.
+The auto-optimizer and auto-train-ml services both run automatically as sidecars in Docker Compose with the `-now` flag, so they each run an immediate cycle on startup and then continue on their weekly schedules. The bot, optimizer, and ML trainer share the `profiles/`, `artifacts/`, `.cache/`, and `docs/` volumes so promoted profiles and ML artifacts are available to live trading and remain backtest-replayable.
 
 ```bash
-docker compose up -d  # starts postgres + bot + auto-optimizer
+docker compose up -d  # starts postgres + bot + auto-optimizer + auto-train-ml
 ```
 
 ## Telegram Notifications
@@ -359,7 +359,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-This starts PostgreSQL + the bot + the auto-optimizer. The `.cache` directory is mounted as a volume so cached data persists across container restarts. The auto-optimizer runs as a sidecar with `-now` for an immediate first optimization, then continues on the weekly schedule. It shares the `profiles/` volume with the bot for seamless hot-reload. Dashboard at `http://localhost:8080`.
+This starts PostgreSQL + the bot + the auto-optimizer + auto-train-ml. The `.cache` directory is mounted as a volume so cached data persists across container restarts. The auto-optimizer runs as a sidecar with `-now` for an immediate first optimization, then continues on the weekly schedule. The ML auto-trainer also runs as a sidecar with `-now`, trains on rolling windows, validates candidates against regression and annual guardrails, and only promotes model artifacts when they pass. The services share `profiles/` and `artifacts/` so live trading can hot-reload both profile and ML model changes. Dashboard at `http://localhost:8080`.
 
 ## Configuration
 

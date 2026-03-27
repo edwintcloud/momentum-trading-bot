@@ -74,6 +74,11 @@ func main() {
 				log.Fatalf("prepare-ml-dataset: %v", err)
 			}
 			return
+		case "auto-train-ml":
+			if err := runAutoTrainML(os.Args[2:]); err != nil {
+				log.Fatalf("auto-train-ml: %v", err)
+			}
+			return
 		case "live":
 			runLive()
 			return

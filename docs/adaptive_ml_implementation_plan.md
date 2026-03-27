@@ -411,7 +411,19 @@ Phase 5 progress notes:
 - Phase 5 current status:
   - implementation is functionally in place
   - validation is strongly positive on the annual weekly benchmark versus both rules-only and the prior ML baseline
-  - promotion is still blocked because annual `2025` remains below breakeven
+  - the latest kept refinement has now pushed weekly annual `2025` above breakeven
+- Latest kept Phase 5 annual checkpoint:
+  - [.cache/backtest/annual_2025_weekly_phase5_short_context_v2/summary.json](../.cache/backtest/annual_2025_weekly_phase5_short_context_v2/summary.json)
+    - `totalNetPnL=+1094.15`
+    - `winningWindows=25`
+    - `losingWindows=28`
+  - delta versus prior kept ML baseline:
+    - `+1240.08` versus [.cache/backtest/annual_2025_weekly_phase5_elite_short/summary.json](../.cache/backtest/annual_2025_weekly_phase5_elite_short/summary.json)
+  - delta versus rules-only:
+    - `+3167.36` versus [.cache/backtest/annual_2025_weekly_rules_only/summary.json](../.cache/backtest/annual_2025_weekly_rules_only/summary.json)
+  - key regressions preserved:
+    - `ANNA 2026-03-20`: `+1298.18`
+    - `AFJK 2025-12-09`: `+7139.50`
 - Why this is the current keep:
   - it improved the sampled-2025 weak September window while also improving October relative to the prior long-only-rank-protected baseline, without disturbing the key winner regressions
   - June softened slightly, but the three-window combined result improved versus the prior kept baseline
@@ -475,9 +487,9 @@ Phase 5 progress notes:
 
 ## Phase 6: Drift Detection And Safe Fallback
 
-- [ ] Wire concept-drift checks into the artifact lifecycle.
-- [ ] Use PSI and rolling performance decay to reduce or disable model influence.
-- [ ] Add fallback behavior:
+- [x] Wire concept-drift checks into the artifact lifecycle.
+- [x] Use PSI and rolling performance decay to reduce or disable model influence.
+- [x] Add fallback behavior:
   - model confidence downweight
   - revert to rules-only mode
   - schedule retraining
@@ -492,27 +504,75 @@ Completion criteria:
 - drift can be detected from live and backtest feature distributions
 - model weight can be reduced automatically without code changes
 
+Phase 6 completion notes:
+
+- Artifact-backed scoring now reads the saved model calibration-bin counts and uses them as the PSI baseline distribution.
+- Shared pipeline drift monitoring is now available in both live and backtest paths when `ConceptDriftEnabled=true`.
+- Candidate-evaluation rows now expose drift state directly:
+  - `mlDriftEnabled`
+  - `mlDriftActive`
+  - `mlDriftPsi`
+  - `mlDriftConfidenceMultiplier`
+  - `mlDriftPerformanceFallback`
+- Advisory sizing now automatically blends back toward neutral under PSI drift, and can revert to rules-only behavior under performance decay without code changes.
+- Control validation with drift disabled preserved the current Phase 5 baseline:
+  - [.cache/backtest/ml_phase6_control/anna_regression.json](../.cache/backtest/ml_phase6_control/anna_regression.json)
+    - `ANNA net=+1298.18`
+- Drift-enabled smoke validation proved the shared backtest path records and reacts to drift:
+  - candidate export: [.cache/backtest/ml_phase6_smoke/jan_candidates.jsonl](../.cache/backtest/ml_phase6_smoke/jan_candidates.jsonl)
+  - report: [.cache/backtest/ml_phase6_smoke/jan_report.json](../.cache/backtest/ml_phase6_smoke/jan_report.json)
+  - observed behavior:
+    - `mlDriftActive=true`
+    - `mlDriftConfidenceMultiplier=0.5`
+    - advisory downsize multipliers widened from the normal `0.75` toward neutral at roughly `0.88`
+
 ## Phase 7: Automatic Retraining And Promotion
 
-- [ ] Add an ML training scheduler modeled after the auto-optimizer.
-- [ ] Run retraining automatically on a fixed schedule, such as weekly on Saturday morning ET.
-- [ ] The scheduler must:
+- [x] Add an ML training scheduler modeled after the auto-optimizer.
+- [x] Run retraining automatically on a fixed schedule, such as weekly on Saturday morning ET.
+- [x] The scheduler must:
   - export recent candidate data
   - label it
   - train rolling-window models
   - validate against guardrails
   - promote only if the candidate model beats the current production model
-- [ ] Save status files and latest promoted model metadata, similar to the auto-optimizer.
+- [x] Save status files and latest promoted model metadata, similar to the auto-optimizer.
 
 Backtest requirement:
 
 - the promoted artifact must be immediately runnable in backtests for exact replay
 - promotion is invalid if the artifact only works in live mode
 
+Phase 7 progress notes:
+
+- Implemented `auto-train-ml` in [auto_train_ml_command.go](/Users/ecloud/dev/personal/momentum-trading-bot/auto_train_ml_command.go) and wired it into [main.go](/Users/ecloud/dev/personal/momentum-trading-bot/main.go).
+- The scheduler mirrors the `auto-optimize` shape:
+  - scheduled or one-shot execution
+  - status artifact writing
+  - guarded promotion path
+- Real promotions now stamp a `promotion_metadata.json` file into the promoted model directory so the artifact remains self-describing and backtest-replayable after promotion.
+- The command now supports explicit `-dataset-start` / `-dataset-end` windows so automation can be validated entirely from cached historical backtest data instead of depending on fresh network fetches.
+- The automation now fails early with a clear error if no model artifacts are produced from the selected dataset window.
+- Phase 7 dry-run smoke validation completed successfully through the full automation loop using cached sampled-2025 windows:
+  - status: [.cache/mlauto_smoke_v3/latest-status.json](/Users/ecloud/dev/personal/momentum-trading-bot/.cache/mlauto_smoke_v3/latest-status.json)
+  - report: [.cache/mlauto_smoke_v3/latest-report.json](/Users/ecloud/dev/personal/momentum-trading-bot/.cache/mlauto_smoke_v3/latest-report.json)
+  - candidate artifact dir: [.cache/mlauto_smoke_v3/runs/20260327_025537/candidate_model](/Users/ecloud/dev/personal/momentum-trading-bot/.cache/mlauto_smoke_v3/runs/20260327_025537/candidate_model)
+- That dry run produced real model artifacts, replayed the `ANNA` regression in both rules-only and advisory mode, ran a 2-window weekly annual check, and correctly rejected the candidate against guardrails:
+  - current kept annual baseline: `+1094.15`
+  - smoke candidate annual result over the 2-window check: `-2077.90`
+  - rejection reason: `annual_net_improvement expected > 1094.15 got -2077.90`
+- This is the desired behavior: the automatic loop is operational, backtest-native, and guardrails are actively preventing regression promotion.
+
 Completion criteria:
 
-- ML retraining happens automatically on rolling windows
-- promoted model artifacts are versioned and backtest-replayable
+- [x] ML retraining happens automatically on rolling windows
+- [ ] promoted model artifacts are versioned and backtest-replayable
+
+Phase 7 current status:
+
+- the automation and validation loop is implemented and dry-run validated
+- the remaining work is to exercise a real guarded promotion on a candidate that actually passes the current baseline checks
+- until that happens, Phase 7 remains in progress rather than complete
 
 ## Phase 8: Regime-Conditional Experts
 
