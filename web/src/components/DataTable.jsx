@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 
-export function DataTable({ columns, rows, renderRow, renderCard, emptyMessage, maxRows }) {
-  const [sortCol, setSortCol] = useState(null);
-  const [sortAsc, setSortAsc] = useState(true);
+export function DataTable({ columns, rows, renderRow, renderCard, emptyMessage, maxRows, sortKeys, defaultSort }) {
+  const [sortCol, setSortCol] = useState(defaultSort?.col ?? null);
+  const [sortAsc, setSortAsc] = useState(defaultSort?.asc ?? true);
 
   const handleSort = (col) => {
     if (sortCol === col) {
@@ -13,7 +13,22 @@ export function DataTable({ columns, rows, renderRow, renderCard, emptyMessage, 
     }
   };
 
-  let displayRows = rows;
+  const sortedRows = useMemo(() => {
+    if (!sortCol || !sortKeys || !sortKeys[sortCol]) return rows;
+    const key = sortKeys[sortCol];
+    return [...rows].sort((a, b) => {
+      const va = key(a);
+      const vb = key(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (va < vb) return sortAsc ? -1 : 1;
+      if (va > vb) return sortAsc ? 1 : -1;
+      return 0;
+    });
+  }, [rows, sortCol, sortAsc, sortKeys]);
+
+  let displayRows = sortedRows;
   if (maxRows && displayRows.length > maxRows) {
     displayRows = displayRows.slice(0, maxRows);
   }
