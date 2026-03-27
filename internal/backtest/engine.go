@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,11 +73,13 @@ type Result struct {
 	AvgMAER             float64
 	TrailingStopExitPct float64
 	AvgTimeToStopMin    float64
+	EntriesExecuted     int
 	Trades              int
 	Wins                int
 	Losses              int
 	WinRate             float64
 	OpenPositionsAtEnd  int
+	OpenSymbols         []string
 	Diagnostics         Diagnostics
 	ClosedTrades        []domain.ClosedTrade
 
@@ -594,6 +597,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	closedTrades := book.GetTradeHistory()
+	entriesExecuted := book.StatusSnapshot().EntriesToday
+	openPositions := book.GetPositions()
+	openSymbols := make([]string, 0, len(openPositions))
+	for _, pos := range openPositions {
+		openSymbols = append(openSymbols, pos.Symbol)
+	}
+	sort.Strings(openSymbols)
 	for _, trade := range closedTrades {
 		diagnostics.ByRegime[normalizeKey(trade.MarketRegime)] = updateBreakdown(diagnostics.ByRegime[normalizeKey(trade.MarketRegime)], trade)
 		diagnostics.BySetup[normalizeKey(trade.SetupType)] = updateBreakdown(diagnostics.BySetup[normalizeKey(trade.SetupType)], trade)
@@ -687,11 +697,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		AvgMAER:             round2(avgMAER),
 		TrailingStopExitPct: round2(trailingStopExitPct),
 		AvgTimeToStopMin:    round2(avgTimeToStopMin),
+		EntriesExecuted:     entriesExecuted,
 		Trades:              len(closedTrades),
 		Wins:                wins,
 		Losses:              losses,
 		WinRate:             round2(winRate),
 		OpenPositionsAtEnd:  openPositionsAtEnd,
+		OpenSymbols:         openSymbols,
 		Diagnostics:         diagnostics,
 		ClosedTrades:        closedTrades,
 	}

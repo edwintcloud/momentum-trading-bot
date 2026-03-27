@@ -88,6 +88,7 @@ type StrategyConfig struct {
 	MaxEntriesPerMinute           int
 	MinATRBars                    int
 	BlockLosingTickerReentry      bool
+	DisableBearPressureLongBlock  bool
 	DailyProfitLockPct            float64
 }
 
@@ -233,42 +234,42 @@ type AlphaConfig struct {
 
 // MLConfig holds machine learning pipeline parameters.
 type MLConfig struct {
-	MLScoringEnabled             bool
-	MLModelPath                  string
-	MLScoreWeight                float64
-	MLScoringThreshold           float64
-	MLAdvisoryEnabled            bool
-	MLAdvisoryVetoEnabled        bool
-	MLAdvisoryUpsizeEnabled      bool
-	MLAdvisoryDownsizeEnabled    bool
-	MLAdvisoryMinProb            float64
-	MLAdvisoryUpsizeThreshold    float64
-	MLAdvisoryDownsizeThreshold  float64
-	MLAdvisoryLongDownsizeThreshold  float64
-	MLAdvisoryShortDownsizeThreshold float64
-	MLAdvisoryProtectEliteShortMinProb  float64
-	MLAdvisoryUpsizeMultiplier   float64
-	MLAdvisoryDownsizeMultiplier float64
-	MLAdvisoryMaxVetosPerDay     int
-	MLAdvisoryProtectTopDayRank  int
-	MLAdvisoryProtectTopBarRank  int
-	MLScoringWeightInEnsemble    float64
-	MetaLabelEnabled             bool
-	MetaLabelModelPath           string
-	MetaLabelMinProb             float64
-	MetaLabelConfidenceThreshold float64
-	FracDiffEnabled              bool
-	FracDiffMinD                 float64
-	FracDiffMaxD                 float64
-	MLTrainingEnabled            bool
-	MLRetrainIntervalDays        int
-	MLFeatureHorizonBars         int
-	ConceptDriftEnabled          bool
-	PSIThreshold                 float64
-	SharpeDecayThreshold         float64
-	EnsembleEnabled              bool
-	EnsembleMethod               string
-	EnsembleDiversityThreshold   float64
+	MLScoringEnabled                   bool
+	MLModelPath                        string
+	MLScoreWeight                      float64
+	MLScoringThreshold                 float64
+	MLAdvisoryEnabled                  bool
+	MLAdvisoryVetoEnabled              bool
+	MLAdvisoryUpsizeEnabled            bool
+	MLAdvisoryDownsizeEnabled          bool
+	MLAdvisoryMinProb                  float64
+	MLAdvisoryUpsizeThreshold          float64
+	MLAdvisoryDownsizeThreshold        float64
+	MLAdvisoryLongDownsizeThreshold    float64
+	MLAdvisoryShortDownsizeThreshold   float64
+	MLAdvisoryProtectEliteShortMinProb float64
+	MLAdvisoryUpsizeMultiplier         float64
+	MLAdvisoryDownsizeMultiplier       float64
+	MLAdvisoryMaxVetosPerDay           int
+	MLAdvisoryProtectTopDayRank        int
+	MLAdvisoryProtectTopBarRank        int
+	MLScoringWeightInEnsemble          float64
+	MetaLabelEnabled                   bool
+	MetaLabelModelPath                 string
+	MetaLabelMinProb                   float64
+	MetaLabelConfidenceThreshold       float64
+	FracDiffEnabled                    bool
+	FracDiffMinD                       float64
+	FracDiffMaxD                       float64
+	MLTrainingEnabled                  bool
+	MLRetrainIntervalDays              int
+	MLFeatureHorizonBars               int
+	ConceptDriftEnabled                bool
+	PSIThreshold                       float64
+	SharpeDecayThreshold               float64
+	EnsembleEnabled                    bool
+	EnsembleMethod                     string
+	EnsembleDiversityThreshold         float64
 }
 
 // RegimeConfig holds market regime detection parameters.

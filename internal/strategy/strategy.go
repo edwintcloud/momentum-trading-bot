@@ -80,20 +80,20 @@ type Strategy struct {
 }
 
 type symbolTradeState struct {
-	dayKey                    string
-	entrySignals              int
-	lossExits                 int
-	lastLossAt                time.Time
-	dangerousShortFadeExits   int
-	lastDangerousShortFadeAt  time.Time
+	dayKey                     string
+	entrySignals               int
+	lossExits                  int
+	lastLossAt                 time.Time
+	dangerousShortFadeExits    int
+	lastDangerousShortFadeAt   time.Time
 	lastDangerousShortFadeVWAP float64
 	lastDangerousShortFadeDist float64
-	profitableShortExits      int
-	lastProfitableShortExitAt time.Time
-	lastProfitableShortSetup  string
-	lastLongImpulseHigh       float64
-	lastLongSetup             string
-	lastLongEntryAt           time.Time
+	profitableShortExits       int
+	lastProfitableShortExitAt  time.Time
+	lastProfitableShortSetup   string
+	lastLongImpulseHigh        float64
+	lastLongSetup              string
+	lastLongEntryAt            time.Time
 }
 
 type tapePressureState struct {
@@ -305,7 +305,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "loss-cooldown"
 	}
 	if domain.IsLong(c.Direction) {
-		if shouldBlockLongForBearPressure(c, tape) {
+		if !cfg.DisableBearPressureLongBlock && shouldBlockLongForBearPressure(c, tape) {
 			return domain.TradeSignal{}, false, "bear-pressure-long-block"
 		}
 		if reason, blocked := rejectRepeatedLongImpulse(c, state); blocked {
@@ -348,7 +348,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	// --- Hard indicator filters (rules-based entry) ---
 
 	// MACD histogram: must confirm direction
-	if domain.IsLong(c.Direction) && c.MACDHistogram <= 0 {
+	if domain.IsLong(c.Direction) && c.MACDHistogram <= 0 && !allowsFlatMACDLong(c) {
 		return domain.TradeSignal{}, false, "macd-filter"
 	}
 	if domain.IsShort(c.Direction) && c.MACDHistogram >= 0 {
@@ -374,7 +374,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Volume rate must exceed minimum
-	if c.VolumeRate < cfg.MinVolumeRate {
+	if c.VolumeRate < cfg.MinVolumeRate && !allowsLowVolumeRateLong(c) {
 		return domain.TradeSignal{}, false, "low-volume"
 	}
 
@@ -495,6 +495,8 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if domain.IsLong(c.Direction) {
 		if isExceptionalSqueezeBreakout(c) {
 			entryPrice = exceptionalSqueezeEntryLimit(c.Price, c.ATR)
+		} else if isExceptionalSqueezePullback(c) {
+			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.006, 0.20)
 		} else {
 			switch c.SetupType {
 			case "orb_reclaim":
@@ -540,7 +542,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	playbook := c.Playbook
 	if domain.IsLong(c.Direction) {
 		switch {
-		case isExceptionalSqueezeBreakout(c):
+		case isExceptionalSqueezeBreakout(c), isExceptionalSqueezePullback(c):
 			playbook = "continuation"
 		case c.SetupType == "hod_breakout" && isExplosiveLeaderReExpansionBreakout(c):
 			playbook = "pullback"
@@ -833,6 +835,9 @@ func shouldBlockLongForBearPressure(c domain.Candidate, tape tapePressureState) 
 }
 
 func isBearPressureLongException(c domain.Candidate) bool {
+	if isExceptionalSqueezePullback(c) {
+		return true
+	}
 	if c.StockSelectionScore >= 4.8 &&
 		c.Score >= 9.2 &&
 		c.RelativeVolume >= 10.0 &&
@@ -1329,6 +1334,9 @@ func entryRiskMultiplier(c domain.Candidate) float64 {
 		}
 		return 0.80
 	case "hod_pullback":
+		if isExceptionalSqueezePullback(c) {
+			return 0.75
+		}
 		if c.GapPercent <= 0 {
 			return 0.30
 		}
@@ -1443,7 +1451,7 @@ func reachedDailyProfitLock(pm *portfolio.Manager, cfg config.TradingConfig) boo
 
 func isExceptionalSqueezePosition(pos domain.Position) bool {
 	return domain.IsLong(pos.Side) &&
-		pos.SetupType == "hod_breakout" &&
+		(pos.SetupType == "hod_breakout" || pos.SetupType == "hod_pullback") &&
 		pos.Playbook == "continuation"
 }
 
@@ -1515,11 +1523,44 @@ func isLeaderOpenDrivePullback(c domain.Candidate) bool {
 	return true
 }
 
+func isExceptionalSqueezePullback(c domain.Candidate) bool {
+	if !domain.IsLong(c.Direction) || c.SetupType != "hod_pullback" {
+		return false
+	}
+	if c.Float <= 0 || c.Float > 2_500_000 {
+		return false
+	}
+	if c.Score < 6.5 || c.StockSelectionScore < 3.0 {
+		return false
+	}
+	if c.RelativeVolume < 7.0 || c.PreMarketVolume < 200_000 || c.Volume < 200_000 {
+		return false
+	}
+	if c.IntradayReturnPct < 10.0 || c.FiveMinuteReturnPct < 12.0 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 1.0 || c.PriceVsVWAPPct > 6.5 {
+		return false
+	}
+	if c.DistanceFromHighPct > 4.0 {
+		return false
+	}
+	return true
+}
+
+func allowsFlatMACDLong(c domain.Candidate) bool {
+	return isExceptionalSqueezePullback(c) && c.MACDHistogram >= 0
+}
+
+func allowsLowVolumeRateLong(c domain.Candidate) bool {
+	return isExceptionalSqueezePullback(c)
+}
+
 func rejectWeakLongStockSelection(c domain.Candidate) (string, bool) {
 	if !domain.IsLong(c.Direction) {
 		return "", false
 	}
-	if isLeaderOpenDrivePullback(c) || isExceptionalSqueezeBreakout(c) {
+	if isLeaderOpenDrivePullback(c) || isExceptionalSqueezeBreakout(c) || isExceptionalSqueezePullback(c) {
 		return "", false
 	}
 
@@ -1921,7 +1962,7 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 	if !domain.IsLong(c.Direction) {
 		return "", false
 	}
-	if isExceptionalSqueezeBreakout(c) {
+	if isExceptionalSqueezeBreakout(c) || isExceptionalSqueezePullback(c) {
 		return "", false
 	}
 

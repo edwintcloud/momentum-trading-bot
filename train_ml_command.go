@@ -535,7 +535,7 @@ func buildRegressionBacktestConfig(start, end time.Time, profilePath string, deb
 	}
 	cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
 
-	universe, err := resolveBacktestSymbols(setupCtx, client, end)
+	universe, err := resolveBacktestSymbols(setupCtx, client, end, configuredUniverseSymbols())
 	if err != nil {
 		return backtest.RunConfig{}, config.TradingConfig{}, err
 	}
