@@ -41,18 +41,27 @@ type StreamBar struct {
 	VWAP       float64   `json:"vw"`
 }
 
+// StreamTrade is a real-time trade tick from the Alpaca WebSocket.
+type StreamTrade struct {
+	Type      string    `json:"T"` // Message type: "t"
+	Symbol    string    `json:"S"`
+	Price     float64   `json:"p"`
+	Size      int64     `json:"s"`
+	Timestamp time.Time `json:"t"`
+}
+
 // streamStats tracks debug counters for stream health monitoring.
 type streamStats struct {
-	mu            sync.Mutex
-	barsReceived  int64
-	updatedBars   int64
-	dailyBarsRecv int64
+	mu             sync.Mutex
+	barsReceived   int64
+	updatedBars    int64
+	dailyBarsRecv  int64
 	tradesReceived int64
 	errorsReceived int64
 	subscriptions  int64
-	droppedBars   int64
-	lastBarAt     time.Time
-	lastErrorMsg  string
+	droppedBars    int64
+	lastBarAt      time.Time
+	lastErrorMsg   string
 }
 
 func (s *streamStats) recordBar(t time.Time) {
@@ -116,15 +125,17 @@ func (s *streamStats) snapshot() (bars, updated, daily, trades, errors, subs, dr
 
 // Stream manages a real-time WebSocket connection to Alpaca market data.
 type Stream struct {
-	config      StreamConfig
-	conn        *websocket.Conn
-	mu          sync.Mutex
-	symbols     map[string]bool
-	bars        chan StreamBar
-	dailyBars   chan StreamBar
-	done        chan struct{}
-	reconnectCh chan struct{}
-	stats       streamStats
+	config       StreamConfig
+	conn         *websocket.Conn
+	mu           sync.Mutex
+	barSymbols   map[string]bool
+	tradeSymbols map[string]bool
+	bars         chan StreamBar
+	trades       chan StreamTrade
+	dailyBars    chan StreamBar
+	done         chan struct{}
+	reconnectCh  chan struct{}
+	stats        streamStats
 }
 
 // NewStream creates a new Alpaca market data stream.
@@ -133,12 +144,14 @@ func NewStream(cfg StreamConfig, bufSize int) *Stream {
 		bufSize = 4096
 	}
 	return &Stream{
-		config:      cfg,
-		symbols:     make(map[string]bool),
-		bars:        make(chan StreamBar, bufSize),
-		dailyBars:   make(chan StreamBar, 1024),
-		done:        make(chan struct{}),
-		reconnectCh: make(chan struct{}, 1),
+		config:       cfg,
+		barSymbols:   make(map[string]bool),
+		tradeSymbols: make(map[string]bool),
+		bars:         make(chan StreamBar, bufSize),
+		trades:       make(chan StreamTrade, 2048),
+		dailyBars:    make(chan StreamBar, 1024),
+		done:         make(chan struct{}),
+		reconnectCh:  make(chan struct{}, 1),
 	}
 }
 
@@ -147,7 +160,12 @@ func (s *Stream) DailyBars() <-chan StreamBar {
 	return s.dailyBars
 }
 
-// Start connects to the WebSocket, authenticates, and begins reading bars.
+// Trades returns the channel for receiving real-time trade ticks.
+func (s *Stream) Trades() <-chan StreamTrade {
+	return s.trades
+}
+
+// Start connects to the WebSocket, authenticates, and begins reading market data.
 // Bars are sent to the returned channel. Handles reconnection automatically.
 func (s *Stream) Start(ctx context.Context) (<-chan StreamBar, error) {
 	if err := s.connect(ctx); err != nil {
@@ -166,43 +184,54 @@ func (s *Stream) Start(ctx context.Context) (<-chan StreamBar, error) {
 func (s *Stream) Subscribe(ctx context.Context, symbols []string) error {
 	s.mu.Lock()
 	for _, sym := range symbols {
-		s.symbols[sym] = true
+		s.barSymbols[sym] = true
 	}
-	conn := s.conn
 	s.mu.Unlock()
-
-	if conn == nil {
-		return nil
-	}
-
-	// Subscribe in batches
-	totalBatches := (len(symbols) + subscribeBatchSize - 1) / subscribeBatchSize
-	for i := 0; i < len(symbols); i += subscribeBatchSize {
-		end := i + subscribeBatchSize
-		if end > len(symbols) {
-			end = len(symbols)
-		}
-		batch := symbols[i:end]
-		batchNum := i/subscribeBatchSize + 1
-		msg := map[string]interface{}{
-			"action":    "subscribe",
-			"bars":      batch,
-			"dailyBars": batch,
-		}
-		s.mu.Lock()
-		err := conn.WriteJSON(msg)
-		s.mu.Unlock()
-		if err != nil {
-			return fmt.Errorf("subscribe batch: %w", err)
-		}
-		log.Printf("stream: subscribe request sent for %d symbols (batch %d/%d)", len(batch), batchNum, totalBatches)
-
-		// Brief pause between batches to avoid overwhelming the WebSocket
-		if end < len(symbols) {
-			time.Sleep(subscribeBatchWait)
-		}
+	if err := s.writeSymbolBatches("subscribe", symbols, "bars", "dailyBars"); err != nil {
+		return err
 	}
 	log.Printf("stream: subscribed to %d symbols (bars + dailyBars)", len(symbols))
+	return nil
+}
+
+// SyncTradeSubscriptions keeps trade subscriptions aligned with the current open positions.
+func (s *Stream) SyncTradeSubscriptions(ctx context.Context, symbols []string) error {
+	desired := make(map[string]bool, len(symbols))
+	for _, sym := range symbols {
+		if sym == "" {
+			continue
+		}
+		desired[sym] = true
+	}
+
+	subscribe := make([]string, 0)
+	unsubscribe := make([]string, 0)
+
+	s.mu.Lock()
+	for sym := range desired {
+		if !s.tradeSymbols[sym] {
+			subscribe = append(subscribe, sym)
+		}
+	}
+	for sym := range s.tradeSymbols {
+		if !desired[sym] {
+			unsubscribe = append(unsubscribe, sym)
+		}
+	}
+	for _, sym := range subscribe {
+		s.tradeSymbols[sym] = true
+	}
+	for _, sym := range unsubscribe {
+		delete(s.tradeSymbols, sym)
+	}
+	s.mu.Unlock()
+
+	if err := s.writeSymbolBatches("subscribe", subscribe, "trades"); err != nil {
+		return err
+	}
+	if err := s.writeSymbolBatches("unsubscribe", unsubscribe, "trades"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -210,24 +239,11 @@ func (s *Stream) Subscribe(ctx context.Context, symbols []string) error {
 func (s *Stream) Unsubscribe(ctx context.Context, symbols []string) error {
 	s.mu.Lock()
 	for _, sym := range symbols {
-		delete(s.symbols, sym)
+		delete(s.barSymbols, sym)
+		delete(s.tradeSymbols, sym)
 	}
-	conn := s.conn
 	s.mu.Unlock()
-
-	if conn == nil {
-		return nil
-	}
-
-	msg := map[string]interface{}{
-		"action":    "unsubscribe",
-		"bars":      symbols,
-		"dailyBars": symbols,
-	}
-	s.mu.Lock()
-	err := conn.WriteJSON(msg)
-	s.mu.Unlock()
-	return err
+	return s.writeSymbolBatches("unsubscribe", symbols, "bars", "dailyBars", "trades")
 }
 
 // Close cleanly shuts down the stream.
@@ -303,17 +319,20 @@ func (s *Stream) connect(ctx context.Context) error {
 
 func (s *Stream) resubscribe(ctx context.Context) error {
 	s.mu.Lock()
-	symbols := make([]string, 0, len(s.symbols))
-	for sym := range s.symbols {
-		symbols = append(symbols, sym)
+	barSymbols := make([]string, 0, len(s.barSymbols))
+	for sym := range s.barSymbols {
+		barSymbols = append(barSymbols, sym)
+	}
+	tradeSymbols := make([]string, 0, len(s.tradeSymbols))
+	for sym := range s.tradeSymbols {
+		tradeSymbols = append(tradeSymbols, sym)
 	}
 	s.mu.Unlock()
 
-	if len(symbols) == 0 {
-		return nil
+	if err := s.writeSymbolBatches("subscribe", barSymbols, "bars", "dailyBars"); err != nil {
+		return err
 	}
-
-	return s.Subscribe(ctx, symbols)
+	return s.writeSymbolBatches("subscribe", tradeSymbols, "trades")
 }
 
 func (s *Stream) readLoop(ctx context.Context) {
@@ -429,8 +448,16 @@ func (s *Stream) processMessage(msg []byte) {
 			s.stats.recordDailyBar()
 
 		case "t": // Trade (if subscribed)
+			var trade StreamTrade
+			if err := json.Unmarshal(raw, &trade); err != nil {
+				log.Printf("stream: failed to parse trade: %v", err)
+				continue
+			}
+			select {
+			case s.trades <- trade:
+			default:
+			}
 			s.stats.recordTrade()
-			// For now, just count. Future: use for real-time price updates
 
 		case "subscription": // Subscription confirmation
 			var sub struct {
@@ -459,6 +486,47 @@ func (s *Stream) processMessage(msg []byte) {
 			log.Printf("stream: unknown message type %q: %s", msgType, truncate(raw, 200))
 		}
 	}
+}
+
+func (s *Stream) writeSymbolBatches(action string, symbols []string, fields ...string) error {
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	totalBatches := (len(symbols) + subscribeBatchSize - 1) / subscribeBatchSize
+	for i := 0; i < len(symbols); i += subscribeBatchSize {
+		end := i + subscribeBatchSize
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		batch := symbols[i:end]
+		batchNum := i/subscribeBatchSize + 1
+		msg := map[string]interface{}{
+			"action": action,
+		}
+		for _, field := range fields {
+			msg[field] = batch
+		}
+
+		s.mu.Lock()
+		conn := s.conn
+		if conn == nil {
+			s.mu.Unlock()
+			return nil
+		}
+		err := conn.WriteJSON(msg)
+		s.mu.Unlock()
+		if err != nil {
+			return fmt.Errorf("%s batch: %w", action, err)
+		}
+
+		log.Printf("stream: %s request sent for %d symbols (batch %d/%d fields=%v)", action, len(batch), batchNum, totalBatches, fields)
+		if end < len(symbols) {
+			time.Sleep(subscribeBatchWait)
+		}
+	}
+
+	return nil
 }
 
 func (s *Stream) statsLoop(ctx context.Context) {

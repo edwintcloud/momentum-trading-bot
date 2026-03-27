@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -76,11 +77,51 @@ type AlpacaPosition struct {
 	UnrealizedPL  string `json:"unrealized_pl"`
 }
 
+// AlpacaOrder represents a broker order with fill metadata.
+type AlpacaOrder struct {
+	ID          string     `json:"id"`
+	Symbol      string     `json:"symbol"`
+	Side        string     `json:"side"`
+	Status      string     `json:"status"`
+	FilledQty   string     `json:"filled_qty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	SubmittedAt *time.Time `json:"submitted_at"`
+	FilledAt    *time.Time `json:"filled_at"`
+}
+
+func (o AlpacaOrder) EventTime() time.Time {
+	if o.FilledAt != nil && !o.FilledAt.IsZero() {
+		return *o.FilledAt
+	}
+	if o.SubmittedAt != nil && !o.SubmittedAt.IsZero() {
+		return *o.SubmittedAt
+	}
+	return o.CreatedAt
+}
+
 // GetPositions fetches current broker positions.
 func (c *Client) GetPositions(ctx context.Context) ([]AlpacaPosition, error) {
 	var positions []AlpacaPosition
 	err := c.get(ctx, c.baseURL+"/v2/positions", &positions)
 	return positions, err
+}
+
+// ListRecentOrders fetches the most recent account orders with fill metadata.
+func (c *Client) ListRecentOrders(ctx context.Context, limit int) ([]AlpacaOrder, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	query := url.Values{}
+	query.Set("status", "all")
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set("direction", "desc")
+
+	var orders []AlpacaOrder
+	err := c.get(ctx, c.baseURL+"/v2/orders?"+query.Encode(), &orders)
+	return orders, err
 }
 
 // SubmitOrder submits an order to Alpaca. Always uses limit orders — never market.

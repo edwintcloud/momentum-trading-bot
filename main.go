@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -156,8 +157,12 @@ func runLive() {
 	if err != nil {
 		log.Printf("alpaca: position seed warning: %v", err)
 	} else {
+		openedAtBySymbol, openedAtErr := inferBrokerPositionOpenedAtMap(ctx, alpacaClient, brokerPositions)
+		if openedAtErr != nil {
+			log.Printf("alpaca: position timing warning: %v", openedAtErr)
+		}
 		for _, bp := range brokerPositions {
-			if seeded, ok := seedBrokerPosition(portfolioMgr, bp); ok {
+			if seeded, ok := seedBrokerPosition(portfolioMgr, bp, openedAtBySymbol[bp.Symbol]); ok {
 				log.Printf("alpaca: seeded position %s %s qty=%d avg=%.2f", seeded.Symbol, seeded.Side, seeded.Quantity, seeded.AvgPrice)
 			}
 		}
@@ -277,6 +282,9 @@ func runLive() {
 	if err := stream.Subscribe(ctx, symbols); err != nil {
 		log.Fatalf("subscribe: %v", err)
 	}
+	if err := stream.SyncTradeSubscriptions(ctx, openPositionSymbols(portfolioMgr)); err != nil {
+		log.Printf("stream: trade subscription warning: %v", err)
+	}
 
 	// Seed normalizer with historical context from Alpaca snapshots.
 	// Without this, previousClose=0 and prevDayVolume=0 on fresh start,
@@ -340,6 +348,32 @@ func runLive() {
 		}
 	}()
 
+	// Update open position prices from live trade ticks instead of waiting for the next bar.
+	go func() {
+		for trade := range stream.Trades() {
+			if trade.Price <= 0 {
+				continue
+			}
+			portfolioMgr.MarkPriceAt(trade.Symbol, trade.Price, trade.Timestamp)
+		}
+	}()
+
+	// Keep trade subscriptions aligned with the currently open positions.
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := stream.SyncTradeSubscriptions(ctx, openPositionSymbols(portfolioMgr)); err != nil {
+					log.Printf("stream: trade sync warning: %v", err)
+				}
+			}
+		}
+	}()
+
 	// Process daily bar updates for normalizer context (session OHLCV)
 	go func() {
 		for dbar := range stream.DailyBars() {
@@ -374,10 +408,16 @@ func runLive() {
 					pmSymbols[p.Symbol] = true
 				}
 				brokerSymbols := make(map[string]bool)
+				missingOpenedAtBySymbol := map[string]time.Time{}
+				missingOpenedAtLoaded := false
 				for _, bp := range bPositions {
 					brokerSymbols[bp.Symbol] = true
 					if !pmSymbols[bp.Symbol] {
-						if seeded, ok := seedBrokerPosition(portfolioMgr, bp); ok {
+						if !missingOpenedAtLoaded {
+							missingOpenedAtLoaded = true
+							missingOpenedAtBySymbol, _ = inferBrokerPositionOpenedAtMap(ctx, alpacaClient, bPositions)
+						}
+						if seeded, ok := seedBrokerPosition(portfolioMgr, bp, missingOpenedAtBySymbol[bp.Symbol]); ok {
 							computeSeededPositionStops(portfolioMgr, tradingCfg, snapshots)
 							runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("reconcile: adopted broker position %s qty=%d avg=%.2f after local tracking mismatch", seeded.Symbol, seeded.Quantity, seeded.AvgPrice))
 							log.Printf("reconcile: adopted broker position %s %s qty=%d avg=%.2f after local tracking mismatch", seeded.Symbol, seeded.Side, seeded.Quantity, seeded.AvgPrice)
@@ -748,8 +788,8 @@ func computeSeededPositionStops(portfolioMgr *portfolio.Manager, tradingCfg conf
 	}
 }
 
-func seedBrokerPosition(portfolioMgr *portfolio.Manager, bp alpaca.AlpacaPosition) (domain.Position, bool) {
-	position, ok := brokerPositionToDomainPosition(bp)
+func seedBrokerPosition(portfolioMgr *portfolio.Manager, bp alpaca.AlpacaPosition, openedAt time.Time) (domain.Position, bool) {
+	position, ok := brokerPositionToDomainPosition(bp, openedAt)
 	if !ok {
 		return domain.Position{}, false
 	}
@@ -757,7 +797,7 @@ func seedBrokerPosition(portfolioMgr *portfolio.Manager, bp alpaca.AlpacaPositio
 	return position, true
 }
 
-func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition) (domain.Position, bool) {
+func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition, openedAt time.Time) (domain.Position, bool) {
 	qty := alpaca.ParseOrderQuantity(bp.Qty)
 	if qty <= 0 {
 		return domain.Position{}, false
@@ -774,6 +814,9 @@ func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition) (domain.Position, 
 	fmt.Sscanf(bp.MarketValue, "%f", &marketValue)
 	fmt.Sscanf(bp.UnrealizedPL, "%f", &unrealizedPL)
 	now := time.Now()
+	if openedAt.IsZero() {
+		openedAt = now
+	}
 	return domain.Position{
 		Symbol:        bp.Symbol,
 		Side:          side,
@@ -784,7 +827,97 @@ func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition) (domain.Position, 
 		LowestPrice:   currentPrice,
 		MarketValue:   marketValue,
 		UnrealizedPnL: unrealizedPL,
-		OpenedAt:      now,
+		OpenedAt:      openedAt,
 		UpdatedAt:     now,
 	}, true
+}
+
+func inferBrokerPositionOpenedAtMap(ctx context.Context, alpacaClient *alpaca.Client, positions []alpaca.AlpacaPosition) (map[string]time.Time, error) {
+	out := make(map[string]time.Time)
+	if len(positions) == 0 {
+		return out, nil
+	}
+
+	orderCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	orders, err := alpacaClient.ListRecentOrders(orderCtx, 500)
+	if err != nil {
+		return out, err
+	}
+
+	wanted := make(map[string]alpaca.AlpacaPosition, len(positions))
+	orderGroups := make(map[string][]alpaca.AlpacaOrder, len(positions))
+	for _, pos := range positions {
+		wanted[pos.Symbol] = pos
+	}
+	for _, order := range orders {
+		if _, ok := wanted[order.Symbol]; !ok {
+			continue
+		}
+		if alpaca.ParseOrderQuantity(order.FilledQty) <= 0 {
+			continue
+		}
+		if order.EventTime().IsZero() {
+			continue
+		}
+		orderGroups[order.Symbol] = append(orderGroups[order.Symbol], order)
+	}
+
+	for _, pos := range positions {
+		openedAt, ok := inferPositionOpenedAt(pos, orderGroups[pos.Symbol])
+		if ok {
+			out[pos.Symbol] = openedAt
+		}
+	}
+	return out, nil
+}
+
+func inferPositionOpenedAt(position alpaca.AlpacaPosition, orders []alpaca.AlpacaOrder) (time.Time, bool) {
+	remainingQty := alpaca.ParseOrderQuantity(position.Qty)
+	if remainingQty <= 0 || len(orders) == 0 {
+		return time.Time{}, false
+	}
+
+	sort.Slice(orders, func(i, j int) bool {
+		return orders[i].EventTime().After(orders[j].EventTime())
+	})
+
+	isShort := position.Side == "short"
+	for _, order := range orders {
+		filledQty := alpaca.ParseOrderQuantity(order.FilledQty)
+		if filledQty <= 0 {
+			continue
+		}
+		switch {
+		case !isShort && order.Side == domain.SideBuy:
+			remainingQty -= filledQty
+			if remainingQty <= 0 {
+				return order.EventTime(), true
+			}
+		case !isShort && order.Side == domain.SideSell:
+			remainingQty += filledQty
+		case isShort && order.Side == domain.SideSell:
+			remainingQty -= filledQty
+			if remainingQty <= 0 {
+				return order.EventTime(), true
+			}
+		case isShort && order.Side == domain.SideBuy:
+			remainingQty += filledQty
+		}
+	}
+
+	return time.Time{}, false
+}
+
+func openPositionSymbols(portfolioMgr *portfolio.Manager) []string {
+	positions := portfolioMgr.GetPositions()
+	symbols := make([]string, 0, len(positions))
+	for _, pos := range positions {
+		if pos.Symbol == "" {
+			continue
+		}
+		symbols = append(symbols, pos.Symbol)
+	}
+	sort.Strings(symbols)
+	return symbols
 }
