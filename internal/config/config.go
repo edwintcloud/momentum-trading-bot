@@ -88,6 +88,7 @@ type StrategyConfig struct {
 	MaxEntriesPerMinute           int
 	MinATRBars                    int
 	BlockLosingTickerReentry      bool
+	DailyProfitLockPct            float64
 }
 
 // RiskConfig holds risk management and position sizing parameters.

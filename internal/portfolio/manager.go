@@ -771,6 +771,15 @@ func (m *Manager) DayPnL() float64 {
 	return m.dayPnL
 }
 
+// RefreshDayIfNeeded syncs day-boundary state to the injected clock.
+// This is important in backtests where "read-only" checks may happen before
+// any portfolio mutation on a new simulated trading day.
+func (m *Manager) RefreshDayIfNeeded() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetDayIfNeeded()
+}
+
 // PortfolioHeat returns the total dollar risk across all open positions.
 func (m *Manager) PortfolioHeat() float64 {
 	m.mu.RLock()

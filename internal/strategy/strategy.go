@@ -283,6 +283,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if s.portfolio.HasPendingOrder(c.Symbol) {
 		return domain.TradeSignal{}, false, "pending-order"
 	}
+	if reachedDailyProfitLock(s.portfolio, cfg) {
+		return domain.TradeSignal{}, false, "daily-profit-lock"
+	}
 
 	// Day state
 	dayKey := markethours.TradingDay(now)
@@ -1186,6 +1189,21 @@ func entryRiskMultiplier(c domain.Candidate) float64 {
 	if domain.IsShort(c.Direction) {
 		switch c.SetupType {
 		case "parabolic-failed-reclaim-short":
+			if c.Price < 8.0 &&
+				c.RelativeVolume >= 200.0 &&
+				c.LeaderRank > 0 &&
+				c.LeaderRank <= 2 &&
+				c.PriceVsVWAPPct > -9.0 {
+				return 0.40
+			}
+			if c.GapPercent > 3.0 &&
+				c.PriceVsOpenPct > 0.85 &&
+				c.DistanceFromHighPct < 28.0 &&
+				c.RelativeVolume >= 30.0 &&
+				c.PriceVsVWAPPct > -12.0 &&
+				c.StockSelectionScore < 4.0 {
+				return 0.55
+			}
 			if c.DistanceFromHighPct >= 25.0 &&
 				c.PriceVsVWAPPct <= -10.0 &&
 				c.OneMinuteReturnPct <= -3.0 &&
@@ -1395,6 +1413,16 @@ func exceptionalSqueezeEntryLimit(price, atr float64) float64 {
 	return limit
 }
 
+func reachedDailyProfitLock(pm *portfolio.Manager, cfg config.TradingConfig) bool {
+	if pm == nil || cfg.DailyProfitLockPct <= 0 || cfg.StartingCapital <= 0 {
+		return false
+	}
+	pm.RefreshDayIfNeeded()
+	dayNetPnL := pm.DayPnL() + pm.UnrealizedPnL()
+	dayROIPct := (dayNetPnL / cfg.StartingCapital) * 100.0
+	return dayROIPct >= cfg.DailyProfitLockPct
+}
+
 func isExceptionalSqueezePosition(pos domain.Position) bool {
 	return domain.IsLong(pos.Side) &&
 		pos.SetupType == "hod_breakout" &&
@@ -1599,6 +1627,42 @@ func rejectWeakShortMomentum(c domain.Candidate, cfg config.TradingConfig) (stri
 	minScore := math.Max(cfg.ShortMinEntryScore, 3.2)
 	if c.Score < minScore && !hardFlush {
 		return "short-selection-filter", true
+	}
+
+	if c.SetupType == "parabolic-failed-reclaim-short" {
+		if c.Price < 4.0 &&
+			c.RelativeVolume >= 100.0 &&
+			c.ATRPct >= 12.0 &&
+			c.DistanceFromHighPct < 40.0 &&
+			c.PriceVsVWAPPct > -12.0 &&
+			c.BreakoutPct > -4.0 {
+			return "cheap-short-squeeze-fade", true
+		}
+		if c.Price < 10.0 &&
+			c.GapPercent > 5.0 &&
+			c.RelativeVolume >= 80.0 &&
+			c.PriceVsOpenPct > 0.90 &&
+			c.DistanceFromHighPct < 30.0 &&
+			c.PriceVsVWAPPct > -9.0 &&
+			c.FiveMinuteReturnPct > -6.5 &&
+			!hardFlush {
+			return "cheap-gap-squeeze-short", true
+		}
+		if c.LeaderRank > 0 &&
+			c.LeaderRank <= 2 &&
+			c.RelativeVolume >= 5.0 &&
+			c.DistanceFromHighPct < 25.0 &&
+			c.PriceVsVWAPPct > -10.0 &&
+			c.ThreeMinuteReturnPct > -5.0 &&
+			!hardFlush {
+			return "short-strong-leader", true
+		}
+		if c.DistanceFromHighPct >= 40.0 &&
+			c.PriceVsVWAPPct <= -20.0 &&
+			c.BreakoutPct <= -8.0 &&
+			c.OneMinuteReturnPct <= -8.0 {
+			return "late-flush-chase", true
+		}
 	}
 
 	minVWAPBreakPct := math.Max(cfg.ShortVWAPBreakMinPct, 1.0)
@@ -1868,6 +1932,11 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 		c.OneMinuteReturnPct >= 2.5 {
 		return "late-extension-chase", true
 	}
+	if c.PriceVsVWAPPct > 18.0 &&
+		c.OneMinuteReturnPct >= 5.5 &&
+		c.ThreeMinuteReturnPct >= 10.0 {
+		return "late-extension-chase", true
+	}
 	if c.GapPercent < 0 &&
 		c.PriceVsVWAPPct > 6.0 &&
 		c.RelativeVolume < 80.0 &&
@@ -1934,6 +2003,15 @@ func isExceptionalSqueezeBreakout(c domain.Candidate) bool {
 		return false
 	}
 	if c.ConsolidationRangePct < 10.0 {
+		return false
+	}
+	// Keep this carve-out for fresh ignition bars on thin squeeze names, not
+	// already-crowded multi-bar vertical runs that should still face the normal
+	// HOD breakout quality filters.
+	if c.ThreeMinuteReturnPct > 8.0 && c.FiveMinuteReturnPct > 12.0 {
+		return false
+	}
+	if c.RelativeVolume > 40.0 && c.VolumeRate > 15000 {
 		return false
 	}
 	return true

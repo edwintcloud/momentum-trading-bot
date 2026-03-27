@@ -134,7 +134,8 @@
       "MinPositionNotionalPct": 0.1,
       "MaxEntriesPerMinute": 3,
       "MinATRBars": 5,
-      "BlockLosingTickerReentry": false
+      "BlockLosingTickerReentry": false,
+      "DailyProfitLockPct": 5
     },
     "Risk": {
       "DailyLossLimitPct": 0.2,
