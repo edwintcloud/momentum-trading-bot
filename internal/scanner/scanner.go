@@ -348,8 +348,13 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		return domain.Candidate{}, false, "float-too-low"
 	}
 
-	// Minimum daily volume filter — reject thinly traded stocks
-	if cfg.MinPrevDayVolume > 0 && tick.PrevDayVolume > 0 && tick.PrevDayVolume < cfg.MinPrevDayVolume {
+	// Minimum daily volume filter — reject thinly traded stocks, but allow
+	// exceptional same-day squeeze leaders to pass once the live tape has clearly
+	// taken over from the stale prior-day volume baseline.
+	if cfg.MinPrevDayVolume > 0 &&
+		tick.PrevDayVolume > 0 &&
+		tick.PrevDayVolume < cfg.MinPrevDayVolume &&
+		!qualifiesExplosiveSqueezeVolumeException(tick, metrics, intradayReturnPct, hodMomoQualified, cfg) {
 		return domain.Candidate{}, false, "daily-volume"
 	}
 
@@ -460,6 +465,8 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 	stockSelectionScore := 0.0
 	if domain.IsLong(direction) {
 		stockSelectionScore = computeRossStockSelectionScore(tick, metrics, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, referenceHigh)
+	} else {
+		stockSelectionScore = computeShortSelectionScore(tick, metrics, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, s.config.ShortVWAPBreakMinPct)
 	}
 	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, referenceHigh, stockSelectionScore)
 
@@ -713,6 +720,154 @@ func computeRossStockSelectionScore(tick domain.Tick, metrics scanMetrics, intra
 	return score
 }
 
+func computeShortSelectionScore(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, shortVWAPBreakMinPct float64) float64 {
+	peakExtensionPct := 0.0
+	if tick.Open > 0 && tick.HighOfDay > 0 {
+		peakExtensionPct = safePct(tick.HighOfDay-tick.Open, tick.Open) * 100
+	}
+	vwapBreakPct := 0.0
+	if metrics.vwap > 0 && tick.Price < metrics.vwap {
+		vwapBreakPct = safePct(metrics.vwap-tick.Price, metrics.vwap) * 100
+	}
+	minVWAPBreak := math.Max(shortVWAPBreakMinPct, 1.0)
+
+	extensionPillar := 0.0
+	switch {
+	case peakExtensionPct >= 40:
+		extensionPillar = 1.0
+	case peakExtensionPct >= 25:
+		extensionPillar = 0.85
+	case peakExtensionPct >= 15:
+		extensionPillar = 0.65
+	case peakExtensionPct >= 10:
+		extensionPillar = 0.45
+	case peakExtensionPct >= 6:
+		extensionPillar = 0.25
+	}
+
+	volumePillar := 0.0
+	switch {
+	case tick.RelativeVolume >= 20:
+		volumePillar += 0.50
+	case tick.RelativeVolume >= 10:
+		volumePillar += 0.40
+	case tick.RelativeVolume >= 5:
+		volumePillar += 0.28
+	case tick.RelativeVolume >= 2.5:
+		volumePillar += 0.15
+	}
+	switch {
+	case tick.PreMarketVolume >= 1_000_000:
+		volumePillar += 0.30
+	case tick.PreMarketVolume >= 300_000:
+		volumePillar += 0.20
+	case tick.PreMarketVolume >= 100_000:
+		volumePillar += 0.10
+	}
+	switch {
+	case metrics.volumeRate >= 20_000:
+		volumePillar += 0.20
+	case metrics.volumeRate >= 10_000:
+		volumePillar += 0.10
+	}
+	if volumePillar > 1.0 {
+		volumePillar = 1.0
+	}
+
+	failurePillar := 0.0
+	switch {
+	case distFromHighPct >= 35:
+		failurePillar += 0.40
+	case distFromHighPct >= 20:
+		failurePillar += 0.28
+	case distFromHighPct >= 10:
+		failurePillar += 0.16
+	case distFromHighPct >= 6:
+		failurePillar += 0.08
+	}
+	switch {
+	case vwapBreakPct >= minVWAPBreak+4.0:
+		failurePillar += 0.28
+	case vwapBreakPct >= minVWAPBreak+1.5:
+		failurePillar += 0.20
+	case vwapBreakPct >= minVWAPBreak:
+		failurePillar += 0.12
+	}
+	switch {
+	case metrics.breakoutPct <= -2.0:
+		failurePillar += 0.20
+	case metrics.breakoutPct <= -0.75:
+		failurePillar += 0.12
+	case metrics.breakoutPct <= -0.25:
+		failurePillar += 0.06
+	}
+	if failurePillar > 1.0 {
+		failurePillar = 1.0
+	}
+
+	technicalPillar := 0.0
+	switch {
+	case metrics.oneMinuteReturn <= -4.0:
+		technicalPillar += 0.25
+	case metrics.oneMinuteReturn <= -1.5:
+		technicalPillar += 0.18
+	case metrics.oneMinuteReturn <= -0.75:
+		technicalPillar += 0.10
+	}
+	switch {
+	case metrics.threeMinuteReturn <= -8.0:
+		technicalPillar += 0.25
+	case metrics.threeMinuteReturn <= -3.0:
+		technicalPillar += 0.18
+	case metrics.threeMinuteReturn <= -1.5:
+		technicalPillar += 0.10
+	}
+	switch {
+	case metrics.fiveMinuteReturn <= -4.0:
+		technicalPillar += 0.20
+	case metrics.fiveMinuteReturn <= -2.0:
+		technicalPillar += 0.12
+	case metrics.fiveMinuteReturn <= -1.0:
+		technicalPillar += 0.06
+	}
+	if metrics.macdHistogram < 0 {
+		technicalPillar += 0.15
+	}
+	if metrics.ema9 > 0 && tick.Price < metrics.ema9 {
+		technicalPillar += 0.10
+	}
+	if metrics.vwap > 0 && tick.Price < metrics.vwap {
+		technicalPillar += 0.05
+	}
+	if technicalPillar > 1.0 {
+		technicalPillar = 1.0
+	}
+
+	leadershipPillar := 0.0
+	if leaderRank > 0 && leaderRank <= 3 {
+		if distFromHighPct >= 15 {
+			leadershipPillar += 0.20
+		} else if distFromHighPct < 8 {
+			leadershipPillar -= 0.10
+		}
+	}
+	if leaderStrengthPct >= 50 && distFromHighPct >= 15 {
+		leadershipPillar += 0.10
+	}
+	if intradayReturnPct >= 2 {
+		leadershipPillar += 0.10
+	}
+
+	score := extensionPillar + volumePillar + failurePillar + technicalPillar + leadershipPillar
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
 func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics, direction string, setupType string, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, referenceHigh float64, stockSelectionScore float64) float64 {
 	score := 0.0
 
@@ -819,24 +974,62 @@ func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics s
 			score += 0.15
 		}
 	} else {
+		peakExtensionPct := 0.0
+		if tick.Open > 0 && tick.HighOfDay > 0 {
+			peakExtensionPct = safePct(tick.HighOfDay-tick.Open, tick.Open) * 100
+		}
+		vwapBreakPct := 0.0
+		if metrics.vwap > 0 && tick.Price < metrics.vwap {
+			vwapBreakPct = safePct(metrics.vwap-tick.Price, metrics.vwap) * 100
+		}
 		switch setupType {
 		case "parabolic-failed-reclaim-short":
-			score += 1.0
+			score += 1.2
 		case "breakdown":
+			score += 0.8
+		}
+		switch {
+		case metrics.oneMinuteReturn <= -2.0:
 			score += 0.6
+		case metrics.oneMinuteReturn <= -0.75:
+			score += 0.35
 		}
-		if metrics.oneMinuteReturn <= -0.5 {
-			score += 0.5
+		switch {
+		case metrics.threeMinuteReturn <= -3.0:
+			score += 0.6
+		case metrics.threeMinuteReturn <= -1.5:
+			score += 0.35
 		}
-		if metrics.threeMinuteReturn <= -1.0 {
-			score += 0.5
+		switch {
+		case metrics.fiveMinuteReturn <= -2.0:
+			score += 0.45
+		case metrics.fiveMinuteReturn <= -1.0:
+			score += 0.2
 		}
 		if metrics.macdHistogram < 0 {
 			score += 0.3
 		}
-		if metrics.vwap > 0 && tick.Price < metrics.vwap {
+		switch {
+		case vwapBreakPct >= math.Max(cfg.ShortVWAPBreakMinPct, 1.0)+2.0:
+			score += 0.45
+		case vwapBreakPct >= math.Max(cfg.ShortVWAPBreakMinPct, 1.0):
+			score += 0.25
+		case metrics.vwap > 0 && tick.Price < metrics.vwap:
+			score += 0.1
+		}
+		switch {
+		case distFromHighPct >= 20:
+			score += 0.35
+		case distFromHighPct >= 10:
 			score += 0.2
 		}
+		switch {
+		case peakExtensionPct >= 20:
+			score += 0.35
+		case peakExtensionPct >= cfg.ShortPeakExtensionMinPct:
+			score += 0.2
+		}
+		score += stockSelectionScore * 0.55
 	}
 
 	if math.IsNaN(score) || math.IsInf(score, 0) {
@@ -865,17 +1058,23 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT
 	if tick.RelativeVolume < s.config.MinRelativeVolume {
 		return false
 	}
-	vwapLimit := 2.0 // parabolic-failed-reclaim uses fixed VWAP tolerance
-	if priceVsVWAPPCT > vwapLimit {
+	if metrics.vwap <= 0 {
 		return false
 	}
-	if metrics.oneMinuteReturn >= -max(0.25, s.config.MinOneMinuteReturnPct*0.50) {
+	vwapBreakMinPct := math.Max(s.config.ShortVWAPBreakMinPct, 1.0)
+	if priceVsVWAPPCT > -vwapBreakMinPct {
 		return false
 	}
-	if metrics.threeMinuteReturn >= -max(0.50, s.config.MinThreeMinuteReturnPct*0.75) {
+	if metrics.oneMinuteReturn >= -max(0.50, s.config.MinOneMinuteReturnPct*0.75) {
 		return false
 	}
-	if metrics.breakoutPct > -0.05 {
+	if metrics.threeMinuteReturn >= -max(1.00, s.config.MinThreeMinuteReturnPct) {
+		return false
+	}
+	if metrics.fiveMinuteReturn >= -max(0.75, s.config.MinThreeMinuteReturnPct*0.75) {
+		return false
+	}
+	if metrics.breakoutPct > -0.25 {
 		return false
 	}
 	if tick.Open <= 0 || tick.HighOfDay <= 0 {
@@ -883,6 +1082,13 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT
 	}
 	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
 	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
+		return false
+	}
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+	minFailureDistPct := math.Max(6.0, s.config.ShortPeakExtensionMinPct*0.60)
+	if distFromHighPct < minFailureDistPct &&
+		metrics.oneMinuteReturn > -1.0 &&
+		metrics.breakoutPct > -4.0 {
 		return false
 	}
 	if tick.GapPercent < s.config.MinGapPercent {
@@ -1039,6 +1245,31 @@ type scanMetrics struct {
 	bbMiddle                   float64
 	bbLower                    float64
 	volumeDecreasingOnPullback bool
+}
+
+func qualifiesExplosiveSqueezeVolumeException(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, hodMomoQualified bool, cfg config.TradingConfig) bool {
+	if !hodMomoQualified {
+		return false
+	}
+	if !markethours.IsMarketOpen(tick.Timestamp) {
+		return false
+	}
+	if intradayReturnPct < math.Max(cfg.HODMomoMinIntradayPct*3, 12.0) {
+		return false
+	}
+	if tick.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume*2, 10.0) {
+		return false
+	}
+	if cfg.MinFiveMinuteVolume > 0 && tick.FiveMinuteVolume < max(cfg.MinFiveMinuteVolume*2, int64(20000)) {
+		return false
+	}
+	if metrics.vwap <= 0 || tick.Price <= metrics.vwap || tick.Price <= tick.Open {
+		return false
+	}
+	if metrics.oneMinuteReturn <= 0 || metrics.threeMinuteReturn <= 0 {
+		return false
+	}
+	return metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct, 1.0)
 }
 
 func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetrics {
