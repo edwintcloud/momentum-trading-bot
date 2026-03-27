@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -154,22 +156,43 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 }
 
 // PollOrderStatus checks the status of an order.
-func (c *Client) PollOrderStatus(ctx context.Context, orderID string) (string, float64, error) {
+func (c *Client) PollOrderStatus(ctx context.Context, orderID string) (string, float64, int64, error) {
 	var result struct {
 		Status    string  `json:"status"`
 		FilledAvg *string `json:"filled_avg_price"`
+		FilledQty string  `json:"filled_qty"`
 	}
 	err := c.get(ctx, c.baseURL+"/v2/orders/"+orderID, &result)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 
 	fillPrice := 0.0
 	if result.FilledAvg != nil {
 		fmt.Sscanf(*result.FilledAvg, "%f", &fillPrice)
 	}
+	filledQty := parseFilledQuantity(result.FilledQty)
 
-	return result.Status, fillPrice, nil
+	return result.Status, fillPrice, filledQty, nil
+}
+
+func parseFilledQuantity(value string) int64 {
+	return ParseOrderQuantity(value)
+}
+
+func ParseOrderQuantity(value string) int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if whole, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return whole
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return int64(math.Round(parsed))
 }
 
 // IsEasyToBorrow checks if a symbol is currently eligible for opening short positions.

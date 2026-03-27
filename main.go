@@ -157,33 +157,9 @@ func runLive() {
 		log.Printf("alpaca: position seed warning: %v", err)
 	} else {
 		for _, bp := range brokerPositions {
-			var qty int64
-			fmt.Sscanf(bp.Qty, "%d", &qty)
-			var avgPrice, currentPrice, marketValue, unrealizedPL float64
-			fmt.Sscanf(bp.AvgEntryPrice, "%f", &avgPrice)
-			fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
-			fmt.Sscanf(bp.MarketValue, "%f", &marketValue)
-			fmt.Sscanf(bp.UnrealizedPL, "%f", &unrealizedPL)
-
-			side := domain.DirectionLong
-			if bp.Side == "short" {
-				side = domain.DirectionShort
+			if seeded, ok := seedBrokerPosition(portfolioMgr, bp); ok {
+				log.Printf("alpaca: seeded position %s %s qty=%d avg=%.2f", seeded.Symbol, seeded.Side, seeded.Quantity, seeded.AvgPrice)
 			}
-
-			portfolioMgr.SeedBrokerPosition(domain.Position{
-				Symbol:        bp.Symbol,
-				Side:          side,
-				Quantity:      qty,
-				AvgPrice:      avgPrice,
-				LastPrice:     currentPrice,
-				HighestPrice:  currentPrice,
-				LowestPrice:   currentPrice,
-				MarketValue:   marketValue,
-				UnrealizedPnL: unrealizedPL,
-				OpenedAt:      time.Now(),
-				UpdatedAt:     time.Now(),
-			})
-			log.Printf("alpaca: seeded position %s %s qty=%d avg=%.2f", bp.Symbol, side, qty, avgPrice)
 		}
 	}
 
@@ -401,8 +377,15 @@ func runLive() {
 				for _, bp := range bPositions {
 					brokerSymbols[bp.Symbol] = true
 					if !pmSymbols[bp.Symbol] {
-						runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker has position %s not in portfolio manager", bp.Symbol))
-						log.Printf("reconcile: WARNING broker has position %s not in portfolio manager", bp.Symbol)
+						if seeded, ok := seedBrokerPosition(portfolioMgr, bp); ok {
+							computeSeededPositionStops(portfolioMgr, tradingCfg, snapshots)
+							runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("reconcile: adopted broker position %s qty=%d avg=%.2f after local tracking mismatch", seeded.Symbol, seeded.Quantity, seeded.AvgPrice))
+							log.Printf("reconcile: adopted broker position %s %s qty=%d avg=%.2f after local tracking mismatch", seeded.Symbol, seeded.Side, seeded.Quantity, seeded.AvgPrice)
+							pmSymbols[bp.Symbol] = true
+						} else {
+							runtimeState.RecordLog("warn", "portfolio", fmt.Sprintf("broker has position %s not in portfolio manager", bp.Symbol))
+							log.Printf("reconcile: WARNING broker has position %s not in portfolio manager", bp.Symbol)
+						}
 						continue
 					}
 					// Update portfolio price from broker's current price so positions
@@ -763,4 +746,45 @@ func computeSeededPositionStops(portfolioMgr *portfolio.Manager, tradingCfg conf
 		log.Printf("alpaca: fallback stop for %s: stop=%.2f risk/share=%.4f",
 			pos.Symbol, stopPrice, riskPerShare)
 	}
+}
+
+func seedBrokerPosition(portfolioMgr *portfolio.Manager, bp alpaca.AlpacaPosition) (domain.Position, bool) {
+	position, ok := brokerPositionToDomainPosition(bp)
+	if !ok {
+		return domain.Position{}, false
+	}
+	portfolioMgr.SeedBrokerPosition(position)
+	return position, true
+}
+
+func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition) (domain.Position, bool) {
+	qty := alpaca.ParseOrderQuantity(bp.Qty)
+	if qty <= 0 {
+		return domain.Position{}, false
+	}
+
+	side := domain.DirectionLong
+	if bp.Side == "short" {
+		side = domain.DirectionShort
+	}
+
+	var avgPrice, currentPrice, marketValue, unrealizedPL float64
+	fmt.Sscanf(bp.AvgEntryPrice, "%f", &avgPrice)
+	fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
+	fmt.Sscanf(bp.MarketValue, "%f", &marketValue)
+	fmt.Sscanf(bp.UnrealizedPL, "%f", &unrealizedPL)
+	now := time.Now()
+	return domain.Position{
+		Symbol:        bp.Symbol,
+		Side:          side,
+		Quantity:      qty,
+		AvgPrice:      avgPrice,
+		LastPrice:     currentPrice,
+		HighestPrice:  currentPrice,
+		LowestPrice:   currentPrice,
+		MarketValue:   marketValue,
+		UnrealizedPnL: unrealizedPL,
+		OpenedAt:      now,
+		UpdatedAt:     now,
+	}, true
 }

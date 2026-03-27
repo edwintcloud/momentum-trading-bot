@@ -958,7 +958,7 @@ func (p *Pipeline) resolveDeterministicEntries(
 			continue
 		}
 
-		status, _, err := p.cfg.Broker.PollOrderStatus(ctx, pending.orderID)
+		status, _, _, err := p.cfg.Broker.PollOrderStatus(ctx, pending.orderID)
 		if err != nil || status == "new" {
 			active = append(active, pending)
 			continue
@@ -976,7 +976,7 @@ func (p *Pipeline) pollDeterministicOrder(
 	orderID string,
 	fillTime time.Time,
 ) (domain.ExecutionReport, bool) {
-	status, fillPrice, err := p.cfg.Broker.PollOrderStatus(ctx, orderID)
+	status, fillPrice, filledQty, err := p.cfg.Broker.PollOrderStatus(ctx, orderID)
 	if err != nil {
 		log.Printf("pipeline/execution: poll failed for %s %s orderID=%s: %v", order.Symbol, order.Side, orderID, err)
 		return domain.ExecutionReport{}, false
@@ -990,7 +990,7 @@ func (p *Pipeline) pollDeterministicOrder(
 		Intent:           order.Intent,
 		PositionSide:     order.PositionSide,
 		Price:            fillPrice,
-		Quantity:         order.Quantity,
+		Quantity:         filledQtyOrRequested(filledQty, order.Quantity),
 		StopPrice:        order.StopPrice,
 		RiskPerShare:     order.RiskPerShare,
 		EntryATR:         order.EntryATR,
@@ -1009,6 +1009,16 @@ func (p *Pipeline) pollDeterministicOrder(
 		BrokerStatus:     status,
 		FilledAt:         fillTime,
 	}, true
+}
+
+func filledQtyOrRequested(filledQty, requestedQty int64) int64 {
+	if filledQty <= 0 {
+		return requestedQty
+	}
+	if requestedQty > 0 && filledQty > requestedQty {
+		return requestedQty
+	}
+	return filledQty
 }
 
 // startProductionStages uses component Start() methods (efficient, no diagnostic overhead).

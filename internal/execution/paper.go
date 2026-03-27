@@ -97,25 +97,26 @@ func (pb *PaperBroker) SubmitOrder(_ context.Context, order domain.OrderRequest)
 }
 
 // PollOrderStatus reports the order's bar-driven status.
-func (pb *PaperBroker) PollOrderStatus(_ context.Context, orderID string) (string, float64, error) {
+func (pb *PaperBroker) PollOrderStatus(_ context.Context, orderID string) (string, float64, int64, error) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
 	po, ok := pb.pending[orderID]
 	if !ok {
-		return "canceled", 0, nil
+		return "canceled", 0, 0, nil
 	}
 
 	if po.status == "filled" {
 		price := po.fillPrice
+		qty := po.request.Quantity
 		delete(pb.pending, orderID)
-		return "filled", price, nil
+		return "filled", price, qty, nil
 	}
 	if po.status == "expired" {
 		delete(pb.pending, orderID)
-		return "expired", 0, nil
+		return "expired", 0, 0, nil
 	}
-	return "new", 0, nil
+	return "new", 0, 0, nil
 }
 
 // CancelOrder removes a pending order.
