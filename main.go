@@ -124,6 +124,7 @@ func runLive() {
 
 	logger := telemetry.NewLogger(eventRecorder)
 	runtimeState := runtime.NewState(logger)
+	telegramNotifier := telemetry.NewTelegramNotifierFromEnv()
 
 	// Connect to Alpaca
 	alpacaClient := alpaca.NewClient(appCfg)
@@ -474,6 +475,36 @@ func runLive() {
 					log.Printf("watchdog: WARNING component %s appears stale (no heartbeat in 2m)", name)
 					runtimeState.RecordLog("warn", "watchdog", fmt.Sprintf("component %s stale", name))
 				}
+			}
+		}
+	}()
+
+	// End-of-day Telegram summary after the extended-hours close (8:00 PM ET).
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		lastSentDay := ""
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now().In(markethours.Location())
+				dayKey := now.Format("2006-01-02")
+				if dayKey == lastSentDay {
+					continue
+				}
+				if !markethours.IsMarketDay(now) {
+					continue
+				}
+				if now.Before(markethours.SessionClose(now)) {
+					continue
+				}
+
+				status := portfolioMgr.StatusSnapshot()
+				telegramNotifier.NotifyDailySummary(status, now)
+				lastSentDay = dayKey
 			}
 		}
 	}()

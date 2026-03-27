@@ -171,7 +171,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - Guardrail validation (Sharpe, win rate, drawdown, trade count, DSR, improvement)
 - Automatic profile promotion with atomic file writes and backups
 - Hot-reload — live bot picks up new profile without restart
-- Telegram notifications for optimizer events
+- Telegram notifications for optimizer events and live trade executions
 
 ### Dashboard
 - **Mobile-friendly** — Collapsible sidebar with hamburger menu, responsive card layouts for data tables, touch-friendly navigation
@@ -290,7 +290,7 @@ docker compose up -d  # starts postgres + bot + auto-optimizer + auto-train-ml
 
 ## Telegram Notifications
 
-The auto-optimizer can send notifications to a Telegram chat when it starts, completes, promotes a profile, or rejects a candidate.
+Telegram notifications can be used for both automation events and live trading events.
 
 ### Setup
 
@@ -302,7 +302,14 @@ The auto-optimizer can send notifications to a Telegram chat when it starts, com
    TELEGRAM_CHAT_ID=987654321
    ```
 
-Notifications are optional — if the env vars are not set, the optimizer runs silently (logs only).
+### What Gets Sent
+
+- Auto-optimizer lifecycle updates: start, completion, promotion, and rejection
+- Live trade open notifications after a broker-confirmed opening fill, including side, fill price, and stop price
+- Live trade close notifications after the position is fully closed, including the exit reason
+- End-of-day summary notifications at 8:00 PM ET with net profit, ROI, and trade count
+
+Notifications are optional. If the env vars are not set, the optimizer and live bot both run silently and only write local logs.
 
 ## Quick Start
 
@@ -379,8 +386,8 @@ This starts PostgreSQL + the bot + the auto-optimizer + auto-train-ml. The `.cac
 | `POSTGRES_DB` | PostgreSQL database name (Docker) | `momentum` |
 | `POSTGRES_USER` | PostgreSQL user (Docker) | `momentum` |
 | `POSTGRES_PASSWORD` | PostgreSQL password (Docker) | `momentum` |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | (optional) |
-| `TELEGRAM_CHAT_ID` | Telegram chat ID for notifications | (optional) |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token for optimizer and trade notifications | (optional) |
+| `TELEGRAM_CHAT_ID` | Telegram chat ID for optimizer and trade notifications | (optional) |
 
 > Alpaca paid subscription is required for the SIP data feed. The live-trading arming flag is intentional — the bot refuses to start in live mode unless `ALPACA_LIVE_TRADING_ENABLED=true`.
 
@@ -524,7 +531,8 @@ See `profiles/default.json` for the complete field reference.
 │   │   └── tradeplan.go             # Trade plan types
 │   ├── telemetry/                   # Logging
 │   │   ├── logger.go                # Event logger
-│   │   └── composite.go             # Composite logger
+│   │   ├── composite.go             # Composite logger
+│   │   └── telegram.go              # Telegram trade notifications
 │   └── volumeprofile/profile.go     # Volume analysis
 ├── docs/
 │   └── quant_research_findings.md   # Quantitative research document
