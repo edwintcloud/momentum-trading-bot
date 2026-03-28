@@ -13,9 +13,9 @@ import (
 // BrokerClient defines the interface for order execution.
 type BrokerClient interface {
 	SubmitOrder(ctx context.Context, order domain.OrderRequest) (string, error)
-	PollOrderStatus(ctx context.Context, orderID string) (string, float64, error)
+	PollOrderStatus(ctx context.Context, orderID string) (string, float64, int64, error)
 	CancelOrder(ctx context.Context, orderID string) error
-	IsShortable(symbol string) bool
+	IsEasyToBorrow(symbol string) bool
 }
 
 // Engine submits approved orders to the broker and polls for fills.
@@ -207,35 +207,18 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 			e.runtime.RecordLog("warn", "execution",
 				fmt.Sprintf("order timeout %s %s orderID=%s — cancelling", order.Symbol, order.Side, orderID))
 			cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
-			e.broker.CancelOrder(cancelCtx, orderID)
+			if cancelErr := e.broker.CancelOrder(cancelCtx, orderID); cancelErr != nil {
+				e.runtime.RecordLog("warn", "execution",
+					fmt.Sprintf("timeout cancel failed %s %s orderID=%s: %v", order.Symbol, order.Side, orderID, cancelErr))
+			}
 			cancelFn()
 
 			// Final status check: the order may have filled between the last poll and the cancel.
-			finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			finalStatus, finalPrice, finalErr := e.broker.PollOrderStatus(finalCtx, orderID)
-			finalCancel()
-			if finalErr == nil && finalStatus == "filled" {
+			finalStatus, finalPrice, finalQty, finalErr := e.pollAfterCancel(orderID)
+			if finalErr == nil && finalQty > 0 {
 				e.runtime.RecordLog("info", "execution",
-					fmt.Sprintf("order %s %s filled during cancel race — processing fill", order.Symbol, order.Side))
-				report := domain.ExecutionReport{
-					Symbol:           order.Symbol,
-					Side:             order.Side,
-					Intent:           order.Intent,
-					PositionSide:     order.PositionSide,
-					Price:            finalPrice,
-					Quantity:         order.Quantity,
-					StopPrice:        order.StopPrice,
-					RiskPerShare:     order.RiskPerShare,
-					EntryATR:         order.EntryATR,
-					SetupType:        order.SetupType,
-					Reason:           order.Reason,
-					MarketRegime:     order.MarketRegime,
-					RegimeConfidence: order.RegimeConfidence,
-					Playbook:         order.Playbook,
-					BrokerOrderID:    orderID,
-					BrokerStatus:     finalStatus,
-					FilledAt:         e.nowFunc(),
-				}
+					fmt.Sprintf("order %s %s resolved after cancel status=%s filled_qty=%d — processing fill", order.Symbol, order.Side, finalStatus, finalQty))
+				report := buildExecutionReport(order, orderID, finalStatus, finalPrice, finalQty, e.nowFunc())
 				if e.recorder != nil {
 					e.recorder.RecordExecution(report)
 				}
@@ -245,34 +228,42 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 				}
 				return true
 			}
+			if finalErr != nil {
+				e.runtime.RecordLog("warn", "execution",
+					fmt.Sprintf("post-cancel poll failed %s %s orderID=%s: %v", order.Symbol, order.Side, orderID, finalErr))
+			}
 			return false
 		case <-ticker.C:
-			status, fillPrice, err := e.broker.PollOrderStatus(pollCtx, orderID)
+			status, fillPrice, filledQty, err := e.broker.PollOrderStatus(pollCtx, orderID)
 			if err != nil {
 				continue
 			}
 
 			switch status {
 			case "filled":
-				report := domain.ExecutionReport{
-					Symbol:           order.Symbol,
-					Side:             order.Side,
-					Intent:           order.Intent,
-					PositionSide:     order.PositionSide,
-					Price:            fillPrice,
-					Quantity:         order.Quantity,
-					StopPrice:        order.StopPrice,
-					RiskPerShare:     order.RiskPerShare,
-					EntryATR:         order.EntryATR,
-					SetupType:        order.SetupType,
-					Reason:           order.Reason,
-					MarketRegime:     order.MarketRegime,
-					RegimeConfidence: order.RegimeConfidence,
-					Playbook:         order.Playbook,
-					BrokerOrderID:    orderID,
-					BrokerStatus:     status,
-					FilledAt:         e.nowFunc(),
+				report := buildExecutionReport(order, orderID, status, fillPrice, filledQty, e.nowFunc())
+				if e.recorder != nil {
+					e.recorder.RecordExecution(report)
 				}
+				select {
+				case fills <- report:
+				case <-ctx.Done():
+				}
+				return true
+			case "partially_filled":
+				if filledQty <= 0 {
+					continue
+				}
+				e.runtime.RecordLog("warn", "execution",
+					fmt.Sprintf("order partially filled %s %s orderID=%s filled_qty=%d/%d — cancelling remainder",
+						order.Symbol, order.Side, orderID, filledQty, order.Quantity))
+				cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+				if cancelErr := e.broker.CancelOrder(cancelCtx, orderID); cancelErr != nil {
+					e.runtime.RecordLog("warn", "execution",
+						fmt.Sprintf("partial-fill cancel failed %s %s orderID=%s: %v", order.Symbol, order.Side, orderID, cancelErr))
+				}
+				cancelFn()
+				report := buildExecutionReport(order, orderID, status, fillPrice, filledQty, e.nowFunc())
 				if e.recorder != nil {
 					e.recorder.RecordExecution(report)
 				}
@@ -283,12 +274,90 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 				return true
 
 			case "rejected", "canceled", "expired":
+				if filledQty > 0 {
+					e.runtime.RecordLog("warn", "execution",
+						fmt.Sprintf("order %s %s %s with residual fill_qty=%d — processing partial fill", status, order.Symbol, order.Side, filledQty))
+					report := buildExecutionReport(order, orderID, status, fillPrice, filledQty, e.nowFunc())
+					if e.recorder != nil {
+						e.recorder.RecordExecution(report)
+					}
+					select {
+					case fills <- report:
+					case <-ctx.Done():
+					}
+					return true
+				}
 				e.runtime.RecordLog("warn", "execution",
 					fmt.Sprintf("order %s %s %s: %s", status, order.Symbol, order.Side, orderID))
 				return false
 			}
 		}
 	}
+}
+
+func buildExecutionReport(order domain.OrderRequest, orderID, status string, fillPrice float64, filledQty int64, filledAt time.Time) domain.ExecutionReport {
+	if filledQty <= 0 {
+		filledQty = order.Quantity
+	}
+	if filledQty > order.Quantity && order.Quantity > 0 {
+		filledQty = order.Quantity
+	}
+	return domain.ExecutionReport{
+		Symbol:           order.Symbol,
+		Side:             order.Side,
+		Intent:           order.Intent,
+		PositionSide:     order.PositionSide,
+		Price:            fillPrice,
+		Quantity:         filledQty,
+		StopPrice:        order.StopPrice,
+		RiskPerShare:     order.RiskPerShare,
+		EntryATR:         order.EntryATR,
+		SetupType:        order.SetupType,
+		Reason:           order.Reason,
+		MarketRegime:     order.MarketRegime,
+		RegimeConfidence: order.RegimeConfidence,
+		Playbook:         order.Playbook,
+		Sector:           order.Sector,
+		LeaderRank:       order.LeaderRank,
+		VolumeLeaderPct:  order.VolumeLeaderPct,
+		StockSelectScore: order.StockSelectScore,
+		PriceVsVWAPPct:   order.PriceVsVWAPPct,
+		DistanceHighPct:  order.DistanceHighPct,
+		BrokerOrderID:    orderID,
+		BrokerStatus:     status,
+		FilledAt:         filledAt,
+	}
+}
+
+func (e *Engine) pollAfterCancel(orderID string) (string, float64, int64, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	var lastStatus string
+	var lastPrice float64
+	var lastQty int64
+	var lastErr error
+	for {
+		pollCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		status, fillPrice, filledQty, err := e.broker.PollOrderStatus(pollCtx, orderID)
+		cancel()
+		if err == nil {
+			lastStatus = status
+			lastPrice = fillPrice
+			lastQty = filledQty
+			if filledQty > 0 || status == "canceled" || status == "expired" || status == "rejected" {
+				return status, fillPrice, filledQty, nil
+			}
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastStatus, lastPrice, lastQty, lastErr
+	}
+	return lastStatus, lastPrice, lastQty, nil
 }
 
 func (e *Engine) tryBeginOrder(order domain.OrderRequest) bool {

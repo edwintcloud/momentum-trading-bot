@@ -22,6 +22,8 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=go-builder /momentum-bot /app/momentum-bot
 COPY --from=web-builder /app/web/dist /app/web/dist
+COPY artifacts/ /app/artifacts/
+COPY docs/ /app/docs/
 COPY profiles/ /app/profiles/
 COPY .env.example /app/.env.example
 

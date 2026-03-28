@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -33,23 +31,44 @@ services:
       PORT: 8080
     volumes:
       - ./.cache:/app/.cache
+      - ./artifacts:/app/artifacts
       - ./profiles:/app/profiles
 
-  auto-optimizer:
-    build: .
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-momentum}:${POSTGRES_PASSWORD:-momentum}@postgres:5432/${POSTGRES_DB:-momentum}?sslmode=disable
-    volumes:
-      - ./.cache:/app/.cache
-      - ./profiles:/app/profiles
-    entrypoint: ["/app/momentum-bot"]
-    command: ["auto-optimize", "-profile", "/app/profiles/default.json", "-now"]
+  # auto-optimizer:
+  #   build: .
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-momentum}:${POSTGRES_PASSWORD:-momentum}@postgres:5432/${POSTGRES_DB:-momentum}?sslmode=disable
+  #   volumes:
+  #     - ./.cache:/app/.cache
+  #     - ./artifacts:/app/artifacts
+  #     - ./docs:/app/docs
+  #     - ./profiles:/app/profiles
+  #   entrypoint: ["/app/momentum-bot"]
+  #   command: ["auto-optimize", "-profile", "/app/profiles/default.json", "-now"]
+
+  # auto-train-ml:
+  #   build: .
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-momentum}:${POSTGRES_PASSWORD:-momentum}@postgres:5432/${POSTGRES_DB:-momentum}?sslmode=disable
+  #   volumes:
+  #     - ./.cache:/app/.cache
+  #     - ./artifacts:/app/artifacts
+  #     - ./docs:/app/docs
+  #     - ./profiles:/app/profiles
+  #   entrypoint: ["/app/momentum-bot"]
+  #   command: ["auto-train-ml", "-profile", "/app/profiles/default.json", "-now"]
 
 volumes:
   pgdata:

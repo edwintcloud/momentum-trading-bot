@@ -33,13 +33,15 @@ type MarketDataCapabilities struct {
 
 // EquityAsset is Alpaca asset metadata for a US equity symbol.
 type EquityAsset struct {
-	Symbol     string   `json:"symbol"`
-	Name       string   `json:"name"`
-	Status     string   `json:"status"`
-	Exchange   string   `json:"exchange"`
-	Class      string   `json:"class"`
-	Tradable   bool     `json:"tradable"`
-	Attributes []string `json:"attributes"`
+	Symbol       string   `json:"symbol"`
+	Name         string   `json:"name"`
+	Status       string   `json:"status"`
+	Exchange     string   `json:"exchange"`
+	Class        string   `json:"class"`
+	Tradable     bool     `json:"tradable"`
+	Shortable    bool     `json:"shortable"`
+	EasyToBorrow bool     `json:"easy_to_borrow"`
+	Attributes   []string `json:"attributes"`
 }
 
 // ListEquityAssets returns Alpaca metadata for active NASDAQ and NYSE US equities.

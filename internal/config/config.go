@@ -30,6 +30,12 @@ type ScannerConfig struct {
 	MeanReversionMaxADX        float64
 	BollingerPeriod            int
 	BollingerK                 float64
+	GapFadeEnabled             bool
+	GapFadeMinGapPct           float64
+	GapFadeMaxRelVol           float64
+	PowerHourEnabled           bool
+	PowerHourMinIntradayPct    float64
+	PowerHourWindowMinutes     int
 	HODMomoEnabled             bool
 	HODMomoMinIntradayPct      float64
 	HODMomoMinRelativeVolume   float64
@@ -83,11 +89,12 @@ type StrategyConfig struct {
 	AdaptiveTrailEnabled          bool
 	EntryDeadlineMinutesAfterOpen int
 	MinRiskRewardRatio            float64
-	MidDayScoreMultiplier         float64
 	MinPositionNotionalPct        float64
 	MaxEntriesPerMinute           int
 	MinATRBars                    int
 	BlockLosingTickerReentry      bool
+	DisableBearPressureLongBlock  bool
+	DailyProfitLockPct            float64
 }
 
 // RiskConfig holds risk management and position sizing parameters.
@@ -232,27 +239,42 @@ type AlphaConfig struct {
 
 // MLConfig holds machine learning pipeline parameters.
 type MLConfig struct {
-	MLScoringEnabled             bool
-	MLModelPath                  string
-	MLScoreWeight                float64
-	MLScoringThreshold           float64
-	MLScoringWeightInEnsemble    float64
-	MetaLabelEnabled             bool
-	MetaLabelModelPath           string
-	MetaLabelMinProb             float64
-	MetaLabelConfidenceThreshold float64
-	FracDiffEnabled              bool
-	FracDiffMinD                 float64
-	FracDiffMaxD                 float64
-	MLTrainingEnabled            bool
-	MLRetrainIntervalDays        int
-	MLFeatureHorizonBars         int
-	ConceptDriftEnabled          bool
-	PSIThreshold                 float64
-	SharpeDecayThreshold         float64
-	EnsembleEnabled              bool
-	EnsembleMethod               string
-	EnsembleDiversityThreshold   float64
+	MLScoringEnabled                   bool
+	MLModelPath                        string
+	MLScoreWeight                      float64
+	MLScoringThreshold                 float64
+	MLAdvisoryEnabled                  bool
+	MLAdvisoryVetoEnabled              bool
+	MLAdvisoryUpsizeEnabled            bool
+	MLAdvisoryDownsizeEnabled          bool
+	MLAdvisoryMinProb                  float64
+	MLAdvisoryUpsizeThreshold          float64
+	MLAdvisoryDownsizeThreshold        float64
+	MLAdvisoryLongDownsizeThreshold    float64
+	MLAdvisoryShortDownsizeThreshold   float64
+	MLAdvisoryProtectEliteShortMinProb float64
+	MLAdvisoryUpsizeMultiplier         float64
+	MLAdvisoryDownsizeMultiplier       float64
+	MLAdvisoryMaxVetosPerDay           int
+	MLAdvisoryProtectTopDayRank        int
+	MLAdvisoryProtectTopBarRank        int
+	MLScoringWeightInEnsemble          float64
+	MetaLabelEnabled                   bool
+	MetaLabelModelPath                 string
+	MetaLabelMinProb                   float64
+	MetaLabelConfidenceThreshold       float64
+	FracDiffEnabled                    bool
+	FracDiffMinD                       float64
+	FracDiffMaxD                       float64
+	MLTrainingEnabled                  bool
+	MLRetrainIntervalDays              int
+	MLFeatureHorizonBars               int
+	ConceptDriftEnabled                bool
+	PSIThreshold                       float64
+	SharpeDecayThreshold               float64
+	EnsembleEnabled                    bool
+	EnsembleMethod                     string
+	EnsembleDiversityThreshold         float64
 }
 
 // RegimeConfig holds market regime detection parameters.
@@ -364,10 +386,13 @@ type PlaybookExitConfig struct {
 
 // PlaybookExitsConfig holds exit configs for all playbooks.
 type PlaybookExitsConfig struct {
-	Breakout     PlaybookExitConfig
-	Pullback     PlaybookExitConfig
-	Continuation PlaybookExitConfig
-	Reversal     PlaybookExitConfig
+	Breakout       PlaybookExitConfig
+	Pullback       PlaybookExitConfig
+	Continuation   PlaybookExitConfig
+	Reversal       PlaybookExitConfig
+	MeanReversion  PlaybookExitConfig
+	GapFade        PlaybookExitConfig
+	PowerHour      PlaybookExitConfig
 }
 
 // DefaultTradingConfig returns the tuned baseline.

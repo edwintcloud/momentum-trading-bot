@@ -11,6 +11,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 )
 
 type symbolBar struct {
@@ -24,15 +25,35 @@ type symbolBar struct {
 }
 
 type symbolState struct {
-	day  string
-	bars []symbolBar
+	day             string
+	bars            []symbolBar
+	bars5           []symbolBar
+	regularBars     []symbolBar
+	vwapDollarFlow  float64
+	vwapTotalVolume float64
+	orbState        openingRangeState
+}
+
+type openingRangeState struct {
+	window        int
+	bufferPct     float64
+	rangeHigh     float64
+	rangeLow      float64
+	avgRangeVol   float64
+	breakoutLevel float64
+	breakoutIdx   int
+	processedBars int
+	ready         bool
 }
 
 type structuredSetup struct {
-	setupType   string
-	setupHigh   float64
-	setupLow    float64
-	breakoutPct float64
+	setupType             string
+	setupHigh             float64
+	setupLow              float64
+	breakoutPct           float64
+	consolidationRangePct float64
+	pullbackDepthPct      float64
+	closeOffHighPct       float64
 }
 
 // Scanner scans market ticks for momentum candidates.
@@ -44,6 +65,7 @@ type Scanner struct {
 	blockedSymbols map[string]string
 	leaderDay      string
 	leaderMetrics  map[string]float64 // symbol → cumulative dollar volume for current day
+	signalLookup   func(symbol string) []signals.Signal
 }
 
 // NewScanner creates a scanner with the configured filters.
@@ -72,28 +94,11 @@ func (s *Scanner) SetBlockedSymbols(blocked map[string]string) {
 	s.blockedSymbols = copyMap
 }
 
-// isVolumeLeader returns true if the symbol ranks within the top MaxVolumeLeaders
-// by cumulative dollar volume for the current day. Must be called with s.mu held.
-func (s *Scanner) isVolumeLeader(symbol string) bool {
-	limit := s.config.MaxVolumeLeaders
-	if limit <= 0 {
-		return true // disabled
-	}
-	myVol := s.leaderMetrics[symbol]
-	if myVol <= 0 {
-		return false
-	}
-	// Count how many symbols have strictly higher dollar volume.
-	rank := 1
-	for sym, vol := range s.leaderMetrics {
-		if sym != symbol && vol > myVol {
-			rank++
-			if rank > limit {
-				return false
-			}
-		}
-	}
-	return true
+// SetSignalLookup installs a function that returns the latest alpha signals for a symbol.
+func (s *Scanner) SetSignalLookup(fn func(symbol string) []signals.Signal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.signalLookup = fn
 }
 
 // volumeLeaderStats returns the daily dollar-volume rank and normalized strength
@@ -152,7 +157,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 		go func() {
 			defer wg.Done()
 			for tick := range work {
-				if candidate, ok := s.evaluate(tick); ok {
+				if candidate, ok, _ := s.evaluateDetailed(tick); ok {
 					select {
 					case out <- candidate:
 					case <-ctx.Done():
@@ -175,7 +180,8 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 				}
 				select {
 				case work <- tick:
-				default:
+				case <-ctx.Done():
+					return
 				}
 			}
 		}
@@ -187,24 +193,14 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 
 // Evaluate tests a tick against scanner filters. Exported for backtesting.
 func (s *Scanner) Evaluate(tick domain.Tick) (domain.Candidate, bool) {
-	return s.evaluate(tick)
+	candidate, ok, _ := s.evaluateDetailed(tick)
+	return candidate, ok
 }
 
 // EvaluateTickDetailed tests a tick against scanner filters and returns
 // the rejection reason when the tick is not a candidate.
 func (s *Scanner) EvaluateTickDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
-	if reason, blocked := s.instrumentBlockReason(tick.Symbol); blocked {
-		return domain.Candidate{}, false, reason
-	}
-	candidate, ok := s.evaluate(tick)
-	if ok {
-		return candidate, true, ""
-	}
-	s.mu.Lock()
-	cfg := s.config
-	s.mu.Unlock()
-	reason := classifyTickRejection(tick, cfg)
-	return candidate, false, reason
+	return s.evaluateDetailed(tick)
 }
 
 func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
@@ -221,16 +217,11 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 	hodMomoQualified := false
 	if cfg.HODMomoEnabled && tick.Open > 0 && tick.Price > 0 {
 		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
-		minutesSinceOpen := markethours.MinutesSinceOpen(tick.Timestamp)
 		hodMomoQualified = intradayPct >= cfg.HODMomoMinIntradayPct &&
-			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume &&
-			minutesSinceOpen >= cfg.HODMomoMinMinutesSinceOpen
+			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume
 		if hodMomoQualified && tick.HighOfDay > 0 {
 			distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-			pullbackMaxDist := cfg.HODMomoPullbackMaxDist
-			if pullbackMaxDist <= 0 {
-				pullbackMaxDist = cfg.HODMomoMaxDistFromHigh
-			}
+			pullbackMaxDist := dynamicHODPullbackMaxDist(cfg, intradayPct, tick.RelativeVolume)
 			if cfg.HODMomoMaxDistFromHigh > 0 && distFromHigh > cfg.HODMomoMaxDistFromHigh {
 				if pullbackMaxDist > 0 && distFromHigh <= pullbackMaxDist {
 					// qualifies as pullback
@@ -270,24 +261,35 @@ func classifyTickRejection(tick domain.Tick, cfg config.TradingConfig) string {
 	return "other-filter"
 }
 
-func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
+func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, string) {
 	if _, blocked := s.instrumentBlockReason(tick.Symbol); blocked {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "instrument-blocked"
 	}
 	if tick.Price <= 0 || tick.Volume <= 0 {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "no-data"
 	}
 
 	s.mu.Lock()
 	cfg := s.config
 	s.mu.Unlock()
 	if tick.Price < cfg.MinPrice || tick.Price > cfg.MaxPrice {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "price-filter"
 	}
 
 	if cfg.MinFiveMinuteVolume > 0 && tick.FiveMinuteVolume < cfg.MinFiveMinuteVolume {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "five-minute-volume"
 	}
+
+	// Update bar state before qualification so structured reclaim setups can be
+	// recognized as soon as the pattern forms, even if the broader HOD-momo
+	// threshold has not quite been crossed yet.
+	s.mu.Lock()
+	state := s.getOrCreateState(tick)
+	s.updateBars(state, tick)
+	metrics := s.computeMetrics(state, tick)
+	s.mu.Unlock()
+	referenceHigh := effectiveReferenceHigh(state, tick)
+
 	// Path 1: Traditional gap scanner (existing)
 	gapQualified := tick.GapPercent >= cfg.MinGapPercent || tick.GapPercent <= -cfg.MinGapPercent
 
@@ -297,19 +299,28 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	intradayReturnPct := 0.0
 	if cfg.HODMomoEnabled && tick.Open > 0 && tick.Price > 0 {
 		intradayReturnPct = (tick.Price - tick.Open) / tick.Open * 100
-		minutesSinceOpen := markethours.MinutesSinceOpen(tick.Timestamp)
-
-		hodMomoQualified = intradayReturnPct >= cfg.HODMomoMinIntradayPct &&
-			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume &&
-			minutesSinceOpen >= cfg.HODMomoMinMinutesSinceOpen
+		minIntradayPct := cfg.HODMomoMinIntradayPct
+		if markethours.IsMarketOpen(tick.Timestamp) &&
+			referenceHigh > 0 &&
+			metrics.vwap > 0 &&
+			tick.Price > metrics.vwap &&
+			tick.RelativeVolume >= math.Max(cfg.HODMomoMinRelativeVolume*2, 8.0) &&
+			metrics.oneMinuteReturn > 0 &&
+			metrics.threeMinuteReturn > 0 &&
+			metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct, 1.0) {
+			distFromHigh := safePct(referenceHigh-tick.Price, referenceHigh) * 100
+			pullbackMaxDist := dynamicHODPullbackMaxDist(cfg, intradayReturnPct, tick.RelativeVolume)
+			if pullbackMaxDist > 0 && distFromHigh <= pullbackMaxDist {
+				minIntradayPct = math.Max(cfg.HODMomoMinIntradayPct*0.65, 3.5)
+			}
+		}
+		hodMomoQualified = intradayReturnPct >= minIntradayPct &&
+			tick.RelativeVolume >= cfg.HODMomoMinRelativeVolume
 
 		// Two-tier distance check: breakout (tight) and pullback (wider)
-		if hodMomoQualified && tick.HighOfDay > 0 {
-			distFromHigh := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-			pullbackMaxDist := cfg.HODMomoPullbackMaxDist
-			if pullbackMaxDist <= 0 {
-				pullbackMaxDist = cfg.HODMomoMaxDistFromHigh // fallback to breakout distance
-			}
+		if hodMomoQualified && referenceHigh > 0 {
+			distFromHigh := safePct(referenceHigh-tick.Price, referenceHigh) * 100
+			pullbackMaxDist := dynamicHODPullbackMaxDist(cfg, intradayReturnPct, tick.RelativeVolume)
 			if cfg.HODMomoMaxDistFromHigh > 0 && distFromHigh > cfg.HODMomoMaxDistFromHigh {
 				// Beyond breakout range — check pullback range
 				if pullbackMaxDist > 0 && distFromHigh <= pullbackMaxDist {
@@ -321,42 +332,105 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		}
 	}
 
+	// Path 3: Mean Reversion — stock at Bollinger Band extreme with low trend strength
+	meanRevQualified := false
+	if cfg.MeanReversionEnabled && metrics.bbUpper > 0 && metrics.bbLower > 0 && metrics.adx > 0 {
+		if metrics.adx <= cfg.MeanReversionMaxADX && tick.RelativeVolume >= cfg.MinRelativeVolume {
+			if tick.Price <= metrics.bbLower || tick.Price >= metrics.bbUpper {
+				meanRevQualified = true
+			}
+		}
+	}
+
+	// Path 4: Gap Fade — large gap (>threshold) losing momentum, price reverting toward VWAP
+	gapFadeQualified := false
+	if cfg.GapFadeEnabled && markethours.IsMarketOpen(tick.Timestamp) {
+		minGap := cfg.GapFadeMinGapPct
+		if minGap <= 0 {
+			minGap = 4.0
+		}
+		maxRelVol := cfg.GapFadeMaxRelVol
+		if maxRelVol <= 0 {
+			maxRelVol = 6.0
+		}
+		absGap := tick.GapPercent
+		if absGap < 0 {
+			absGap = -absGap
+		}
+		if absGap >= minGap && tick.RelativeVolume >= cfg.MinRelativeVolume && tick.RelativeVolume <= maxRelVol {
+			if metrics.vwap > 0 {
+				// Gap up fading: price dropping back toward VWAP from above
+				if tick.GapPercent >= minGap && tick.Price < tick.Open && tick.Price > metrics.vwap {
+					gapFadeQualified = true
+				}
+				// Gap down fading: price recovering toward VWAP from below
+				if tick.GapPercent <= -minGap && tick.Price > tick.Open && tick.Price < metrics.vwap {
+					gapFadeQualified = true
+				}
+			}
+		}
+	}
+
+	// Path 5: Power Hour — last window of regular session, strong intraday stocks with momentum
+	powerHourQualified := false
+	if cfg.PowerHourEnabled && markethours.IsMarketOpen(tick.Timestamp) {
+		phWindow := cfg.PowerHourWindowMinutes
+		if phWindow <= 0 {
+			phWindow = 60
+		}
+		remaining := markethours.RemainingMinutes(tick.Timestamp)
+		minIntraday := cfg.PowerHourMinIntradayPct
+		if minIntraday <= 0 {
+			minIntraday = 3.0
+		}
+		if remaining > 0 && remaining <= phWindow && tick.Open > 0 {
+			phIntraday := (tick.Price - tick.Open) / tick.Open * 100
+			if phIntraday < 0 {
+				phIntraday = -phIntraday
+			}
+			if phIntraday >= minIntraday && tick.RelativeVolume >= cfg.MinRelativeVolume {
+				powerHourQualified = true
+			}
+		}
+	}
+
 	// Must qualify via at least one path
-	if !gapQualified && !hodMomoQualified {
-		return domain.Candidate{}, false
+	if !gapQualified && !hodMomoQualified && !meanRevQualified && !gapFadeQualified && !powerHourQualified {
+		return domain.Candidate{}, false, classifyTickRejection(tick, cfg)
 	}
 
 	// Apply remaining filters based on qualification path
 	if gapQualified {
 		// Traditional filters apply as-is
 		if tick.RelativeVolume < cfg.MinRelativeVolume {
-			return domain.Candidate{}, false
+			return domain.Candidate{}, false, "relative-volume"
 		}
 		if tick.PreMarketVolume < cfg.MinPremarketVolume {
-			return domain.Candidate{}, false
+			return domain.Candidate{}, false, "premarket-volume"
 		}
 	}
 	// HOD momo path: relative volume already checked above, skip premarket volume
 
 	// Float filters apply to both paths
 	if cfg.MaxFloat > 0 && tick.Float > 0 && tick.Float > cfg.MaxFloat {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "float-too-high"
 	}
 	if cfg.MinFloat > 0 && tick.Float > 0 && tick.Float < cfg.MinFloat {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "float-too-low"
 	}
 
-	// Minimum daily volume filter — reject thinly traded stocks
-	if cfg.MinPrevDayVolume > 0 && tick.PrevDayVolume > 0 && tick.PrevDayVolume < cfg.MinPrevDayVolume {
-		return domain.Candidate{}, false
+	// Minimum daily volume filter — reject thinly traded stocks, but allow
+	// exceptional same-day squeeze leaders to pass once the live tape has clearly
+	// taken over from the stale prior-day volume baseline.
+	if cfg.MinPrevDayVolume > 0 &&
+		tick.PrevDayVolume > 0 &&
+		tick.PrevDayVolume < cfg.MinPrevDayVolume &&
+		!qualifiesExplosiveSqueezeVolumeException(tick, metrics, intradayReturnPct, hodMomoQualified, cfg) {
+		return domain.Candidate{}, false, "daily-volume"
 	}
 
-	// Update bar state
 	s.mu.Lock()
 	s.trackDollarVolume(tick)
-	state := s.getOrCreateState(tick)
-	s.updateBars(state, tick)
-	metrics := s.computeMetrics(state, tick)
 	leaderRank, leaderStrengthPct := s.volumeLeaderStats(tick.Symbol)
 	s.mu.Unlock()
 
@@ -374,34 +448,116 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		direction = domain.DirectionLong
 	}
 
-	if metrics.setupType == "early" {
-		return domain.Candidate{}, false
-	}
-
-	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
-
-	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day
-	// Skip for HOD momo qualified stocks — they use their own distance thresholds
-	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified {
-		if distFromHighPct > cfg.MaxDistanceFromHighPct || distFromHighPct == 0 {
-			return domain.Candidate{}, false
+	// HOD breakout/pullback detection: price near session high with strong intraday move
+	if cfg.HODMomoEnabled && tick.Open > 0 && referenceHigh > 0 {
+		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
+		distFromHOD := safePct(referenceHigh-tick.Price, referenceHigh) * 100
+		if intradayPct >= cfg.HODMomoMinIntradayPct {
+			if distFromHOD < 1.0 {
+				metrics.setupType = "hod_breakout"
+			} else if hodMomoPullback {
+				metrics.setupType = "hod_pullback"
+			}
 		}
 	}
 
-	// RSI momentum slope: longs need positive momentum
-	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 {
-		return domain.Candidate{}, false
+	if direction == domain.DirectionLong {
+		if cfg.HODMomoEnabled {
+			if structured, ok := s.classifyHODPullbackReclaim(state, tick, metrics, cfg); ok {
+				metrics.setupType = structured.setupType
+				metrics.setupHigh = structured.setupHigh
+				metrics.setupLow = structured.setupLow
+				metrics.breakoutPct = structured.breakoutPct
+				metrics.consolidationRangePct = structured.consolidationRangePct
+				metrics.pullbackDepthPct = structured.pullbackDepthPct
+				metrics.closeOffHighPct = structured.closeOffHighPct
+			}
+		}
+		if structured, ok := s.classifyStructuredLongSetup(state, tick, metrics, cfg); ok {
+			metrics.setupType = structured.setupType
+			metrics.setupHigh = structured.setupHigh
+			metrics.setupLow = structured.setupLow
+			metrics.breakoutPct = structured.breakoutPct
+			if structured.consolidationRangePct > 0 {
+				metrics.consolidationRangePct = structured.consolidationRangePct
+			}
+			if structured.pullbackDepthPct > 0 {
+				metrics.pullbackDepthPct = structured.pullbackDepthPct
+			}
+			if structured.closeOffHighPct > 0 {
+				metrics.closeOffHighPct = structured.closeOffHighPct
+			}
+		}
+	}
+
+	// New playbook setup type overrides — only apply when qualified via their
+	// specific path and existing classifiers haven't already assigned a structured type.
+	if meanRevQualified && (metrics.setupType == "early" || metrics.setupType == "pullback" || metrics.setupType == "breakdown") {
+		if tick.Price <= metrics.bbLower {
+			metrics.setupType = "mean_reversion_long"
+			direction = domain.DirectionLong
+		} else if tick.Price >= metrics.bbUpper {
+			if cfg.EnableShorts {
+				metrics.setupType = "mean_reversion_short"
+				direction = domain.DirectionShort
+			}
+		}
+	}
+
+	if gapFadeQualified && (metrics.setupType == "early" || metrics.setupType == "breakout" || metrics.setupType == "breakdown") {
+		if tick.GapPercent > 0 && tick.Price < tick.Open {
+			metrics.setupType = "gap_fade_short"
+			if cfg.EnableShorts {
+				direction = domain.DirectionShort
+			}
+		} else if tick.GapPercent < 0 && tick.Price > tick.Open {
+			metrics.setupType = "gap_fade_long"
+			direction = domain.DirectionLong
+		}
+	}
+
+	if powerHourQualified && (metrics.setupType == "early" || metrics.setupType == "pullback" || metrics.setupType == "breakout") {
+		phIntraday := (tick.Price - tick.Open) / tick.Open * 100
+		if phIntraday > 0 {
+			metrics.setupType = "power_hour_long"
+			direction = domain.DirectionLong
+		} else if phIntraday < 0 && cfg.EnableShorts {
+			metrics.setupType = "power_hour_short"
+			direction = domain.DirectionShort
+		}
+	}
+
+	if metrics.setupType == "early" {
+		return domain.Candidate{}, false, "setup-early"
+	}
+
+	distFromHighPct := safePct(referenceHigh-tick.Price, referenceHigh) * 100
+	breakoutBypass := direction == domain.DirectionLong && shouldBypassLongBreakoutFilters(cfg, metrics, distFromHighPct, referenceHigh)
+	pullbackBypass := direction == domain.DirectionLong && shouldBypassLeaderPullbackFilters(tick, metrics, intradayReturnPct)
+
+	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day.
+	// True breakout setups are allowed to print at the exact high instead of being rejected.
+	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified && !breakoutBypass {
+		if distFromHighPct > cfg.MaxDistanceFromHighPct {
+			return domain.Candidate{}, false, "distance-from-high"
+		}
+	}
+
+	// RSI momentum slope: longs generally need positive momentum, but fast breakout prints
+	// can briefly outrun smoothed RSI slope and should not be filtered out for that alone.
+	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 && !breakoutBypass && !pullbackBypass {
+		return domain.Candidate{}, false, "rsi-slope"
 	}
 	if direction == domain.DirectionShort && metrics.rsiMASlope > 0 {
-		return domain.Candidate{}, false
+		return domain.Candidate{}, false, "rsi-slope"
 	}
 
 	if cfg.RSIFilterEnabled {
-		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold {
-			return domain.Candidate{}, false
+		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold && !breakoutBypass && !pullbackBypass {
+			return domain.Candidate{}, false, "rsi-overbought"
 		}
 		if direction == domain.DirectionShort && metrics.rsi < cfg.RSIOversoldThreshold {
-			return domain.Candidate{}, false
+			return domain.Candidate{}, false, "rsi-oversold"
 		}
 	}
 
@@ -413,30 +569,40 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 	// Get market regime
 	regime := s.runtime.MarketRegime()
 
-	// HOD breakout/pullback detection: price near session high with strong intraday move
-	if cfg.HODMomoEnabled && tick.Open > 0 && tick.HighOfDay > 0 {
-		intradayPct := (tick.Price - tick.Open) / tick.Open * 100
-		distFromHOD := (tick.HighOfDay - tick.Price) / tick.HighOfDay * 100
-		if intradayPct >= cfg.HODMomoMinIntradayPct {
-			if distFromHOD < 1.0 {
-				metrics.setupType = "hod_breakout"
-			} else if hodMomoPullback {
-				metrics.setupType = "hod_pullback"
+	setupType := metrics.setupType
+	stockSelectionScore := 0.0
+	if domain.IsLong(direction) {
+		stockSelectionScore = computeRossStockSelectionScore(tick, metrics, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, referenceHigh)
+	} else {
+		stockSelectionScore = computeShortSelectionScore(tick, metrics, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, s.config.ShortVWAPBreakMinPct)
+	}
+	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, referenceHigh, stockSelectionScore)
+
+	// Look up alpha signals (OFI, VPIN) and boost score when signals confirm direction.
+	var ofiDir int
+	var ofiStrength float64
+	var vpinDir int
+	var vpinStrength float64
+	if s.signalLookup != nil {
+		for _, sig := range s.signalLookup(tick.Symbol) {
+			switch sig.Type {
+			case signals.SignalTypeOFI:
+				ofiDir = int(sig.Direction)
+				ofiStrength = sig.Strength
+				if (domain.IsLong(direction) && sig.Direction == signals.DirectionLong) ||
+					(domain.IsShort(direction) && sig.Direction == signals.DirectionShort) {
+					score += 0.5 * sig.Strength // confirming OFI boosts score
+				}
+			case signals.SignalTypeVPIN:
+				vpinDir = int(sig.Direction)
+				vpinStrength = sig.Strength
+				if (domain.IsLong(direction) && sig.Direction == signals.DirectionLong) ||
+					(domain.IsShort(direction) && sig.Direction == signals.DirectionShort) {
+					score += 0.35 * sig.Strength // confirming VPIN boosts score
+				}
 			}
 		}
 	}
-
-	if direction == domain.DirectionLong {
-		if structured, ok := s.classifyStructuredLongSetup(state, tick, metrics, cfg); ok {
-			metrics.setupType = structured.setupType
-			metrics.setupHigh = structured.setupHigh
-			metrics.setupLow = structured.setupLow
-			metrics.breakoutPct = structured.breakoutPct
-		}
-	}
-
-	setupType := metrics.setupType
-	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct)
 
 	candidate := domain.Candidate{
 		Symbol:                tick.Symbol,
@@ -447,7 +613,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		RelativeVolume:        tick.RelativeVolume,
 		PreMarketVolume:       tick.PreMarketVolume,
 		Volume:                tick.Volume,
-		HighOfDay:             tick.HighOfDay,
+		HighOfDay:             referenceHigh,
 		PriceVsOpenPct:        safePct(tick.Price, tick.Open),
 		DistanceFromHighPct:   distFromHighPct,
 		OneMinuteReturnPct:    metrics.oneMinuteReturn,
@@ -461,6 +627,7 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PriceVsVWAPPct:        priceVsVWAPPct,
 		VolumeLeaderPct:       leaderStrengthPct,
 		LeaderRank:            leaderRank,
+		StockSelectionScore:   stockSelectionScore,
 		BreakoutPct:           metrics.breakoutPct,
 		ConsolidationRangePct: metrics.consolidationRangePct,
 		PullbackDepthPct:      metrics.pullbackDepthPct,
@@ -484,15 +651,363 @@ func (s *Scanner) evaluate(tick domain.Tick) (domain.Candidate, bool) {
 		PrevDayVolume:         tick.PrevDayVolume,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
+		OFIDirection:          ofiDir,
+		OFIStrength:           ofiStrength,
+		VPINDirection:         vpinDir,
+		VPINStrength:          vpinStrength,
 		Timestamp:             tick.Timestamp,
 	}
 
-	return candidate, true
+	return candidate, true, ""
 }
 
-func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics, direction string, setupType string, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64) float64 {
+func dynamicHODPullbackMaxDist(cfg config.TradingConfig, intradayPct, relativeVolume float64) float64 {
+	pullbackMaxDist := cfg.HODMomoPullbackMaxDist
+	if pullbackMaxDist <= 0 {
+		pullbackMaxDist = cfg.HODMomoMaxDistFromHigh
+	}
+	if intradayPct >= 15 && relativeVolume >= 10 {
+		dynamicCap := intradayPct * 0.45
+		if dynamicCap > pullbackMaxDist && dynamicCap < 8.0 {
+			pullbackMaxDist = dynamicCap
+		}
+	}
+	if intradayPct >= 20 && relativeVolume >= 20 && pullbackMaxDist < 9.0 {
+		pullbackMaxDist = 9.0
+	}
+	return pullbackMaxDist
+}
+
+func effectiveReferenceHigh(state *symbolState, tick domain.Tick) float64 {
+	referenceHigh := tick.HighOfDay
+	if !markethours.IsMarketOpen(tick.Timestamp) || state == nil || len(state.regularBars) == 0 {
+		return referenceHigh
+	}
+	regularHigh := maxBarHigh(state.regularBars)
+	if regularHigh > 0 {
+		referenceHigh = regularHigh
+	}
+	return referenceHigh
+}
+
+func shouldBypassLongBreakoutFilters(cfg config.TradingConfig, metrics scanMetrics, distFromHighPct, referenceHigh float64) bool {
+	if referenceHigh <= 0 {
+		return false
+	}
+	switch metrics.setupType {
+	case "breakout", "hod_breakout", "orb_breakout", "orb_reclaim":
+	default:
+		return false
+	}
+	if metrics.oneMinuteReturn <= 0 {
+		return false
+	}
+	if metrics.fiveMinuteReturn < math.Max(cfg.MinThreeMinuteReturnPct, 0.5) {
+		return false
+	}
+	maxDist := math.Max(cfg.MaxDistanceFromHighPct, 1.0)
+	return distFromHighPct <= maxDist
+}
+
+func shouldBypassLeaderPullbackFilters(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64) bool {
+	if metrics.setupType != "hod_pullback" {
+		return false
+	}
+	if intradayReturnPct < 15 {
+		return false
+	}
+	if tick.RelativeVolume < 10 {
+		return false
+	}
+	if metrics.vwap <= 0 || tick.Price <= metrics.vwap {
+		return false
+	}
+	if metrics.oneMinuteReturn < 0 {
+		return false
+	}
+	if metrics.threeMinuteReturn < 0 {
+		return false
+	}
+	return true
+}
+
+func computeRossStockSelectionScore(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, referenceHigh float64) float64 {
+	gapPillar := 0.0
+	expansionPct := math.Max(math.Abs(tick.GapPercent), intradayReturnPct)
+	switch {
+	case expansionPct >= 20:
+		gapPillar = 1.0
+	case expansionPct >= 10:
+		gapPillar = 0.85
+	case expansionPct >= 6:
+		gapPillar = 0.65
+	case expansionPct >= 4:
+		gapPillar = 0.45
+	case expansionPct >= 2.5:
+		gapPillar = 0.25
+	}
+
+	volumePillar := 0.0
+	switch {
+	case tick.RelativeVolume >= 20:
+		volumePillar += 0.55
+	case tick.RelativeVolume >= 10:
+		volumePillar += 0.45
+	case tick.RelativeVolume >= 5:
+		volumePillar += 0.35
+	case tick.RelativeVolume >= 2.5:
+		volumePillar += 0.20
+	}
+	switch {
+	case tick.PreMarketVolume >= 1_000_000:
+		volumePillar += 0.45
+	case tick.PreMarketVolume >= 500_000:
+		volumePillar += 0.35
+	case tick.PreMarketVolume >= 200_000:
+		volumePillar += 0.20
+	case tick.PreMarketVolume >= 50_000:
+		volumePillar += 0.10
+	}
+	if metrics.volumeRate >= 20_000 {
+		volumePillar += 0.10
+	} else if metrics.volumeRate >= 10_000 {
+		volumePillar += 0.05
+	}
+	if volumePillar > 1.0 {
+		volumePillar = 1.0
+	}
+
+	floatPillar := 0.0
+	switch {
+	case tick.Float > 0 && tick.Float <= 10_000_000:
+		floatPillar = 1.0
+	case tick.Float > 0 && tick.Float <= 20_000_000:
+		floatPillar = 0.9
+	case tick.Float > 0 && tick.Float <= 50_000_000:
+		floatPillar = 0.75
+	case tick.Float > 0 && tick.Float <= 100_000_000:
+		floatPillar = 0.55
+	case tick.Float > 0 && tick.Float <= 200_000_000:
+		floatPillar = 0.25
+	case tick.Float > 0:
+		floatPillar = 0.05
+	default:
+		floatPillar = 0.20
+	}
+
+	technicalPillar := 0.0
+	switch {
+	case referenceHigh > 0 && distFromHighPct <= 0.5:
+		technicalPillar += 0.40
+	case referenceHigh > 0 && distFromHighPct <= 1.25:
+		technicalPillar += 0.30
+	case referenceHigh > 0 && distFromHighPct <= 2.5:
+		technicalPillar += 0.15
+	}
+	if metrics.vwap > 0 && tick.Price > metrics.vwap {
+		technicalPillar += 0.20
+		if safePct(tick.Price-metrics.vwap, metrics.vwap)*100 >= 1.0 {
+			technicalPillar += 0.05
+		}
+	}
+	switch {
+	case metrics.fiveMinuteReturn >= 2.5:
+		technicalPillar += 0.25
+	case metrics.fiveMinuteReturn >= 1.0:
+		technicalPillar += 0.18
+	case metrics.fiveMinuteReturn >= 0.5:
+		technicalPillar += 0.10
+	}
+	if metrics.oneMinuteReturn > 0 && metrics.threeMinuteReturn > 0 {
+		technicalPillar += 0.10
+	}
+	if technicalPillar > 1.0 {
+		technicalPillar = 1.0
+	}
+
+	leadershipPillar := 0.0
+	switch {
+	case leaderRank == 1:
+		leadershipPillar += 0.55
+	case leaderRank > 0 && leaderRank <= 3:
+		leadershipPillar += 0.45
+	case leaderRank > 0 && leaderRank <= 5:
+		leadershipPillar += 0.30
+	}
+	switch {
+	case leaderStrengthPct >= 75:
+		leadershipPillar += 0.30
+	case leaderStrengthPct >= 50:
+		leadershipPillar += 0.20
+	case leaderStrengthPct >= 25:
+		leadershipPillar += 0.10
+	}
+	if intradayReturnPct >= 10 {
+		leadershipPillar += 0.15
+	} else if intradayReturnPct >= 5 {
+		leadershipPillar += 0.05
+	}
+	if leadershipPillar > 1.0 {
+		leadershipPillar = 1.0
+	}
+
+	score := gapPillar + volumePillar + floatPillar + technicalPillar + leadershipPillar
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0
+	}
+	return score
+}
+
+func computeShortSelectionScore(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, shortVWAPBreakMinPct float64) float64 {
+	peakExtensionPct := 0.0
+	if tick.Open > 0 && tick.HighOfDay > 0 {
+		peakExtensionPct = safePct(tick.HighOfDay-tick.Open, tick.Open) * 100
+	}
+	vwapBreakPct := 0.0
+	if metrics.vwap > 0 && tick.Price < metrics.vwap {
+		vwapBreakPct = safePct(metrics.vwap-tick.Price, metrics.vwap) * 100
+	}
+	minVWAPBreak := math.Max(shortVWAPBreakMinPct, 1.0)
+
+	extensionPillar := 0.0
+	switch {
+	case peakExtensionPct >= 40:
+		extensionPillar = 1.0
+	case peakExtensionPct >= 25:
+		extensionPillar = 0.85
+	case peakExtensionPct >= 15:
+		extensionPillar = 0.65
+	case peakExtensionPct >= 10:
+		extensionPillar = 0.45
+	case peakExtensionPct >= 6:
+		extensionPillar = 0.25
+	}
+
+	volumePillar := 0.0
+	switch {
+	case tick.RelativeVolume >= 20:
+		volumePillar += 0.50
+	case tick.RelativeVolume >= 10:
+		volumePillar += 0.40
+	case tick.RelativeVolume >= 5:
+		volumePillar += 0.28
+	case tick.RelativeVolume >= 2.5:
+		volumePillar += 0.15
+	}
+	switch {
+	case tick.PreMarketVolume >= 1_000_000:
+		volumePillar += 0.30
+	case tick.PreMarketVolume >= 300_000:
+		volumePillar += 0.20
+	case tick.PreMarketVolume >= 100_000:
+		volumePillar += 0.10
+	}
+	switch {
+	case metrics.volumeRate >= 20_000:
+		volumePillar += 0.20
+	case metrics.volumeRate >= 10_000:
+		volumePillar += 0.10
+	}
+	if volumePillar > 1.0 {
+		volumePillar = 1.0
+	}
+
+	failurePillar := 0.0
+	switch {
+	case distFromHighPct >= 35:
+		failurePillar += 0.40
+	case distFromHighPct >= 20:
+		failurePillar += 0.28
+	case distFromHighPct >= 10:
+		failurePillar += 0.16
+	case distFromHighPct >= 6:
+		failurePillar += 0.08
+	}
+	switch {
+	case vwapBreakPct >= minVWAPBreak+4.0:
+		failurePillar += 0.28
+	case vwapBreakPct >= minVWAPBreak+1.5:
+		failurePillar += 0.20
+	case vwapBreakPct >= minVWAPBreak:
+		failurePillar += 0.12
+	}
+	switch {
+	case metrics.breakoutPct <= -2.0:
+		failurePillar += 0.20
+	case metrics.breakoutPct <= -0.75:
+		failurePillar += 0.12
+	case metrics.breakoutPct <= -0.25:
+		failurePillar += 0.06
+	}
+	if failurePillar > 1.0 {
+		failurePillar = 1.0
+	}
+
+	technicalPillar := 0.0
+	switch {
+	case metrics.oneMinuteReturn <= -4.0:
+		technicalPillar += 0.25
+	case metrics.oneMinuteReturn <= -1.5:
+		technicalPillar += 0.18
+	case metrics.oneMinuteReturn <= -0.75:
+		technicalPillar += 0.10
+	}
+	switch {
+	case metrics.threeMinuteReturn <= -8.0:
+		technicalPillar += 0.25
+	case metrics.threeMinuteReturn <= -3.0:
+		technicalPillar += 0.18
+	case metrics.threeMinuteReturn <= -1.5:
+		technicalPillar += 0.10
+	}
+	switch {
+	case metrics.fiveMinuteReturn <= -4.0:
+		technicalPillar += 0.20
+	case metrics.fiveMinuteReturn <= -2.0:
+		technicalPillar += 0.12
+	case metrics.fiveMinuteReturn <= -1.0:
+		technicalPillar += 0.06
+	}
+	if metrics.macdHistogram < 0 {
+		technicalPillar += 0.15
+	}
+	if metrics.ema9 > 0 && tick.Price < metrics.ema9 {
+		technicalPillar += 0.10
+	}
+	if metrics.vwap > 0 && tick.Price < metrics.vwap {
+		technicalPillar += 0.05
+	}
+	if technicalPillar > 1.0 {
+		technicalPillar = 1.0
+	}
+
+	leadershipPillar := 0.0
+	if leaderRank > 0 && leaderRank <= 3 {
+		if distFromHighPct >= 15 {
+			leadershipPillar += 0.20
+		} else if distFromHighPct < 8 {
+			leadershipPillar -= 0.10
+		}
+	}
+	if leaderStrengthPct >= 50 && distFromHighPct >= 15 {
+		leadershipPillar += 0.10
+	}
+	if intradayReturnPct >= 2 {
+		leadershipPillar += 0.10
+	}
+
+	score := extensionPillar + volumePillar + failurePillar + technicalPillar + leadershipPillar
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics scanMetrics, direction string, setupType string, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, referenceHigh float64, stockSelectionScore float64) float64 {
 	score := 0.0
-	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
 
 	if domain.IsLong(direction) {
 		switch setupType {
@@ -509,11 +1024,11 @@ func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics s
 		}
 
 		switch {
-		case tick.HighOfDay > 0 && distFromHighPct <= 0.5:
+		case referenceHigh > 0 && distFromHighPct <= 0.5:
 			score += 1.25
-		case tick.HighOfDay > 0 && distFromHighPct <= 1.5:
+		case referenceHigh > 0 && distFromHighPct <= 1.5:
 			score += 0.95
-		case tick.HighOfDay > 0 && distFromHighPct <= 3.0:
+		case referenceHigh > 0 && distFromHighPct <= 3.0:
 			score += 0.45
 		}
 
@@ -585,6 +1100,8 @@ func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics s
 			}
 		}
 
+		score += stockSelectionScore * 0.45
+
 		if metrics.macdHistogram > 0 {
 			score += 0.25
 		}
@@ -594,31 +1111,63 @@ func computeCandidateScore(cfg config.TradingConfig, tick domain.Tick, metrics s
 		if metrics.vwap > 0 && tick.Price > metrics.vwap {
 			score += 0.15
 		}
-		if tick.Catalyst != "" {
-			score += 0.35
-		}
-		if markethours.IsMarketOpen(tick.Timestamp) && setupType == "hod_pullback" {
-			score -= 0.35
-		}
 	} else {
+		peakExtensionPct := 0.0
+		if tick.Open > 0 && tick.HighOfDay > 0 {
+			peakExtensionPct = safePct(tick.HighOfDay-tick.Open, tick.Open) * 100
+		}
+		vwapBreakPct := 0.0
+		if metrics.vwap > 0 && tick.Price < metrics.vwap {
+			vwapBreakPct = safePct(metrics.vwap-tick.Price, metrics.vwap) * 100
+		}
 		switch setupType {
 		case "parabolic-failed-reclaim-short":
-			score += 1.0
+			score += 1.2
 		case "breakdown":
+			score += 0.8
+		}
+		switch {
+		case metrics.oneMinuteReturn <= -2.0:
 			score += 0.6
+		case metrics.oneMinuteReturn <= -0.75:
+			score += 0.35
 		}
-		if metrics.oneMinuteReturn <= -0.5 {
-			score += 0.5
+		switch {
+		case metrics.threeMinuteReturn <= -3.0:
+			score += 0.6
+		case metrics.threeMinuteReturn <= -1.5:
+			score += 0.35
 		}
-		if metrics.threeMinuteReturn <= -1.0 {
-			score += 0.5
+		switch {
+		case metrics.fiveMinuteReturn <= -2.0:
+			score += 0.45
+		case metrics.fiveMinuteReturn <= -1.0:
+			score += 0.2
 		}
 		if metrics.macdHistogram < 0 {
 			score += 0.3
 		}
-		if metrics.vwap > 0 && tick.Price < metrics.vwap {
+		switch {
+		case vwapBreakPct >= math.Max(cfg.ShortVWAPBreakMinPct, 1.0)+2.0:
+			score += 0.45
+		case vwapBreakPct >= math.Max(cfg.ShortVWAPBreakMinPct, 1.0):
+			score += 0.25
+		case metrics.vwap > 0 && tick.Price < metrics.vwap:
+			score += 0.1
+		}
+		switch {
+		case distFromHighPct >= 20:
+			score += 0.35
+		case distFromHighPct >= 10:
 			score += 0.2
 		}
+		switch {
+		case peakExtensionPct >= 20:
+			score += 0.35
+		case peakExtensionPct >= cfg.ShortPeakExtensionMinPct:
+			score += 0.2
+		}
+		score += stockSelectionScore * 0.55
 	}
 
 	if math.IsNaN(score) || math.IsInf(score, 0) {
@@ -647,17 +1196,23 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT
 	if tick.RelativeVolume < s.config.MinRelativeVolume {
 		return false
 	}
-	vwapLimit := 2.0 // parabolic-failed-reclaim uses fixed VWAP tolerance
-	if priceVsVWAPPCT > vwapLimit {
+	if metrics.vwap <= 0 {
 		return false
 	}
-	if metrics.oneMinuteReturn >= -max(0.25, s.config.MinOneMinuteReturnPct*0.50) {
+	vwapBreakMinPct := math.Max(s.config.ShortVWAPBreakMinPct, 1.0)
+	if priceVsVWAPPCT > -vwapBreakMinPct {
 		return false
 	}
-	if metrics.threeMinuteReturn >= -max(0.50, s.config.MinThreeMinuteReturnPct*0.75) {
+	if metrics.oneMinuteReturn >= -max(0.50, s.config.MinOneMinuteReturnPct*0.75) {
 		return false
 	}
-	if metrics.breakoutPct > -0.05 {
+	if metrics.threeMinuteReturn >= -max(1.00, s.config.MinThreeMinuteReturnPct) {
+		return false
+	}
+	if metrics.fiveMinuteReturn >= -max(0.75, s.config.MinThreeMinuteReturnPct*0.75) {
+		return false
+	}
+	if metrics.breakoutPct > -0.25 {
 		return false
 	}
 	if tick.Open <= 0 || tick.HighOfDay <= 0 {
@@ -665,6 +1220,13 @@ func (s *Scanner) qualifiesShortMomentumProfile(tick domain.Tick, priceVsVWAPPCT
 	}
 	peakExtensionPct := ((tick.HighOfDay - tick.Open) / tick.Open) * 100
 	if peakExtensionPct < s.config.ShortPeakExtensionMinPct {
+		return false
+	}
+	distFromHighPct := safePct(tick.HighOfDay-tick.Price, tick.HighOfDay) * 100
+	minFailureDistPct := math.Max(6.0, s.config.ShortPeakExtensionMinPct*0.60)
+	if distFromHighPct < minFailureDistPct &&
+		metrics.oneMinuteReturn > -1.0 &&
+		metrics.breakoutPct > -4.0 {
 		return false
 	}
 	if tick.GapPercent < s.config.MinGapPercent {
@@ -682,7 +1244,12 @@ func (s *Scanner) getOrCreateState(tick domain.Tick) *symbolState {
 	day := markethours.TradingDay(tick.Timestamp)
 	state, ok := s.state[tick.Symbol]
 	if !ok || state.day != day {
-		state = &symbolState{day: day, bars: make([]symbolBar, 0, 390)}
+		state = &symbolState{
+			day:         day,
+			bars:        make([]symbolBar, 0, 390),
+			bars5:       make([]symbolBar, 0, 80),
+			regularBars: make([]symbolBar, 0, 390),
+		}
 		s.state[tick.Symbol] = state
 	}
 	return state
@@ -698,29 +1265,96 @@ func (s *Scanner) updateBars(state *symbolState, tick domain.Tick) {
 		volume:    tick.BarVolume,
 	}
 	if len(state.bars) > 0 && state.bars[len(state.bars)-1].timestamp.Equal(tick.Timestamp) {
+		prev := state.bars[len(state.bars)-1]
 		state.bars[len(state.bars)-1] = bar
+		s.updateVWAP(state, &prev)
+		s.updateFiveMinuteBars(state)
+		s.updateRegularSessionBars(state)
 	} else {
 		state.bars = append(state.bars, bar)
+		s.updateVWAP(state, nil)
+		s.updateFiveMinuteBars(state)
+		s.updateRegularSessionBars(state)
 	}
-	s.recomputeVWAP(state)
 }
 
-func (s *Scanner) recomputeVWAP(state *symbolState) {
-	cumulativeDollarFlow := 0.0
-	cumulativeVolume := 0.0
-	for i := range state.bars {
-		bar := &state.bars[i]
-		bar.vwap = 0
-		if bar.high <= 0 || bar.low <= 0 || bar.volume <= 0 {
-			continue
-		}
-		typical := (bar.high + bar.low + bar.close) / 3
-		cumulativeDollarFlow += typical * float64(bar.volume)
-		cumulativeVolume += float64(bar.volume)
-		if cumulativeVolume > 0 {
-			bar.vwap = cumulativeDollarFlow / cumulativeVolume
+func (s *Scanner) updateVWAP(state *symbolState, prev *symbolBar) {
+	if prev != nil && prev.high > 0 && prev.low > 0 && prev.volume > 0 {
+		prevTypical := (prev.high + prev.low + prev.close) / 3
+		state.vwapDollarFlow -= prevTypical * float64(prev.volume)
+		state.vwapTotalVolume -= float64(prev.volume)
+		if state.vwapTotalVolume < 0 {
+			state.vwapTotalVolume = 0
 		}
 	}
+
+	last := &state.bars[len(state.bars)-1]
+	last.vwap = 0
+	if last.high > 0 && last.low > 0 && last.volume > 0 {
+		typical := (last.high + last.low + last.close) / 3
+		state.vwapDollarFlow += typical * float64(last.volume)
+		state.vwapTotalVolume += float64(last.volume)
+	}
+	if state.vwapTotalVolume > 0 {
+		last.vwap = state.vwapDollarFlow / state.vwapTotalVolume
+	}
+}
+
+func (s *Scanner) updateFiveMinuteBars(state *symbolState) {
+	last := state.bars[len(state.bars)-1]
+	bucket := fiveMinuteBucketStart(last.timestamp)
+	n5 := len(state.bars5)
+	if n5 == 0 || !state.bars5[n5-1].timestamp.Equal(bucket) {
+		state.bars5 = append(state.bars5, symbolBar{
+			timestamp: bucket,
+			open:      last.open,
+			high:      last.high,
+			low:       last.low,
+			close:     last.close,
+			volume:    max(last.volume, 0),
+		})
+		return
+	}
+	state.bars5[n5-1] = buildFiveMinuteBar(state.bars, bucket)
+}
+
+func (s *Scanner) updateRegularSessionBars(state *symbolState) {
+	last := state.bars[len(state.bars)-1]
+	if !isRegularSessionBar(last.timestamp) {
+		return
+	}
+	n := len(state.regularBars)
+	if n > 0 && state.regularBars[n-1].timestamp.Equal(last.timestamp) {
+		state.regularBars[n-1] = last
+		return
+	}
+	state.regularBars = append(state.regularBars, last)
+}
+
+func buildFiveMinuteBar(bars []symbolBar, bucket time.Time) symbolBar {
+	agg := symbolBar{timestamp: bucket}
+	started := false
+	for i := len(bars) - 1; i >= 0; i-- {
+		if !fiveMinuteBucketStart(bars[i].timestamp).Equal(bucket) {
+			if started {
+				break
+			}
+			continue
+		}
+		if !started {
+			agg.close = bars[i].close
+			started = true
+		}
+		agg.open = bars[i].open
+		if bars[i].high > agg.high {
+			agg.high = bars[i].high
+		}
+		if agg.low == 0 || (bars[i].low > 0 && bars[i].low < agg.low) {
+			agg.low = bars[i].low
+		}
+		agg.volume += max(bars[i].volume, 0)
+	}
+	return agg
 }
 
 type scanMetrics struct {
@@ -751,11 +1385,36 @@ type scanMetrics struct {
 	volumeDecreasingOnPullback bool
 }
 
+func qualifiesExplosiveSqueezeVolumeException(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, hodMomoQualified bool, cfg config.TradingConfig) bool {
+	if !hodMomoQualified {
+		return false
+	}
+	if !markethours.IsMarketOpen(tick.Timestamp) {
+		return false
+	}
+	if intradayReturnPct < math.Max(cfg.HODMomoMinIntradayPct*3, 12.0) {
+		return false
+	}
+	if tick.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume*2, 10.0) {
+		return false
+	}
+	if cfg.MinFiveMinuteVolume > 0 && tick.FiveMinuteVolume < max(cfg.MinFiveMinuteVolume*2, int64(20000)) {
+		return false
+	}
+	if metrics.vwap <= 0 || tick.Price <= metrics.vwap || tick.Price <= tick.Open {
+		return false
+	}
+	if metrics.oneMinuteReturn <= 0 || metrics.threeMinuteReturn <= 0 {
+		return false
+	}
+	return metrics.fiveMinuteReturn >= math.Max(cfg.MinThreeMinuteReturnPct, 1.0)
+}
+
 func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetrics {
 	var m scanMetrics
 	bars := state.bars
 	n := len(bars)
-	bars5 := aggregate5MinBars(bars)
+	bars5 := state.bars5
 	n5 := len(bars5)
 
 	// Returns
@@ -788,13 +1447,16 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 		m.vwap = bars[n-1].vwap
 	}
 
-	// EMAs on aligned 5-minute candles
-	m.ema9 = computeEMA(bars5, 9)
-	m.emaFast = computeEMA(bars5, s.config.MarketRegimeEMAFastPeriod)
-	m.emaSlow = computeEMA(bars5, s.config.MarketRegimeEMASlowPeriod)
-
-	// MACD histogram (standard 12, 26, 9 on 5-minute candles)
-	m.macdHistogram = computeMACDHistogram(bars5, s.config.MACDFastPeriod, s.config.MACDSlowPeriod, s.config.MACDSignalPeriod)
+	// EMAs and MACD histogram on aligned 5-minute candles
+	m.ema9, m.emaFast, m.emaSlow, m.macdHistogram = computeEMAsAndMACDHistogram(
+		bars5,
+		9,
+		s.config.MarketRegimeEMAFastPeriod,
+		s.config.MarketRegimeEMASlowPeriod,
+		s.config.MACDFastPeriod,
+		s.config.MACDSlowPeriod,
+		s.config.MACDSignalPeriod,
+	)
 
 	// RSI and RSI MA Slope (14-period Wilder RSI) on aligned 5-minute candles
 	m.rsi = computeRSI(bars5, 14)
@@ -933,6 +1595,12 @@ func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string
 		return "pullback"
 	case "parabolic-failed-reclaim-short":
 		return "reversal"
+	case "mean_reversion_long", "mean_reversion_short":
+		return "mean_reversion"
+	case "gap_fade_long", "gap_fade_short":
+		return "gap_fade"
+	case "power_hour_long", "power_hour_short":
+		return "power_hour"
 	}
 	if direction == domain.DirectionLong {
 		return "continuation"
@@ -965,36 +1633,31 @@ func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Ti
 		bufferPct = 0.001
 	}
 
-	bars := regularSessionBars(state.bars)
+	bars := state.regularBars
 	if len(bars) <= window {
 		return structuredSetup{}, false
 	}
 
-	rangeBars := bars[:window]
-	rangeHigh := maxBarHigh(rangeBars)
-	rangeLow := minBarLow(rangeBars)
+	orbState, ready := s.refreshOpeningRangeState(state, bars, cfg, window, bufferPct)
+	if !ready {
+		return structuredSetup{}, false
+	}
+
+	rangeHigh := orbState.rangeHigh
+	rangeLow := orbState.rangeLow
 	rangeWidth := rangeHigh - rangeLow
 	if rangeHigh <= 0 || rangeWidth <= 0 {
 		return structuredSetup{}, false
 	}
-
-	avgRangeVolume := averageBarVolume(rangeBars)
 	volumeMultiplier := cfg.ORBVolumeMultiplier
 	if volumeMultiplier <= 0 {
 		volumeMultiplier = 1.2
 	}
-	volumeThreshold := avgRangeVolume * max(volumeMultiplier*0.75, 1.0)
-	breakoutLevel := rangeHigh * (1 + bufferPct)
+	breakoutLevel := orbState.breakoutLevel
 	currentIdx := len(bars) - 1
 	currentBar := bars[currentIdx]
 
-	breakoutIdx := -1
-	for i := window; i < len(bars); i++ {
-		if bars[i].close > breakoutLevel && float64(max(bars[i].volume, 0)) >= volumeThreshold {
-			breakoutIdx = i
-			break
-		}
-	}
+	breakoutIdx := orbState.breakoutIdx
 	if breakoutIdx == -1 {
 		return structuredSetup{}, false
 	}
@@ -1047,6 +1710,7 @@ func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Ti
 	}
 
 	reclaimPct := safePct(currentBar.close-reclaimHigh, reclaimHigh) * 100
+	retracePct := (peakHigh - pullbackLow) / rangeWidth * 100
 	if currentBar.close > reclaimHigh &&
 		currentBar.close > breakoutLevel &&
 		metrics.oneMinuteReturn > 0 &&
@@ -1054,28 +1718,193 @@ func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Ti
 		tick.Price > metrics.vwap &&
 		reclaimPct <= 2.5 {
 		return structuredSetup{
-			setupType:   "orb_reclaim",
-			setupHigh:   reclaimHigh,
-			setupLow:    pullbackLow,
-			breakoutPct: reclaimPct,
+			setupType:             "orb_reclaim",
+			setupHigh:             reclaimHigh,
+			setupLow:              pullbackLow,
+			breakoutPct:           reclaimPct,
+			consolidationRangePct: safePct(reclaimHigh-pullbackLow, reclaimHigh) * 100,
+			pullbackDepthPct:      retracePct,
+			closeOffHighPct:       safePct(peakHigh-currentBar.close, peakHigh) * 100,
 		}, true
 	}
 
 	return structuredSetup{}, false
 }
 
-func regularSessionBars(bars []symbolBar) []symbolBar {
-	sessionBars := make([]symbolBar, 0, len(bars))
-	loc := markethours.Location()
-	for _, bar := range bars {
-		barET := bar.timestamp.In(loc)
-		minutes := float64(barET.Hour()*60 + barET.Minute())
-		if minutes < 570 || minutes >= 960 {
-			continue
-		}
-		sessionBars = append(sessionBars, bar)
+func (s *Scanner) classifyHODPullbackReclaim(state *symbolState, tick domain.Tick, metrics scanMetrics, cfg config.TradingConfig) (structuredSetup, bool) {
+	if !markethours.IsMarketOpen(tick.Timestamp) {
+		return structuredSetup{}, false
 	}
-	return sessionBars
+	referenceHigh := effectiveReferenceHigh(state, tick)
+	if tick.Open <= 0 || tick.Price <= 0 || referenceHigh <= 0 {
+		return structuredSetup{}, false
+	}
+	if metrics.vwap > 0 && tick.Price <= metrics.vwap {
+		return structuredSetup{}, false
+	}
+
+	bars := state.regularBars
+	n := len(bars)
+	if n < 6 {
+		return structuredSetup{}, false
+	}
+
+	currentIdx := n - 1
+	currentBar := bars[currentIdx]
+	start := max(0, n-12)
+	peakIdx := -1
+	peakHigh := 0.0
+	for i := start; i < currentIdx; i++ {
+		if bars[i].high >= peakHigh {
+			peakHigh = bars[i].high
+			peakIdx = i
+		}
+	}
+	if peakIdx < start || currentIdx-peakIdx < 2 || peakHigh <= 0 {
+		return structuredSetup{}, false
+	}
+
+	impulseBase := minBarLow(bars[start : peakIdx+1])
+	if impulseBase <= 0 || impulseBase >= peakHigh {
+		return structuredSetup{}, false
+	}
+	impulsePct := safePct(peakHigh-impulseBase, impulseBase) * 100
+	minImpulsePct := max(cfg.HODMomoMinIntradayPct*0.5, 2.5)
+	if impulsePct < minImpulsePct {
+		return structuredSetup{}, false
+	}
+
+	pullbackBars := bars[peakIdx+1 : currentIdx]
+	pullbackLow := minBarLow(pullbackBars)
+	if pullbackLow <= 0 || pullbackLow >= peakHigh {
+		return structuredSetup{}, false
+	}
+
+	pullbackDepthPct := safePct(peakHigh-pullbackLow, peakHigh) * 100
+	if pullbackDepthPct < 0.6 || pullbackDepthPct > 5.5 {
+		return structuredSetup{}, false
+	}
+
+	impulseRange := peakHigh - impulseBase
+	if impulseRange <= 0 {
+		return structuredSetup{}, false
+	}
+	retracePct := (peakHigh - pullbackLow) / impulseRange * 100
+	if retracePct < 15 || retracePct > 80 {
+		return structuredSetup{}, false
+	}
+
+	reclaimLookback := min(3, currentIdx-peakIdx)
+	if reclaimLookback < 2 {
+		return structuredSetup{}, false
+	}
+	reclaimHigh := maxBarHigh(bars[currentIdx-reclaimLookback : currentIdx])
+	if reclaimHigh <= 0 || currentBar.close <= reclaimHigh {
+		return structuredSetup{}, false
+	}
+
+	reclaimPct := safePct(currentBar.close-reclaimHigh, reclaimHigh) * 100
+	if reclaimPct > 4.0 {
+		return structuredSetup{}, false
+	}
+
+	barCloseOffHighPct := 0.0
+	if currentBar.high > currentBar.low {
+		barCloseOffHighPct = (currentBar.high - currentBar.close) / (currentBar.high - currentBar.low) * 100
+	}
+	if barCloseOffHighPct > 35 {
+		return structuredSetup{}, false
+	}
+
+	distFromHOD := safePct(referenceHigh-tick.Price, referenceHigh) * 100
+	pullbackMaxDist := cfg.HODMomoPullbackMaxDist
+	if pullbackMaxDist <= 0 {
+		pullbackMaxDist = max(cfg.HODMomoMaxDistFromHigh, 3.0)
+	}
+	if distFromHOD > pullbackMaxDist {
+		return structuredSetup{}, false
+	}
+
+	if metrics.oneMinuteReturn <= 0 {
+		return structuredSetup{}, false
+	}
+	if metrics.threeMinuteReturn < 0.25 {
+		return structuredSetup{}, false
+	}
+	if metrics.fiveMinuteReturn < math.Max(cfg.MinThreeMinuteReturnPct*0.6, 0.35) {
+		return structuredSetup{}, false
+	}
+
+	return structuredSetup{
+		setupType:             "hod_pullback",
+		setupHigh:             peakHigh,
+		setupLow:              pullbackLow,
+		breakoutPct:           reclaimPct,
+		consolidationRangePct: pullbackDepthPct,
+		pullbackDepthPct:      retracePct,
+		closeOffHighPct:       safePct(peakHigh-currentBar.close, peakHigh) * 100,
+	}, true
+}
+
+func (s *Scanner) refreshOpeningRangeState(
+	state *symbolState,
+	bars []symbolBar,
+	cfg config.TradingConfig,
+	window int,
+	bufferPct float64,
+) (openingRangeState, bool) {
+	if len(bars) <= window {
+		return openingRangeState{}, false
+	}
+
+	cache := &state.orbState
+	reset := !cache.ready || cache.window != window || cache.bufferPct != bufferPct || cache.processedBars > len(bars)
+	if reset {
+		rangeBars := bars[:window]
+		rangeHigh := maxBarHigh(rangeBars)
+		rangeLow := minBarLow(rangeBars)
+		rangeWidth := rangeHigh - rangeLow
+		if rangeHigh <= 0 || rangeWidth <= 0 {
+			cache.ready = false
+			return openingRangeState{}, false
+		}
+		cache.window = window
+		cache.bufferPct = bufferPct
+		cache.rangeHigh = rangeHigh
+		cache.rangeLow = rangeLow
+		cache.avgRangeVol = averageBarVolume(rangeBars)
+		cache.breakoutLevel = rangeHigh * (1 + bufferPct)
+		cache.breakoutIdx = -1
+		cache.processedBars = window
+		cache.ready = true
+	}
+
+	volumeMultiplier := cfg.ORBVolumeMultiplier
+	if volumeMultiplier <= 0 {
+		volumeMultiplier = 1.2
+	}
+	volumeThreshold := cache.avgRangeVol * max(volumeMultiplier*0.75, 1.0)
+	start := max(window, cache.processedBars-1)
+	if cache.breakoutIdx == len(bars)-1 {
+		cache.breakoutIdx = -1
+		start = max(window, len(bars)-1)
+	}
+	if cache.breakoutIdx == -1 {
+		for i := start; i < len(bars); i++ {
+			if bars[i].close > cache.breakoutLevel && float64(max(bars[i].volume, 0)) >= volumeThreshold {
+				cache.breakoutIdx = i
+				break
+			}
+		}
+	}
+	cache.processedBars = len(bars)
+	return *cache, cache.ready
+}
+
+func isRegularSessionBar(ts time.Time) bool {
+	et := ts.In(markethours.Location())
+	minutes := et.Hour()*60 + et.Minute()
+	return minutes >= 570 && minutes < 960
 }
 
 func averageBarVolume(bars []symbolBar) float64 {
@@ -1149,6 +1978,77 @@ func fiveMinuteBucketStart(ts time.Time) time.Time {
 	et := ts.In(markethours.Location())
 	minute := et.Minute() - (et.Minute() % 5)
 	return time.Date(et.Year(), et.Month(), et.Day(), et.Hour(), minute, 0, 0, markethours.Location())
+}
+
+func computeEMAsAndMACDHistogram(
+	bars []symbolBar,
+	ema9Period, regimeFastPeriod, regimeSlowPeriod, macdFastPeriod, macdSlowPeriod, macdSignalPeriod int,
+) (ema9, regimeFast, regimeSlow, macdHistogram float64) {
+	if len(bars) == 0 {
+		return 0, 0, 0, 0
+	}
+
+	ema9 = bars[0].close
+	regimeFast = bars[0].close
+	regimeSlow = bars[0].close
+	macdFast := bars[0].close
+	macdSlow := bars[0].close
+	macdLine := 0.0
+	signal := 0.0
+
+	ema9Mult := 0.0
+	if ema9Period > 0 {
+		ema9Mult = 2.0 / float64(ema9Period+1)
+	}
+	regimeFastMult := 0.0
+	if regimeFastPeriod > 0 {
+		regimeFastMult = 2.0 / float64(regimeFastPeriod+1)
+	}
+	regimeSlowMult := 0.0
+	if regimeSlowPeriod > 0 {
+		regimeSlowMult = 2.0 / float64(regimeSlowPeriod+1)
+	}
+	macdFastMult := 0.0
+	if macdFastPeriod > 0 {
+		macdFastMult = 2.0 / float64(macdFastPeriod+1)
+	}
+	macdSlowMult := 0.0
+	if macdSlowPeriod > 0 {
+		macdSlowMult = 2.0 / float64(macdSlowPeriod+1)
+	}
+	signalMult := 0.0
+	if macdSignalPeriod > 0 {
+		signalMult = 2.0 / float64(macdSignalPeriod+1)
+	}
+
+	for i := 1; i < len(bars); i++ {
+		close := bars[i].close
+		if ema9Mult > 0 {
+			ema9 = (close-ema9)*ema9Mult + ema9
+		}
+		if regimeFastMult > 0 {
+			regimeFast = (close-regimeFast)*regimeFastMult + regimeFast
+		}
+		if regimeSlowMult > 0 {
+			regimeSlow = (close-regimeSlow)*regimeSlowMult + regimeSlow
+		}
+		if macdFastMult > 0 {
+			macdFast = (close-macdFast)*macdFastMult + macdFast
+		}
+		if macdSlowMult > 0 {
+			macdSlow = (close-macdSlow)*macdSlowMult + macdSlow
+		}
+		macdLine = macdFast - macdSlow
+		if i == 1 {
+			signal = macdLine
+			continue
+		}
+		if signalMult > 0 {
+			signal = (macdLine-signal)*signalMult + signal
+		}
+	}
+	macdHistogram = macdLine - signal
+	return ema9, regimeFast, regimeSlow, macdHistogram
 }
 
 // computeMACDHistogram returns the MACD histogram (MACD line - signal line).

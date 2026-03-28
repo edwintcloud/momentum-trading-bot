@@ -19,6 +19,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/storage"
+	"github.com/edwintcloud/momentum-trading-bot/internal/telemetry"
 )
 
 var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -29,8 +30,15 @@ func runBacktest(args []string) error {
 
 	dataPath := flags.String("data", "", "Optional CSV fallback with timestamp,symbol,open,high,low,close,volume columns")
 	startRaw := flags.String("start", "", "Inclusive backtest start timestamp")
-	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to now")
+	endRaw := flags.String("end", "", "Inclusive backtest end timestamp; defaults to the current hour when omitted")
 	reportOut := flags.String("report-out", ".cache/backtest/latest-report.json", "Optional JSON report artifact path; set empty string to disable")
+	candidateOut := flags.String("candidate-out", "", "Optional JSONL candidate evaluation export path")
+	mlModelPath := flags.String("ml-model", "", "Optional ML model artifact path or directory for shadow scoring")
+	mlThreshold := flags.Float64("ml-threshold", 0, "Optional ML shadow scoring threshold override")
+	mlAdvisory := flags.Bool("ml-advisory", false, "Enable ML advisory mode (veto/downsize/upsize) on top of rules")
+	mlAdvisoryMinProb := flags.Float64("ml-advisory-min-prob", 0, "Optional ML advisory minimum probability override")
+	mlAdvisoryMaxVetos := flags.Int("ml-advisory-max-vetos", 0, "Optional ML advisory max daily vetos override")
+	disableBearPressureLongBlock := flags.Bool("disable-bear-pressure-long-block", false, "Disable the bear-pressure long veto for comparison backtests")
 	debugSymbols := flags.String("debug", "", "Comma-separated symbols to trace per-bar through scanner/strategy")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -52,6 +60,10 @@ func runBacktest(args []string) error {
 		return err
 	}
 	log.Printf("Backtest window start=%s end=%s", formatLogTime(start), formatLogTime(end))
+	configuredSymbols := configuredUniverseSymbols()
+	if len(configuredSymbols) > 0 {
+		log.Printf("Backtest constrained to configured symbols=%d", len(configuredSymbols))
+	}
 
 	cfg := config.DefaultTradingConfig()
 	profilePath := config.ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH"))
@@ -67,6 +79,19 @@ func runBacktest(args []string) error {
 	} else {
 		log.Printf("Backtest logs writing to %s", logDir)
 	}
+	recorder := fsRecorder
+	if *candidateOut != "" {
+		candidateRecorder, err := storage.NewCandidateEvaluationFileRecorder(*candidateOut)
+		if err != nil {
+			return err
+		}
+		if recorder != nil {
+			recorder = telemetry.NewCompositeRecorder(recorder, candidateRecorder)
+		} else {
+			recorder = candidateRecorder
+		}
+		log.Printf("Backtest candidate evaluations writing to %s", *candidateOut)
+	}
 
 	// Load float data for backtest tick enrichment
 	floatStore := alpaca.NewFloatStore()
@@ -78,7 +103,7 @@ func runBacktest(args []string) error {
 		DataPath:   *dataPath,
 		Start:      start,
 		End:        end,
-		Recorder:   fsRecorder,
+		Recorder:   recorder,
 		FloatStore: floatStore,
 	}
 	if *debugSymbols != "" {
@@ -111,26 +136,32 @@ func runBacktest(args []string) error {
 		// account balance, otherwise ROI and sizing depend on whatever happened in the
 		// paper/live account outside the historical window.
 		cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
-		symbols, blockedSymbols, err := resolveBacktestSymbols(setupCtx, client, end)
+		universe, err := resolveBacktestSymbols(setupCtx, client, end, configuredSymbols)
 		if err != nil {
 			return err
 		}
-		runCfg.BlockedSymbols = blockedSymbols
+		runCfg.BlockedSymbols = universe.BlockedSymbols
+		runCfg.EasyToBorrow = universe.EasyToBorrow
 		// Go back 3 calendar days so the warmup window includes at least one
 		// prior trading day even when the backtest starts on Monday (−1 only
 		// reaches Sunday, which the weekend filter skips).
 		prevDayStart := start.AddDate(0, 0, -3)
-		fetchTimeout := estimateHistoricalFetchTimeout(len(symbols), prevDayStart, end, historicalRateLimit)
+		fetchTimeout := estimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
 		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(prevDayStart), formatLogTime(end))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, prevDayStart, end, historicalRateLimit)
+		dataset, err := prepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
 		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
-		log.Printf("Historical dataset ready shards=%d symbols=%d", len(dataset.jobs), len(symbols))
+		log.Printf(
+			"Historical dataset ready shards=%d symbols=%d easy_to_borrow=%d",
+			len(dataset.jobs),
+			len(universe.Symbols),
+			len(universe.EasyToBorrow),
+		)
 	}
 	profileLabel := ""
 	if profilePath != "" {
@@ -143,6 +174,43 @@ func runBacktest(args []string) error {
 		}
 	} else {
 		log.Printf("Backtest using broker-tuned baseline config (no bundled trading profile found)")
+	}
+	if *mlModelPath != "" {
+		cfg.MLScoringEnabled = true
+		cfg.MLModelPath = *mlModelPath
+	}
+	if *mlThreshold > 0 {
+		cfg.MLScoringEnabled = true
+		cfg.MLScoringThreshold = *mlThreshold
+	}
+	if *mlAdvisory {
+		cfg.MLScoringEnabled = true
+		cfg.MLAdvisoryEnabled = true
+	}
+	if *mlAdvisoryMinProb > 0 {
+		cfg.MLScoringEnabled = true
+		cfg.MLAdvisoryEnabled = true
+		cfg.MLAdvisoryMinProb = *mlAdvisoryMinProb
+	}
+	if *mlAdvisoryMaxVetos > 0 {
+		cfg.MLAdvisoryEnabled = true
+		cfg.MLAdvisoryMaxVetosPerDay = *mlAdvisoryMaxVetos
+	}
+	if *disableBearPressureLongBlock {
+		cfg.DisableBearPressureLongBlock = true
+	}
+	if cfg.MLScoringEnabled {
+		log.Printf("Backtest ML shadow scoring enabled model=%s threshold=%.4f", cfg.MLModelPath, cfg.MLScoringThreshold)
+	}
+	if cfg.MLAdvisoryEnabled {
+		log.Printf(
+			"Backtest ML advisory enabled min_prob=%.4f max_vetos_per_day=%d veto=%t downsize=%t upsize=%t",
+			cfg.MLAdvisoryMinProb,
+			cfg.MLAdvisoryMaxVetosPerDay,
+			cfg.MLAdvisoryVetoEnabled,
+			cfg.MLAdvisoryDownsizeEnabled,
+			cfg.MLAdvisoryUpsizeEnabled,
+		)
 	}
 	logBacktestConfig(cfg)
 
@@ -162,7 +230,7 @@ func runBacktest(args []string) error {
 func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) (time.Time, time.Time, error) {
 	now := time.Now().In(markethours.Location())
 	if end.IsZero() {
-		end = now
+		end = defaultBacktestEnd(now)
 	}
 	if requireStart && start.IsZero() {
 		return time.Time{}, time.Time{}, fmt.Errorf("start time is required when loading historical data from Alpaca")
@@ -183,14 +251,26 @@ func inferBacktestWindows(start, end time.Time, endDateOnly, requireStart bool) 
 	return start, end, nil
 }
 
-func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time) ([]string, map[string]string, error) {
+func defaultBacktestEnd(now time.Time) time.Time {
+	local := now.In(markethours.Location())
+	return local.Truncate(time.Hour)
+}
+
+type backtestUniverse struct {
+	Symbols        []string
+	BlockedSymbols map[string]string
+	EasyToBorrow   map[string]bool
+}
+
+func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtestEnd time.Time, configured []string) (backtestUniverse, error) {
 	type symbolCache struct {
-		Version int      `json:"version"`
-		Date    string   `json:"date"`
-		Symbols []string `json:"symbols"`
+		Version             int      `json:"version"`
+		Date                string   `json:"date"`
+		Symbols             []string `json:"symbols"`
+		EasyToBorrowSymbols []string `json:"easyToBorrowSymbols,omitempty"`
 	}
 
-	const symbolCacheVersion = 2
+	const symbolCacheVersion = 3
 	cachePath := filepath.Join(".cache", "backtest", "symbols.json")
 
 	// Try to load cached symbols if backtest end date is not after cache date.
@@ -200,8 +280,19 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtest
 			if cached.Version == symbolCacheVersion {
 				if cacheDate, err := time.Parse("2006-01-02", cached.Date); err == nil {
 					if !backtestEnd.After(cacheDate.AddDate(0, 0, 1)) {
+						easyToBorrow := sliceToSymbolSet(cached.EasyToBorrowSymbols)
+						if len(configured) > 0 {
+							log.Printf("Using cached symbol metadata for configured universe (%d symbols, cached %s)", len(configured), cached.Date)
+							return backtestUniverse{
+								Symbols:      append([]string(nil), configured...),
+								EasyToBorrow: filterSymbolSet(easyToBorrow, configured),
+							}, nil
+						}
 						log.Printf("Using cached symbol list (%d symbols, cached %s)", len(cached.Symbols), cached.Date)
-						return cached.Symbols, nil, nil
+						return backtestUniverse{
+							Symbols:      cached.Symbols,
+							EasyToBorrow: easyToBorrow,
+						}, nil
 					}
 				}
 			}
@@ -210,23 +301,104 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtest
 
 	assets, err := client.ListEquityAssets(ctx, false)
 	if err != nil {
-		return nil, nil, err
+		return backtestUniverse{}, err
 	}
-	symbols, blockedSymbols := filterScannerUniverseAssets(assets, nil)
+	allSymbols, allBlockedSymbols := filterScannerUniverseAssets(assets, nil)
+	symbols, blockedSymbols := filterScannerUniverseAssets(assets, configured)
+	easyToBorrow := easyToBorrowSymbolSet(assets)
 
 	// Write cache.
 	cache := symbolCache{
-		Version: symbolCacheVersion,
-		Date:    backtestEnd.Format("2006-01-02"),
-		Symbols: symbols,
+		Version:             symbolCacheVersion,
+		Date:                backtestEnd.Format("2006-01-02"),
+		Symbols:             allSymbols,
+		EasyToBorrowSymbols: sortedSymbolKeys(easyToBorrow),
 	}
 	if data, err := json.Marshal(cache); err == nil {
 		_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
 		_ = os.WriteFile(cachePath, data, 0o644)
-		log.Printf("Cached %d symbols for date %s (blocked %d ETF/derivative instruments)", len(symbols), cache.Date, len(blockedSymbols))
+		log.Printf(
+			"Cached %d symbols for date %s (easy_to_borrow=%d blocked %d ETF/derivative instruments)",
+			len(allSymbols),
+			cache.Date,
+			len(easyToBorrow),
+			len(allBlockedSymbols),
+		)
 	}
 
-	return symbols, blockedSymbols, nil
+	return backtestUniverse{
+		Symbols:        symbols,
+		BlockedSymbols: blockedSymbols,
+		EasyToBorrow:   filterSymbolSet(easyToBorrow, symbols),
+	}, nil
+}
+
+func configuredUniverseSymbols() []string {
+	raw := strings.TrimSpace(os.Getenv("ALPACA_SYMBOLS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		symbol := strings.ToUpper(strings.TrimSpace(part))
+		if symbol == "" {
+			continue
+		}
+		if _, exists := seen[symbol]; exists {
+			continue
+		}
+		seen[symbol] = struct{}{}
+		out = append(out, symbol)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func filterSymbolSet(symbols map[string]bool, allowed []string) map[string]bool {
+	if len(symbols) == 0 || len(allowed) == 0 {
+		return map[string]bool{}
+	}
+	out := make(map[string]bool, len(allowed))
+	for _, symbol := range allowed {
+		if symbols[symbol] {
+			out[symbol] = true
+		}
+	}
+	return out
+}
+
+func easyToBorrowSymbolSet(assets []alpaca.EquityAsset) map[string]bool {
+	out := make(map[string]bool)
+	for _, asset := range assets {
+		if asset.Shortable && asset.EasyToBorrow {
+			out[asset.Symbol] = true
+		}
+	}
+	return out
+}
+
+func sortedSymbolKeys(symbols map[string]bool) []string {
+	out := make([]string, 0, len(symbols))
+	for symbol, allowed := range symbols {
+		if allowed {
+			out = append(out, symbol)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sliceToSymbolSet(symbols []string) map[string]bool {
+	out := make(map[string]bool, len(symbols))
+	for _, symbol := range symbols {
+		if symbol == "" {
+			continue
+		}
+		out[symbol] = true
+	}
+	return out
 }
 
 func parseCLIBacktestTime(value string) (time.Time, bool, error) {
@@ -274,7 +446,7 @@ func formatLogTime(value time.Time) string {
 
 func logBacktestConfig(cfg config.TradingConfig) {
 	log.Printf(
-		"Backtest config shorts_enabled=%t max_short_open=%d max_short_exposure=%.2f short_min_score=%.2f min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f trail_activation_r=%.2f trail_atr_mult=%.2f tight_trail_trigger_r=%.2f tight_trail_atr_mult=%.2f profit_target_r=%.2f",
+		"Backtest config shorts_enabled=%t max_short_open=%d max_short_exposure=%.2f short_min_score=%.2f min_price=%.2f min_gap=%.2f min_rel_volume=%.2f min_premarket=%d min_score=%.2f min_1m=%.2f min_3m=%.2f min_volume_rate=%.2f risk_per_trade=%.4f max_trades=%d max_open=%d max_exposure=%.2f trail_activation_r=%.2f trail_atr_mult=%.2f tight_trail_trigger_r=%.2f tight_trail_atr_mult=%.2f profit_target_r=%.2f disable_bear_pressure_long_block=%t",
 		cfg.EnableShorts,
 		cfg.MaxShortOpenPositions,
 		cfg.MaxShortExposurePct,
@@ -296,6 +468,7 @@ func logBacktestConfig(cfg config.TradingConfig) {
 		cfg.TightTrailTriggerR,
 		cfg.TightTrailATRMultiplier,
 		cfg.ProfitTargetR,
+		cfg.DisableBearPressureLongBlock,
 	)
 }
 
@@ -312,6 +485,21 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 		diag.ExitSignals,
 		diag.ExitRiskApproved,
 	)
+	if diag.MLShadowScored > 0 {
+		log.Printf("Backtest ML shadow scored=%d vetos=%d upsizes=%d", diag.MLShadowScored, diag.MLShadowVetos, diag.MLShadowUpsizes)
+		logMLShadowSamples(diag.MLShadowSamples)
+	}
+	if diag.MLAdvisoryEvaluated > 0 {
+		log.Printf(
+			"Backtest ML advisory evaluated=%d applied=%d vetos=%d downsizes=%d upsizes=%d",
+			diag.MLAdvisoryEvaluated,
+			diag.MLAdvisoryApplied,
+			diag.MLAdvisoryVetos,
+			diag.MLAdvisoryDownsizes,
+			diag.MLAdvisoryUpsizes,
+		)
+		logMLAdvisorySamples(diag.MLAdvisorySamples)
+	}
 	logReasonCounts("scanner rejects", diag.ScannerRejects, diag.BarsInWindow)
 	logReasonCounts("strategy entry rejects", diag.EntryRejects, diag.EntryCandidates)
 	logReasonCounts("risk entry rejects", diag.EntryRiskRejects, diag.EntrySignals)
@@ -323,6 +511,54 @@ func logBacktestDiagnostics(diag backtest.Diagnostics) {
 	logFillExpirySamples(diag.FillExpirySamples)
 }
 
+func logMLShadowSamples(samples []backtest.MLShadowSample) {
+	if len(samples) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, fmt.Sprintf(
+			"%s@%s prob=%.3f thresh=%.3f decision=%s day_rank=%d bar_rank=%d setup=%s strategy=%s emitted=%t risk=%t",
+			sample.Symbol,
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
+			sample.Probability,
+			sample.Threshold,
+			sample.Decision,
+			sample.DayRankSoFar,
+			sample.BarRankSoFar,
+			sample.SetupType,
+			sample.StrategyReason,
+			sample.StrategyEmitted,
+			sample.RiskApproved,
+		))
+	}
+	log.Printf("Backtest ML shadow samples %s", strings.Join(parts, " | "))
+}
+
+func logMLAdvisorySamples(samples []backtest.MLAdvisorySample) {
+	if len(samples) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		parts = append(parts, fmt.Sprintf(
+			"%s@%s prob=%.3f thresh=%.3f decision=%s qty=%d->%d mult=%.2f setup=%s strategy=%s risk=%t",
+			sample.Symbol,
+			sample.Timestamp.In(markethours.Location()).Format("2006-01-02 15:04"),
+			sample.Probability,
+			sample.Threshold,
+			sample.Decision,
+			sample.OriginalQuantity,
+			sample.AdjustedQuantity,
+			sample.SizeMultiplier,
+			sample.SetupType,
+			sample.StrategyReason,
+			sample.RiskApproved,
+		))
+	}
+	log.Printf("Backtest ML advisory samples %s", strings.Join(parts, " | "))
+}
+
 func logBacktestSummary(start, end time.Time, result backtest.Result) {
 	for _, line := range backtestSummaryLines(start, end, result) {
 		log.Print(line)
@@ -330,18 +566,21 @@ func logBacktestSummary(start, end time.Time, result backtest.Result) {
 }
 
 func backtestSummaryLines(start, end time.Time, result backtest.Result) []string {
+	actualStart := result.EndingEquity - result.NetPnL
+	roiPct := safeROIPct(result.NetPnL, actualStart)
 	lines := []string{
 		"Backtest Summary",
 		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
-		fmt.Sprintf("  PnL          roi=%.0f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
-			result.NetPnL/result.StartingCapital*100,
+		fmt.Sprintf("  PnL          roi=%.2f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
+			roiPct,
 			formatMoney(result.NetPnL),
 			formatMoney(result.RealizedPnL),
 			formatMoney(result.UnrealizedPnL),
 			formatMoney(result.EndingEquity),
 			result.MaxDrawdownPct,
 		),
-		fmt.Sprintf("  Trades       total=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f open_positions=%d",
+		fmt.Sprintf("  Trades       entries=%d closed=%d wins=%d losses=%d win_rate=%.2f%% profit_factor=%.2f open_positions=%d",
+			result.EntriesExecuted,
 			result.Trades,
 			result.Wins,
 			result.Losses,
@@ -361,6 +600,9 @@ func backtestSummaryLines(start, end time.Time, result backtest.Result) []string
 			result.TrailingStopExitPct,
 			result.AvgTimeToStopMin,
 		),
+	}
+	if len(result.OpenSymbols) > 0 {
+		lines = append(lines, fmt.Sprintf("  Open Symbols %s", strings.Join(result.OpenSymbols, ", ")))
 	}
 	lines = append(lines, formatBreakdownLines("  Regimes", result.Diagnostics.ByRegime)...)
 	lines = append(lines, formatBreakdownLines("  Setups", result.Diagnostics.BySetup)...)

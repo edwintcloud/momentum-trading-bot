@@ -60,6 +60,21 @@ func (s *PostgresStore) ensureSchema() error {
 		created_at TIMESTAMPTZ DEFAULT NOW()
 	);
 
+	CREATE TABLE IF NOT EXISTS candidate_evaluations (
+		id SERIAL PRIMARY KEY,
+		symbol TEXT NOT NULL,
+		direction TEXT NOT NULL,
+		setup_type TEXT,
+		source TEXT,
+		strategy_emitted BOOLEAN,
+		strategy_reason TEXT,
+		risk_approved BOOLEAN,
+		risk_reason TEXT,
+		score DOUBLE PRECISION,
+		data JSONB,
+		created_at TIMESTAMPTZ DEFAULT NOW()
+	);
+
 	CREATE TABLE IF NOT EXISTS logs (
 		id SERIAL PRIMARY KEY,
 		level TEXT NOT NULL,
@@ -112,6 +127,7 @@ func (s *PostgresStore) ensureSchema() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_candidates_created_at ON candidates(created_at);
+	CREATE INDEX IF NOT EXISTS idx_candidate_evaluations_created_at ON candidate_evaluations(created_at);
 	CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at);
 	CREATE INDEX IF NOT EXISTS idx_closed_trades_closed_at ON closed_trades(closed_at);
 	`
@@ -127,6 +143,27 @@ func (s *PostgresStore) RecordCandidate(c domain.Candidate) {
 	)
 	if err != nil {
 		log.Printf("storage: record candidate error: %v", err)
+	}
+}
+
+func (s *PostgresStore) RecordCandidateEvaluation(c domain.CandidateEvaluation) {
+	data, _ := json.Marshal(c)
+	_, err := s.db.Exec(
+		`INSERT INTO candidate_evaluations (symbol, direction, setup_type, source, strategy_emitted, strategy_reason, risk_approved, risk_reason, score, data, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		c.Candidate.Symbol,
+		c.Candidate.Direction,
+		c.Candidate.SetupType,
+		c.Source,
+		c.StrategyEmitted,
+		c.StrategyReason,
+		c.RiskApproved,
+		c.RiskReason,
+		c.Candidate.Score,
+		data,
+		c.RecordedAt,
+	)
+	if err != nil {
+		log.Printf("storage: record candidate evaluation error: %v", err)
 	}
 }
 

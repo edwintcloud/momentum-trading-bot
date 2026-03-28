@@ -74,15 +74,33 @@ type Strategy struct {
 	lastEntryAt         map[string]time.Time
 	lastExitAt          map[string]time.Time
 	symbolStates        map[string]symbolTradeState
+	tapePressure        tapePressureState
 	reallocationTargets map[string]bool
 	recentPrices        map[string][]float64 // for Bollinger Band exit on mean-reversion
 }
 
 type symbolTradeState struct {
-	dayKey       string
-	entrySignals int
-	lossExits    int
-	lastLossAt   time.Time
+	dayKey                     string
+	entrySignals               int
+	lossExits                  int
+	lastLossAt                 time.Time
+	dangerousShortFadeExits    int
+	lastDangerousShortFadeAt   time.Time
+	lastDangerousShortFadeVWAP float64
+	lastDangerousShortFadeDist float64
+	profitableShortExits       int
+	lastProfitableShortExitAt  time.Time
+	lastProfitableShortSetup   string
+	lastLongImpulseHigh        float64
+	lastLongSetup              string
+	lastLongEntryAt            time.Time
+}
+
+type tapePressureState struct {
+	dayKey     string
+	lastUpdate time.Time
+	bull       float64
+	bear       float64
 }
 
 // NewStrategy creates a strategy instance.
@@ -209,12 +227,6 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 			reason = "regime-gated"
 		}
 	}
-	if reason == "no-signal" && cfg.EntryDeadlineMinutesAfterOpen > 0 {
-		minutesSinceOpen := markethours.MinutesSinceOpen(candidate.Timestamp)
-		if minutesSinceOpen > float64(cfg.EntryDeadlineMinutesAfterOpen) {
-			reason = "past-entry-deadline"
-		}
-	}
 	if reason == "no-signal" {
 		// Check cooldown
 		if last, exists := s.lastEntryAt[candidate.Symbol]; exists {
@@ -244,6 +256,8 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bool, string) {
 	cfg := s.getConfig()
 	now := c.Timestamp
+	tape := s.peekTapePressure(now)
+	defer s.recordTapePressure(c)
 	if !markethours.IsTradableSessionAt(now) {
 		return domain.TradeSignal{}, false, "market-closed"
 	}
@@ -252,14 +266,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	sessionEnd := markethours.SessionClose(now)
 	if now.After(sessionEnd.Add(-15 * time.Minute)) {
 		return domain.TradeSignal{}, false, "session-closing"
-	}
-
-	// Entry deadline: block entries after N minutes from open
-	if cfg.EntryDeadlineMinutesAfterOpen > 0 {
-		minutesSinceOpen := markethours.MinutesSinceOpen(now)
-		if minutesSinceOpen > float64(cfg.EntryDeadlineMinutesAfterOpen) {
-			return domain.TradeSignal{}, false, "past-entry-deadline"
-		}
 	}
 
 	// Check if paused or emergency stopped
@@ -281,6 +287,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if s.portfolio.HasPendingOrder(c.Symbol) {
 		return domain.TradeSignal{}, false, "pending-order"
 	}
+	if reachedDailyProfitLock(s.portfolio, cfg) {
+		return domain.TradeSignal{}, false, "daily-profit-lock"
+	}
 
 	// Day state
 	dayKey := markethours.TradingDay(now)
@@ -295,74 +304,51 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if state.lossExits >= 2 && now.Sub(state.lastLossAt) < 30*time.Minute {
 		return domain.TradeSignal{}, false, "loss-cooldown"
 	}
+	if domain.IsLong(c.Direction) {
+		if !cfg.DisableBearPressureLongBlock && shouldBlockLongForBearPressure(c, tape) {
+			return domain.TradeSignal{}, false, "bear-pressure-long-block"
+		}
+		if reason, blocked := rejectRepeatedLongImpulse(c, state); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
+		if reason, blocked := rejectLongAfterProfitableShort(c, state); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
+		if reason, blocked := rejectWeakLongStockSelection(c); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
+		if reason, blocked := rejectWeakLongBreakout(c, cfg); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
+	} else {
+		if reason, blocked := rejectRepeatedDangerousShortFade(c, state); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
+		if reason, blocked := rejectWeakShortMomentum(c, cfg); blocked {
+			return domain.TradeSignal{}, false, reason
+		}
+	}
 
 	// Candidate-quality gate: only take higher-conviction momentum setups.
 	scoreThreshold := cfg.MinEntryScore
 	if domain.IsShort(c.Direction) {
 		scoreThreshold = cfg.ShortMinEntryScore
 	}
-	if cfg.TimeOfDayEnabled && scoreThreshold > 0 {
-		twCfg := defaultTimeWindowConfigs[currentTimeWindow(now)]
-		scoreThreshold *= twCfg.ScoreThresholdMultiplier
-	}
 	if scoreThreshold > 0 && c.Score < scoreThreshold {
 		return domain.TradeSignal{}, false, "low-score"
 	}
 
-	// Generic pullbacks need a meaningful intraday trend behind them.
-	if domain.IsLong(c.Direction) && c.SetupType == "pullback" && c.IntradayReturnPct < math.Max(cfg.MinGapPercent*1.5, 5.0) {
+	// Generic pullbacks need a meaningful intraday trend behind them unless they
+	// are clearly reclaiming near the session high with leader-level participation.
+	if domain.IsLong(c.Direction) && c.SetupType == "pullback" &&
+		c.IntradayReturnPct < math.Max(cfg.MinGapPercent*1.5, 5.0) &&
+		!isLeaderOpenDrivePullback(c) {
 		return domain.TradeSignal{}, false, "weak-intraday-trend"
 	}
-
-	// Regular-hours momentum longs behave better when we let the opening drive
-	// establish itself before chasing. During the opening burst, only the
-	// strongest leader-style setups are allowed through.
-	if domain.IsLong(c.Direction) && markethours.IsMarketOpen(now) {
-		minutesSinceOpen := c.MinutesSinceOpen
-		switch c.SetupType {
-		case "orb_breakout":
-			if minutesSinceOpen < 5 {
-				return domain.TradeSignal{}, false, "open-drive-breakout-wait"
-			}
-			if minutesSinceOpen > 30 || c.RelativeVolume < 4.5 || c.LeaderRank > 6 || c.FiveMinuteReturnPct < 1.0 || c.PriceVsVWAPPct < 0.5 || c.BreakoutPct > 2.5 {
-				return domain.TradeSignal{}, false, "open-drive-breakout-filter"
-			}
-		case "orb_reclaim":
-			if minutesSinceOpen < 6 {
-				return domain.TradeSignal{}, false, "open-drive-pullback-wait"
-			}
-			if c.RelativeVolume < 3.0 || c.LeaderRank > 10 || c.OneMinuteReturnPct <= 0 || c.FiveMinuteReturnPct < 0.15 || c.PriceVsVWAPPct < 0.1 || c.DistanceFromHighPct > 2.0 {
-				return domain.TradeSignal{}, false, "open-drive-pullback-filter"
-			}
-		case "hod_breakout", "breakout":
-			if minutesSinceOpen <= 60 {
-				if c.LeaderRank > 2 || c.RelativeVolume < 7 || c.OneMinuteReturnPct <= 0 || c.FiveMinuteReturnPct < 1.5 || c.IntradayReturnPct < 10 || c.PriceVsVWAPPct < 1.25 {
-					return domain.TradeSignal{}, false, "prefer-structured-open"
-				}
-			}
-			if minutesSinceOpen < 20 {
-				return domain.TradeSignal{}, false, "open-drive-breakout-wait"
-			}
-			if minutesSinceOpen < 60 {
-				if c.LeaderRank > 3 || c.RelativeVolume < 6 || c.OneMinuteReturnPct <= 0 || c.FiveMinuteReturnPct < 1.5 || c.IntradayReturnPct < 9 || c.PriceVsVWAPPct < 1.0 {
-					return domain.TradeSignal{}, false, "open-drive-breakout-filter"
-				}
-			}
-		case "pullback":
-			if minutesSinceOpen <= 120 {
-				return domain.TradeSignal{}, false, "prefer-structured-open"
-			}
-		case "hod_pullback":
-			if minutesSinceOpen <= 150 {
-				return domain.TradeSignal{}, false, "prefer-structured-open"
-			}
-		}
-	}
-
 	// --- Hard indicator filters (rules-based entry) ---
 
 	// MACD histogram: must confirm direction
-	if domain.IsLong(c.Direction) && c.MACDHistogram <= 0 {
+	if domain.IsLong(c.Direction) && c.MACDHistogram <= 0 && !allowsFlatMACDLong(c) {
 		return domain.TradeSignal{}, false, "macd-filter"
 	}
 	if domain.IsShort(c.Direction) && c.MACDHistogram >= 0 {
@@ -388,7 +374,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Volume rate must exceed minimum
-	if c.VolumeRate < cfg.MinVolumeRate {
+	if c.VolumeRate < cfg.MinVolumeRate && !allowsLowVolumeRateLong(c) {
 		return domain.TradeSignal{}, false, "low-volume"
 	}
 
@@ -415,13 +401,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	riskPerShare := s.computeRiskPerShare(c)
 	if riskPerShare <= 0 {
 		return domain.TradeSignal{}, false, "invalid-risk"
-	}
-
-	// Time-of-day risk multiplier (wider stops at open, tighter at close)
-	if cfg.TimeOfDayEnabled {
-		tw := currentTimeWindow(now)
-		twCfg := defaultTimeWindowConfigs[tw]
-		riskPerShare *= twCfg.RiskMultiplier
 	}
 
 	// Risk/Reward pre-check: reject trades where reward < MinRiskRewardRatio × risk
@@ -488,7 +467,8 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 		riskBudget *= drawdownFactor
 	}
-	riskBudget *= entryRiskMultiplier(c, now)
+	riskBudget *= entryRiskMultiplier(c)
+	riskBudget *= longBearPressureRiskMultiplier(c, tape)
 
 	// Update HWM tracking
 	s.portfolio.UpdateEquityTracking()
@@ -512,12 +492,27 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	entryPrice := c.Price
-	if domain.IsLong(c.Direction) && markethours.IsMarketOpen(now) {
-		switch c.SetupType {
-		case "orb_reclaim":
-			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.003, 0.15)
-		case "orb_breakout":
-			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.002, 0.10)
+	if domain.IsLong(c.Direction) {
+		if isExceptionalSqueezeBreakout(c) {
+			entryPrice = exceptionalSqueezeEntryLimit(c.Price, c.ATR)
+		} else if isExceptionalSqueezePullback(c) {
+			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.006, 0.20)
+		} else {
+			switch c.SetupType {
+			case "orb_reclaim":
+				entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.003, 0.15)
+			case "orb_breakout":
+				entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.002, 0.10)
+			case "hod_breakout":
+				if c.Score >= 9.0 &&
+					c.OneMinuteReturnPct >= 2.0 &&
+					c.ThreeMinuteReturnPct >= 5.0 &&
+					c.RelativeVolume >= 12.0 &&
+					c.PriceVsVWAPPct <= 10.0 &&
+					c.DistanceFromHighPct <= 0.6 {
+					entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.006, 0.25)
+				}
+			}
 		}
 	}
 
@@ -544,6 +539,18 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
+	playbook := c.Playbook
+	if domain.IsLong(c.Direction) {
+		switch {
+		case isExceptionalSqueezeBreakout(c), isExceptionalSqueezePullback(c):
+			playbook = "continuation"
+		case c.SetupType == "hod_breakout" && isExplosiveLeaderReExpansionBreakout(c):
+			playbook = "pullback"
+		case c.SetupType == "pullback" && isLeaderOpenDrivePullback(c):
+			playbook = "continuation"
+		}
+	}
+
 	signal := domain.TradeSignal{
 		Symbol:           c.Symbol,
 		Side:             domain.OpenBrokerSide(c.Direction),
@@ -559,14 +566,26 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		Confidence:       math.Min(1.0, c.Score/5.0),
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
-		Playbook:         c.Playbook,
+		Playbook:         playbook,
 		Sector:           candidateSector,
 		AvgDailyVolume:   float64(c.PrevDayVolume),
+		LeaderRank:       c.LeaderRank,
+		VolumeLeaderPct:  c.VolumeLeaderPct,
+		StockSelectScore: c.StockSelectionScore,
+		PriceVsVWAPPct:   c.PriceVsVWAPPct,
+		DistanceHighPct:  c.DistanceFromHighPct,
 		Timestamp:        now,
 	}
 
 	s.lastEntryAt[c.Symbol] = now
 	state.entrySignals++
+	if domain.IsLong(c.Direction) && isHODContinuationSetup(c.SetupType) {
+		state.lastLongEntryAt = now
+		state.lastLongSetup = c.SetupType
+		if c.HighOfDay > state.lastLongImpulseHigh {
+			state.lastLongImpulseHigh = c.HighOfDay
+		}
+	}
 	s.symbolStates[c.Symbol] = state
 
 	return signal, true, ""
@@ -681,11 +700,22 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		if domain.IsShort(pos.Side) {
 			pnl = -pnl
 		}
+		dayKey := markethours.TradingDay(now)
+		state := s.getSymbolState(tick.Symbol, dayKey)
 		if pnl < 0 {
-			dayKey := markethours.TradingDay(now)
-			state := s.getSymbolState(tick.Symbol, dayKey)
 			state.lossExits++
 			state.lastLossAt = now
+			if isDangerousFailedShortFade(pos, reason) {
+				state.dangerousShortFadeExits++
+				state.lastDangerousShortFadeAt = now
+				state.lastDangerousShortFadeVWAP = pos.PriceVsVWAPPct
+				state.lastDangerousShortFadeDist = pos.DistanceHighPct
+			}
+			s.symbolStates[tick.Symbol] = state
+		} else if pnl > 0 && domain.IsShort(pos.Side) {
+			state.profitableShortExits++
+			state.lastProfitableShortExitAt = now
+			state.lastProfitableShortSetup = pos.SetupType
 			s.symbolStates[tick.Symbol] = state
 		}
 	}
@@ -704,9 +734,204 @@ func (s *Strategy) getPlaybookExitConfig(playbook string) config.PlaybookExitCon
 		return cfg.PlaybookExits.Continuation
 	case "reversal":
 		return cfg.PlaybookExits.Reversal
+	case "mean_reversion":
+		return cfg.PlaybookExits.MeanReversion
+	case "gap_fade":
+		return cfg.PlaybookExits.GapFade
+	case "power_hour":
+		return cfg.PlaybookExits.PowerHour
 	default:
 		return cfg.PlaybookExits.Breakout
 	}
+}
+
+func (s *Strategy) peekTapePressure(now time.Time) tapePressureState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return decayTapePressureState(s.tapePressure, now)
+}
+
+func (s *Strategy) recordTapePressure(c domain.Candidate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := decayTapePressureState(s.tapePressure, c.Timestamp)
+	pressure := candidateDirectionalPressure(c)
+	if domain.IsLong(c.Direction) {
+		state.bull += pressure
+	} else if domain.IsShort(c.Direction) {
+		state.bear += pressure
+	}
+	s.tapePressure = state
+}
+
+func decayTapePressureState(state tapePressureState, now time.Time) tapePressureState {
+	dayKey := markethours.TradingDay(now)
+	if state.dayKey != dayKey {
+		return tapePressureState{dayKey: dayKey, lastUpdate: now}
+	}
+	if state.lastUpdate.IsZero() {
+		state.lastUpdate = now
+		return state
+	}
+	elapsed := now.Sub(state.lastUpdate)
+	if elapsed <= 0 {
+		return state
+	}
+	decay := math.Exp(-elapsed.Minutes() / 45.0)
+	state.bull *= decay
+	state.bear *= decay
+	state.lastUpdate = now
+	return state
+}
+
+func candidateDirectionalPressure(c domain.Candidate) float64 {
+	base := math.Max(c.StockSelectionScore, 0) + math.Max(c.Score-3.0, 0)*0.35
+	if domain.IsLong(c.Direction) {
+		base += math.Max(c.ThreeMinuteReturnPct, 0) * 0.12
+		base += math.Max(c.FiveMinuteReturnPct, 0) * 0.18
+		if c.LeaderRank > 0 && c.LeaderRank <= 2 {
+			base += 0.35
+		}
+		if c.SetupType == "hod_breakout" || c.SetupType == "orb_breakout" {
+			base += 0.25
+		}
+	} else if domain.IsShort(c.Direction) {
+		base += math.Max(-c.OneMinuteReturnPct, 0) * 0.12
+		base += math.Max(-c.ThreeMinuteReturnPct, 0) * 0.15
+		base += math.Max(c.DistanceFromHighPct, 0) * 0.03
+		if c.SetupType == "parabolic-failed-reclaim-short" {
+			base += 0.45
+		}
+	}
+	if base < 0.25 {
+		return 0.25
+	}
+	return base
+}
+
+func shouldBlockLongForBearPressure(c domain.Candidate, tape tapePressureState) bool {
+	if !domain.IsLong(c.Direction) {
+		return false
+	}
+	if tape.bear < 4.0 {
+		return false
+	}
+	if tape.bear < tape.bull*1.25 && tape.bear-tape.bull < 1.5 {
+		return false
+	}
+	if isBearPressureLongException(c) {
+		return false
+	}
+	switch c.SetupType {
+	case "hod_pullback":
+		return true
+	case "hod_breakout":
+		return !isBearPressureHODBreakoutException(c)
+	case "orb_breakout":
+		return !isBearPressureORBBreakoutException(c)
+	case "orb_reclaim":
+		return !isBearPressureORBReclaimException(c)
+	case "pullback":
+		return !isBearPressurePullbackException(c)
+	case "breakout":
+		return true
+	default:
+		return c.Score < 9.4 || c.StockSelectionScore < 4.6
+	}
+}
+
+func isBearPressureLongException(c domain.Candidate) bool {
+	if isExceptionalSqueezePullback(c) {
+		return true
+	}
+	if c.StockSelectionScore >= 4.8 &&
+		c.Score >= 9.2 &&
+		c.RelativeVolume >= 10.0 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 &&
+		(c.SetupType == "orb_reclaim" || c.SetupType == "orb_breakout" || c.SetupType == "hod_breakout") {
+		return true
+	}
+	if c.SetupType == "pullback" && isLeaderOpenDrivePullback(c) &&
+		c.StockSelectionScore >= 4.4 &&
+		c.Score >= 8.6 {
+		return true
+	}
+	if c.SetupType == "hod_breakout" && isExplosiveLeaderReExpansionBreakout(c) &&
+		c.StockSelectionScore >= 4.2 &&
+		c.Score >= 8.8 {
+		return true
+	}
+	return false
+}
+
+func isBearPressurePullbackException(c domain.Candidate) bool {
+	return c.SetupType == "pullback" &&
+		isLeaderOpenDrivePullback(c) &&
+		c.StockSelectionScore >= 4.5 &&
+		c.Score >= 8.8 &&
+		c.RelativeVolume >= 18.0 &&
+		c.PriceVsVWAPPct <= 6.5
+}
+
+func isBearPressureHODBreakoutException(c domain.Candidate) bool {
+	if c.SetupType != "hod_breakout" {
+		return false
+	}
+	if c.StockSelectionScore < 4.15 || c.Score < 8.9 {
+		return false
+	}
+	if c.RelativeVolume < 9.0 || c.ThreeMinuteReturnPct < 2.4 || c.FiveMinuteReturnPct < 1.4 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 0.8 || c.PriceVsVWAPPct > 7.0 {
+		return false
+	}
+	if c.DistanceFromHighPct > 0.35 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 35.0 {
+		return false
+	}
+	return c.OneMinuteReturnPct >= 1.0 || c.BreakoutPct >= 0.4
+}
+
+func isBearPressureORBBreakoutException(c domain.Candidate) bool {
+	if c.SetupType != "orb_breakout" {
+		return false
+	}
+	if c.StockSelectionScore < 4.0 || c.Score < 8.8 {
+		return false
+	}
+	if c.BreakoutPct < 1.0 || c.OneMinuteReturnPct < 1.2 || c.ThreeMinuteReturnPct < 2.0 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 0.4 || c.PriceVsVWAPPct > 5.0 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 35.0 {
+		return false
+	}
+	return true
+}
+
+func isBearPressureORBReclaimException(c domain.Candidate) bool {
+	if c.SetupType != "orb_reclaim" {
+		return false
+	}
+	if c.StockSelectionScore < 4.0 || c.Score < 8.7 {
+		return false
+	}
+	if c.BreakoutPct < 0.8 || c.ThreeMinuteReturnPct < 1.8 || c.FiveMinuteReturnPct < 1.0 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 0.5 || c.PriceVsVWAPPct > 5.5 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 45.0 {
+		return false
+	}
+	return true
 }
 
 func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (string, bool) {
@@ -741,6 +966,11 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		return "stop-loss", true
 	}
 
+	// Power Hour forced exit: close 5 minutes before market close
+	if pos.Playbook == "power_hour" && markethours.RemainingMinutes(tick.Timestamp) <= 5 {
+		return "power-hour-eod-exit", true
+	}
+
 	// Phase 3 Change 4: Partial exit framework
 	if cfg.PartialExitsEnabled && pos.OriginalQuantity > 0 && pos.Quantity > 0 {
 		partialReason, partialExit := s.checkPartialExit(pos, r)
@@ -767,12 +997,6 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 
 	// Profit target (playbook-specific)
 	profitTargetR := exitCfg.ProfitTargetR
-	// Phase 3 Change 3: Time-of-day profit target adjustment
-	if cfg.TimeOfDayEnabled {
-		tw := currentTimeWindow(tick.Timestamp)
-		twCfg := defaultTimeWindowConfigs[tw]
-		profitTargetR *= twCfg.ProfitTargetMultiplier
-	}
 	if r >= profitTargetR {
 		return "profit-target", true
 	}
@@ -783,6 +1007,18 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		if holdMinutes < float64(exitCfg.BreakoutFailureWindowMin) {
 			return "failed-breakout", true
 		}
+	}
+
+	// Strong HOD pullback winners should not round-trip after an extreme squeeze
+	// extension. Once the trade has produced a large gain, protect it on the
+	// first meaningful recoil from the post-entry peak.
+	if domain.IsLong(pos.Side) &&
+		pos.SetupType == "hod_pullback" &&
+		r >= 2.0 &&
+		pos.HighestPrice > 0 &&
+		pos.EntryATR > 0 &&
+		tick.Price <= pos.HighestPrice-pos.EntryATR*0.35 {
+		return "momentum-fade", true
 	}
 
 	// End of day — close 5 minutes before extended-hours session end (7:55 PM ET)
@@ -830,7 +1066,11 @@ func (s *Strategy) checkPartialExit(pos domain.Position, r float64) (string, boo
 }
 
 func isMeanReversionSetup(setupType string) bool {
-	return setupType == "mean_reversion_long" || setupType == "mean_reversion_short"
+	switch setupType {
+	case "mean_reversion_long", "mean_reversion_short", "gap_fade_long", "gap_fade_short":
+		return true
+	}
+	return false
 }
 
 // volRegimeTrailFactor returns a multiplier for trail distances based on volatility regime.
@@ -867,24 +1107,39 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 
 	var newStop float64
 	if domain.IsLong(pos.Side) {
-		// Break-even stop
-		if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
-			newStop = pos.AvgPrice + pos.EntryATR*0.1
-		}
-
-		// Trailing stop activation (playbook-specific, volatility-adjusted)
-		if r >= exitCfg.TrailActivationR {
-			trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier*volFactor
-			if trailStop > pos.StopPrice {
-				newStop = trailStop
+		if isExceptionalSqueezePosition(pos) {
+			if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
+				newStop = pos.AvgPrice + pos.EntryATR*0.1
 			}
-		}
+			if pos.EntryATR > 0 && pos.HighestPrice > 0 {
+				peakR := s.peakR(pos)
+				if peakR >= 2.0 {
+					squeezeStop := exceptionalSqueezePeakStop(pos.HighestPrice, pos.EntryATR, peakR)
+					if squeezeStop > pos.StopPrice && squeezeStop > newStop {
+						newStop = squeezeStop
+					}
+				}
+			}
+		} else {
+			// Break-even stop
+			if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
+				newStop = pos.AvgPrice + pos.EntryATR*0.1
+			}
 
-		// Tight trail (playbook-specific, volatility-adjusted)
-		if r >= exitCfg.TightTrailTriggerR {
-			tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier*volFactor
-			if tightStop > pos.StopPrice {
-				newStop = tightStop
+			// Trailing stop activation (playbook-specific, volatility-adjusted)
+			if r >= exitCfg.TrailActivationR {
+				trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier*volFactor
+				if trailStop > pos.StopPrice {
+					newStop = trailStop
+				}
+			}
+
+			// Tight trail (playbook-specific, volatility-adjusted)
+			if r >= exitCfg.TightTrailTriggerR {
+				tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier*volFactor
+				if tightStop > pos.StopPrice {
+					newStop = tightStop
+				}
 			}
 		}
 	} else {
@@ -968,29 +1223,204 @@ func normalizedFallbackRiskPct(cfg config.TradingConfig) float64 {
 	}
 }
 
-func entryRiskMultiplier(c domain.Candidate, now time.Time) float64 {
+func entryRiskMultiplier(c domain.Candidate) float64 {
+	if domain.IsShort(c.Direction) {
+		switch c.SetupType {
+		case "parabolic-failed-reclaim-short":
+			if c.Price < 8.0 &&
+				c.RelativeVolume >= 200.0 &&
+				c.LeaderRank > 0 &&
+				c.LeaderRank <= 2 &&
+				c.PriceVsVWAPPct > -9.0 {
+				return 0.40
+			}
+			if c.GapPercent > 3.0 &&
+				c.PriceVsOpenPct > 0.85 &&
+				c.DistanceFromHighPct < 28.0 &&
+				c.RelativeVolume >= 30.0 &&
+				c.PriceVsVWAPPct > -12.0 &&
+				c.StockSelectionScore < 4.0 {
+				return 0.55
+			}
+			if c.DistanceFromHighPct >= 25.0 &&
+				c.PriceVsVWAPPct <= -10.0 &&
+				c.OneMinuteReturnPct <= -3.0 &&
+				c.ThreeMinuteReturnPct <= -4.0 &&
+				c.RelativeVolume >= 8.0 {
+				return 1.45
+			}
+			if c.DistanceFromHighPct >= 18.0 &&
+				c.PriceVsVWAPPct <= -6.0 &&
+				c.ThreeMinuteReturnPct <= -2.5 &&
+				c.FiveMinuteReturnPct <= -1.5 {
+				return 1.20
+			}
+		case "breakdown":
+			if c.DistanceFromHighPct >= 15.0 &&
+				c.PriceVsVWAPPct <= -4.0 &&
+				c.ThreeMinuteReturnPct <= -2.0 {
+				return 1.10
+			}
+		}
+		return 1.0
+	}
+	switch c.SetupType {
+	case "orb_reclaim":
+		if c.StockSelectionScore < 3.5 {
+			return 0.45
+		}
+		if c.GapPercent < 1.0 || c.StockSelectionScore < 3.9 {
+			return 0.65
+		}
+		return 1.50
+	case "orb_breakout":
+		if c.GapPercent <= 0 {
+			return 0.25
+		}
+		if c.GapPercent < 1.5 &&
+			c.StockSelectionScore < 3.9 {
+			return 0.30
+		}
+		if c.PriceVsVWAPPct > 6.5 &&
+			c.StockSelectionScore < 4.1 {
+			return 0.35
+		}
+		if c.StockSelectionScore < 3.6 {
+			return 0.45
+		}
+		if c.GapPercent < 2.0 || c.StockSelectionScore < 4.0 ||
+			(c.LeaderRank > 2 && c.VolumeLeaderPct < 30.0) {
+			return 0.60
+		}
+		return 1.35
+	case "hod_breakout":
+		if c.GapPercent <= 0 {
+			return 0.25
+		}
+		if c.GapPercent < 1.0 &&
+			c.StockSelectionScore < 4.1 {
+			return 0.30
+		}
+		if c.StockSelectionScore < 3.8 &&
+			c.PriceVsVWAPPct > 5.0 {
+			return 0.30
+		}
+		if c.PriceVsVWAPPct > 8.0 &&
+			c.ThreeMinuteReturnPct < 3.5 {
+			return 0.35
+		}
+		if c.StockSelectionScore < 3.5 {
+			return 0.40
+		}
+		if c.GapPercent < 2.0 || c.StockSelectionScore < 4.0 ||
+			(c.LeaderRank > 2 && c.VolumeLeaderPct < 30.0) {
+			return 0.50
+		}
+		if c.Score >= 9.0 &&
+			c.OneMinuteReturnPct >= 2.0 &&
+			c.ThreeMinuteReturnPct >= 5.0 &&
+			c.RelativeVolume >= 12.0 &&
+			c.LeaderRank > 0 &&
+			c.LeaderRank <= 2 &&
+			c.PriceVsVWAPPct >= 1.0 &&
+			c.PriceVsVWAPPct <= 10.0 &&
+			c.DistanceFromHighPct <= 0.6 {
+			return 1.10
+		}
+		if c.Score >= 8.5 &&
+			c.OneMinuteReturnPct >= 5.0 &&
+			c.ThreeMinuteReturnPct >= 7.0 &&
+			c.RelativeVolume >= 25.0 &&
+			c.VolumeLeaderPct >= 25.0 &&
+			c.PriceVsVWAPPct >= 1.0 &&
+			c.PriceVsVWAPPct <= 8.0 &&
+			c.DistanceFromHighPct <= 0.6 {
+			return 0.95
+		}
+		if c.BreakoutPct >= 0.10 &&
+			c.RelativeVolume >= 6 &&
+			(c.VolumeLeaderPct >= 20 || (c.LeaderRank > 0 && c.LeaderRank <= 3)) {
+			return 0.75
+		}
+		return 0.55
+	case "breakout":
+		if c.BreakoutPct >= 0.15 && c.RelativeVolume >= 5 {
+			return 1.00
+		}
+		return 0.80
+	case "hod_pullback":
+		if isExceptionalSqueezePullback(c) {
+			return 0.75
+		}
+		if c.GapPercent <= 0 {
+			return 0.30
+		}
+		if isStructuredHODPullback(c) {
+			if c.LeaderRank > 0 &&
+				c.LeaderRank <= 2 &&
+				c.RelativeVolume >= 10.0 &&
+				c.PriceVsVWAPPct >= 1.5 &&
+				c.PriceVsVWAPPct <= 10.5 &&
+				c.CloseOffHighPct >= 0.8 {
+				return 0.85
+			}
+			return 0.70
+		}
+		if isExplosiveHODPullback(c) {
+			return 0.35
+		}
+		return 0.25
+	case "pullback":
+		if isLeaderOpenDrivePullback(c) {
+			return 0.80
+		}
+		return 0.55
+	}
+	return 1.0
+}
+
+func longBearPressureRiskMultiplier(c domain.Candidate, tape tapePressureState) float64 {
 	if !domain.IsLong(c.Direction) {
 		return 1.0
 	}
-	if markethours.IsMarketOpen(now) {
-		switch c.SetupType {
-		case "orb_reclaim":
-			return 1.75
-		case "orb_breakout":
-			return 1.50
-		case "hod_breakout", "breakout":
-			if c.LeaderRank <= 2 && c.RelativeVolume >= 8 && c.PriceVsVWAPPct >= 1.5 {
-				return 1.15
-			}
-			return 0.85
-		case "hod_pullback", "pullback":
-			return 0.60
+	if tape.bear < 3.0 {
+		return 1.0
+	}
+	if tape.bear < tape.bull*1.1 && tape.bear-tape.bull < 1.0 {
+		return 1.0
+	}
+	if isBearPressureLongException(c) {
+		return 1.0
+	}
+
+	mult := 1.0
+	switch c.SetupType {
+	case "hod_pullback":
+		mult *= 0.45
+	case "hod_breakout":
+		mult *= 0.55
+	case "orb_breakout":
+		mult *= 0.50
+	case "orb_reclaim":
+		mult *= 0.60
+	case "pullback":
+		if !isLeaderOpenDrivePullback(c) {
+			mult *= 0.65
 		}
 	}
-	if c.SetupType == "hod_breakout" && c.LeaderRank <= 3 && c.RelativeVolume >= 8 {
-		return 1.20
+	if c.SetupType != "pullback" && c.GapPercent <= 0 {
+		mult *= 0.65
 	}
-	return 1.0
+	if c.StockSelectionScore < 3.9 {
+		mult *= 0.75
+	}
+	if c.LeaderRank > 2 && c.VolumeLeaderPct < 30.0 {
+		mult *= 0.80
+	}
+	if mult < 0.20 {
+		return 0.20
+	}
+	return mult
 }
 
 func aggressiveEntryLimit(price, atr, pctBuffer, atrFraction float64) float64 {
@@ -1008,6 +1438,972 @@ func aggressiveEntryLimit(price, atr, pctBuffer, atrFraction float64) float64 {
 		return price
 	}
 	return price + buffer
+}
+
+func exceptionalSqueezeEntryLimit(price, atr float64) float64 {
+	if price <= 0 {
+		return price
+	}
+	limit := price * 1.15
+	if atr > 0 {
+		atrLimit := price + atr*1.25
+		if atrLimit > limit {
+			limit = atrLimit
+		}
+	}
+	return limit
+}
+
+func reachedDailyProfitLock(pm *portfolio.Manager, cfg config.TradingConfig) bool {
+	if pm == nil || cfg.DailyProfitLockPct <= 0 || cfg.StartingCapital <= 0 {
+		return false
+	}
+	pm.RefreshDayIfNeeded()
+	dayNetPnL := pm.DayPnL() + pm.UnrealizedPnL()
+	dayROIPct := (dayNetPnL / cfg.StartingCapital) * 100.0
+	return dayROIPct >= cfg.DailyProfitLockPct
+}
+
+func isExceptionalSqueezePosition(pos domain.Position) bool {
+	return domain.IsLong(pos.Side) &&
+		(pos.SetupType == "hod_breakout" || pos.SetupType == "hod_pullback") &&
+		pos.Playbook == "continuation"
+}
+
+func exceptionalSqueezeTrailATRMultiplier(peakR float64) float64 {
+	switch {
+	case peakR >= 12.0:
+		return 8.0
+	case peakR >= 4.0:
+		return 6.0
+	default:
+		return 5.0
+	}
+}
+
+func exceptionalSqueezePeakStop(highestPrice, entryATR, peakR float64) float64 {
+	if highestPrice <= 0 || entryATR <= 0 {
+		return 0
+	}
+	stop := highestPrice - entryATR*exceptionalSqueezeTrailATRMultiplier(peakR)
+	if peakR >= 12.0 {
+		percentStop := highestPrice * 0.775
+		if percentStop < stop {
+			stop = percentStop
+		}
+	}
+	return stop
+}
+
+func isLeaderOpenDrivePullback(c domain.Candidate) bool {
+	if !domain.IsLong(c.Direction) || c.SetupType != "pullback" {
+		return false
+	}
+	if c.RelativeVolume < 20 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 40 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 60 {
+		return false
+	}
+	if c.DistanceFromHighPct > 1.8 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 0.1 {
+		return false
+	}
+	if c.PriceVsVWAPPct > 8.0 {
+		return false
+	}
+	if c.ThreeMinuteReturnPct < 1.25 {
+		return false
+	}
+	if c.FiveMinuteReturnPct < 0.5 {
+		return false
+	}
+	if c.ConsolidationRangePct > 9.0 {
+		return false
+	}
+	if c.PullbackDepthPct < 8.0 {
+		return false
+	}
+	if c.CloseOffHighPct < 0.75 {
+		return false
+	}
+	if c.PullbackDepthPct > 50 {
+		return false
+	}
+	return true
+}
+
+func isExceptionalSqueezePullback(c domain.Candidate) bool {
+	if !domain.IsLong(c.Direction) || c.SetupType != "hod_pullback" {
+		return false
+	}
+	if c.Float <= 0 || c.Float > 2_500_000 {
+		return false
+	}
+	if c.Score < 6.5 || c.StockSelectionScore < 3.0 {
+		return false
+	}
+	if c.RelativeVolume < 7.0 || c.PreMarketVolume < 200_000 || c.Volume < 200_000 {
+		return false
+	}
+	if c.IntradayReturnPct < 10.0 || c.FiveMinuteReturnPct < 12.0 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 1.0 || c.PriceVsVWAPPct > 6.5 {
+		return false
+	}
+	if c.DistanceFromHighPct > 4.0 {
+		return false
+	}
+	return true
+}
+
+func allowsFlatMACDLong(c domain.Candidate) bool {
+	return isExceptionalSqueezePullback(c) && c.MACDHistogram >= 0
+}
+
+func allowsLowVolumeRateLong(c domain.Candidate) bool {
+	return isExceptionalSqueezePullback(c)
+}
+
+func rejectWeakLongStockSelection(c domain.Candidate) (string, bool) {
+	if !domain.IsLong(c.Direction) {
+		return "", false
+	}
+	if isExceptionalSqueezeBreakout(c) || isExceptionalSqueezePullback(c) {
+		return "", false
+	}
+
+	minSelectionScore := 2.9
+	switch c.SetupType {
+	case "pullback":
+		minSelectionScore = 4.25
+	case "hod_breakout", "hod_pullback":
+		minSelectionScore = 3.25
+	case "orb_breakout", "orb_reclaim":
+		minSelectionScore = 3.0
+	}
+	if c.StockSelectionScore < minSelectionScore {
+		return "stock-selection-filter", true
+	}
+
+	if c.SetupType == "pullback" &&
+		c.StockSelectionScore < 4.0 &&
+		c.RelativeVolume < 8 &&
+		c.IntradayReturnPct < 8 {
+		return "stock-selection-filter", true
+	}
+
+	if c.SetupType == "pullback" &&
+		!isLeaderOpenDrivePullback(c) &&
+		c.PriceVsVWAPPct > 12.0 &&
+		(c.LeaderRank == 0 || c.LeaderRank > 3 || c.VolumeLeaderPct < 50) {
+		return "pullback-late-extension", true
+	}
+
+	if c.SetupType == "pullback" &&
+		!isLeaderOpenDrivePullback(c) &&
+		c.ConsolidationRangePct >= 8.0 &&
+		c.PullbackDepthPct < math.Max(4.0, c.ConsolidationRangePct*0.65) {
+		return "pullback-reclaim-filter", true
+	}
+
+	if c.SetupType == "pullback" &&
+		!isLeaderOpenDrivePullback(c) &&
+		c.PriceVsVWAPPct > 14.0 &&
+		c.ConsolidationRangePct > 14.0 &&
+		c.PullbackDepthPct < 10.0 {
+		return "pullback-late-extension", true
+	}
+	if (c.SetupType == "pullback" || c.SetupType == "hod_pullback") &&
+		c.GapPercent < 1.0 &&
+		c.ATRPct >= 6.0 &&
+		c.StockSelectionScore < 3.9 &&
+		c.LeaderRank > 1 &&
+		c.VolumeLeaderPct < 40.0 {
+		return "stock-selection-filter", true
+	}
+
+	if c.SetupType == "orb_reclaim" &&
+		c.LeaderRank > 3 &&
+		c.VolumeLeaderPct < 8 {
+		return "stock-selection-filter", true
+	}
+
+	if c.SetupType == "orb_reclaim" &&
+		c.ThreeMinuteReturnPct < 0.9 &&
+		c.BreakoutPct < 0.6 {
+		return "stock-selection-filter", true
+	}
+
+	if c.SetupType == "orb_breakout" &&
+		c.LeaderRank > 1 &&
+		c.VolumeLeaderPct < 5 &&
+		c.BreakoutPct < 0.6 {
+		return "stock-selection-filter", true
+	}
+
+	if c.SetupType == "orb_breakout" &&
+		c.PriceVsVWAPPct > 18.0 &&
+		c.BreakoutPct < 0.25 &&
+		c.ConsolidationRangePct > 12.0 {
+		return "stock-selection-filter", true
+	}
+	if c.SetupType == "orb_breakout" &&
+		c.PriceVsVWAPPct > 10.0 &&
+		c.ATRPct >= 7.0 &&
+		c.ThreeMinuteReturnPct >= 4.0 &&
+		c.FiveMinuteReturnPct >= 4.0 {
+		return "late-extension-chase", true
+	}
+	if c.SetupType == "orb_breakout" &&
+		c.PriceVsVWAPPct > 8.0 &&
+		c.DistanceFromHighPct > 1.0 &&
+		c.OneMinuteReturnPct >= 1.0 &&
+		c.ThreeMinuteReturnPct >= 4.0 &&
+		c.ATRPct >= 6.0 {
+		return "late-extension-chase", true
+	}
+
+	if c.LeaderRank > 0 &&
+		c.LeaderRank > 5 &&
+		c.StockSelectionScore < 4.25 &&
+		c.VolumeLeaderPct < 20 {
+		return "stock-selection-filter", true
+	}
+
+	return "", false
+}
+
+func rejectWeakShortMomentum(c domain.Candidate, cfg config.TradingConfig) (string, bool) {
+	if !domain.IsShort(c.Direction) {
+		return "", false
+	}
+
+	hardFlush := c.BreakoutPct <= -4.0 || c.OneMinuteReturnPct <= -5.0 || c.ThreeMinuteReturnPct <= -6.0
+
+	minSelectionScore := 2.5
+	switch c.SetupType {
+	case "parabolic-failed-reclaim-short":
+		minSelectionScore = 2.8
+	case "breakdown":
+		minSelectionScore = 2.6
+	}
+	if c.StockSelectionScore < minSelectionScore && !hardFlush {
+		return "short-selection-filter", true
+	}
+
+	minScore := math.Max(cfg.ShortMinEntryScore, 3.2)
+	if c.Score < minScore && !hardFlush {
+		return "short-selection-filter", true
+	}
+
+	if c.SetupType == "parabolic-failed-reclaim-short" {
+		if c.Price < 4.0 &&
+			c.RelativeVolume >= 100.0 &&
+			c.ATRPct >= 12.0 &&
+			c.DistanceFromHighPct < 40.0 &&
+			c.PriceVsVWAPPct > -12.0 &&
+			c.BreakoutPct > -4.0 {
+			return "cheap-short-squeeze-fade", true
+		}
+		if c.Price < 10.0 &&
+			c.GapPercent > 5.0 &&
+			c.RelativeVolume >= 80.0 &&
+			c.PriceVsOpenPct > 0.90 &&
+			c.DistanceFromHighPct < 30.0 &&
+			c.PriceVsVWAPPct > -9.0 &&
+			c.FiveMinuteReturnPct > -6.5 &&
+			!hardFlush {
+			return "cheap-gap-squeeze-short", true
+		}
+		if c.LeaderRank > 0 &&
+			c.LeaderRank <= 2 &&
+			c.RelativeVolume >= 5.0 &&
+			c.DistanceFromHighPct < 25.0 &&
+			c.PriceVsVWAPPct > -10.0 &&
+			c.ThreeMinuteReturnPct > -5.0 &&
+			!hardFlush {
+			return "short-strong-leader", true
+		}
+		if c.DistanceFromHighPct >= 40.0 &&
+			c.PriceVsVWAPPct <= -20.0 &&
+			c.BreakoutPct <= -8.0 &&
+			c.OneMinuteReturnPct <= -8.0 {
+			return "late-flush-chase", true
+		}
+	}
+
+	minVWAPBreakPct := math.Max(cfg.ShortVWAPBreakMinPct, 1.0)
+	if c.PriceVsVWAPPct > -minVWAPBreakPct && !hardFlush {
+		return "short-vwap-break", true
+	}
+	if c.OneMinuteReturnPct > -0.75 {
+		return "short-no-impulse", true
+	}
+	if c.ThreeMinuteReturnPct > -1.5 {
+		return "short-no-impulse", true
+	}
+	if c.FiveMinuteReturnPct > -0.75 {
+		return "short-no-confirmation", true
+	}
+	if c.DistanceFromHighPct < math.Max(cfg.ShortPeakExtensionMinPct*0.60, 6.0) && !hardFlush {
+		return "short-fade-too-early", true
+	}
+	if c.RelativeVolume < math.Max(cfg.MinRelativeVolume, 3.5) {
+		return "short-selection-filter", true
+	}
+	if c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 &&
+		c.DistanceFromHighPct < 15.0 &&
+		c.PriceVsVWAPPct > -4.0 {
+		return "short-strong-leader", true
+	}
+
+	return "", false
+}
+
+func rejectRepeatedDangerousShortFade(c domain.Candidate, state symbolTradeState) (string, bool) {
+	if !domain.IsShort(c.Direction) || c.SetupType != "parabolic-failed-reclaim-short" {
+		return "", false
+	}
+	if state.dangerousShortFadeExits <= 0 || state.lastDangerousShortFadeAt.IsZero() {
+		return "", false
+	}
+	since := c.Timestamp.Sub(state.lastDangerousShortFadeAt)
+	if since < 0 || since > 2*time.Hour {
+		return "", false
+	}
+
+	stillStrongLeader := (c.LeaderRank > 0 && c.LeaderRank <= 2) || c.VolumeLeaderPct >= 25.0
+	if !stillStrongLeader {
+		return "", false
+	}
+
+	// Allow a retry only if the new candidate is materially more extended than the
+	// failed one, which indicates the squeeze has truly rolled over rather than
+	// simply bouncing after the first failed fade.
+	moreExtended := c.PriceVsVWAPPct <= state.lastDangerousShortFadeVWAP-4.0 &&
+		c.DistanceFromHighPct >= state.lastDangerousShortFadeDist+10.0
+	if moreExtended {
+		return "", false
+	}
+
+	hardFlush := c.BreakoutPct <= -4.0 || c.OneMinuteReturnPct <= -5.0 || c.ThreeMinuteReturnPct <= -6.0
+	if hardFlush &&
+		c.PriceVsVWAPPct <= -12.0 &&
+		c.DistanceFromHighPct >= 35.0 &&
+		c.FiveMinuteReturnPct <= -2.0 {
+		return "", false
+	}
+
+	return "repeat-short-fade-failure", true
+}
+
+func isDangerousFailedShortFade(pos domain.Position, exitReason string) bool {
+	if !domain.IsShort(pos.Side) || pos.SetupType != "parabolic-failed-reclaim-short" {
+		return false
+	}
+
+	leaderishEntry := (pos.LeaderRank > 0 && pos.LeaderRank <= 2) || pos.VolumeLeaderPct >= 25.0
+	if !leaderishEntry {
+		return false
+	}
+
+	mfeR, maeR := computePositionExcursion(pos)
+	switch exitReason {
+	case "stop-loss":
+		return maeR >= 1.0 && mfeR < 1.0
+	case "failed-breakout":
+		return mfeR < 0.5
+	case "stagnation":
+		return mfeR < 0.15 &&
+			pos.PriceVsVWAPPct > -12.0 &&
+			pos.DistanceHighPct < 35.0
+	default:
+		return false
+	}
+}
+
+func computePositionExcursion(pos domain.Position) (mfeR, maeR float64) {
+	if pos.RiskPerShare <= 0 || pos.AvgPrice <= 0 {
+		return 0, 0
+	}
+	if domain.IsShort(pos.Side) {
+		if pos.LowestPrice > 0 {
+			mfeR = (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
+		}
+		if pos.HighestPrice > 0 {
+			maeR = (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+		}
+		return max(mfeR, 0), max(maeR, 0)
+	}
+	if pos.HighestPrice > 0 {
+		mfeR = (pos.HighestPrice - pos.AvgPrice) / pos.RiskPerShare
+	}
+	if pos.LowestPrice > 0 {
+		maeR = (pos.AvgPrice - pos.LowestPrice) / pos.RiskPerShare
+	}
+	return max(mfeR, 0), max(maeR, 0)
+}
+
+func rejectRepeatedLongImpulse(c domain.Candidate, state symbolTradeState) (string, bool) {
+	if !isHODContinuationSetup(c.SetupType) || state.lastLongEntryAt.IsZero() {
+		return "", false
+	}
+
+	requiredExtensionPct := 0.75
+	if c.ATRPct > 0 {
+		atrBased := c.ATRPct * 0.35
+		if atrBased < 0.4 {
+			atrBased = 0.4
+		}
+		if atrBased > 2.0 {
+			atrBased = 2.0
+		}
+		if atrBased > requiredExtensionPct {
+			requiredExtensionPct = atrBased
+		}
+	}
+
+	if state.lastLongImpulseHigh > 0 && c.HighOfDay > 0 {
+		extensionPct := ((c.HighOfDay - state.lastLongImpulseHigh) / state.lastLongImpulseHigh) * 100
+		if extensionPct >= requiredExtensionPct {
+			return "", false
+		}
+	}
+
+	if c.SetupType == "hod_pullback" {
+		if c.OneMinuteReturnPct >= 1.0 &&
+			c.ThreeMinuteReturnPct >= 2.0 &&
+			c.FiveMinuteReturnPct >= 1.2 &&
+			c.DistanceFromHighPct <= 1.0 &&
+			c.PriceVsVWAPPct >= 1.5 {
+			return "", false
+		}
+	}
+
+	return "await-new-impulse", true
+}
+
+func rejectLongAfterProfitableShort(c domain.Candidate, state symbolTradeState) (string, bool) {
+	if !domain.IsLong(c.Direction) || state.lastProfitableShortExitAt.IsZero() {
+		return "", false
+	}
+	since := c.Timestamp.Sub(state.lastProfitableShortExitAt)
+	if since < 0 || since > 8*time.Hour {
+		return "", false
+	}
+	if isElitePostShortFadeLong(c) {
+		return "", false
+	}
+
+	strictFailedSqueeze := state.lastProfitableShortSetup == "parabolic-failed-reclaim-short"
+	switch c.SetupType {
+	case "pullback", "hod_pullback":
+		if strictFailedSqueeze &&
+			(c.PriceVsVWAPPct > 0.5 ||
+				c.DistanceFromHighPct > 0.6 ||
+				c.ThreeMinuteReturnPct < 3.0 ||
+				c.FiveMinuteReturnPct < 2.0) {
+			return "post-short-fade-long-block", true
+		}
+		if c.PriceVsVWAPPct > 4.0 &&
+			(c.LeaderRank == 0 || c.LeaderRank > 1 || c.VolumeLeaderPct < 70.0) {
+			return "post-short-fade-long-block", true
+		}
+	case "orb_breakout", "hod_breakout":
+		if strictFailedSqueeze &&
+			(c.GapPercent <= 1.0 ||
+				c.PriceVsVWAPPct > 2.5 ||
+				c.DistanceFromHighPct > 0.25 ||
+				c.VolumeLeaderPct < 70.0) {
+			return "post-short-fade-long-block", true
+		}
+		if c.GapPercent <= 0 &&
+			c.PriceVsVWAPPct > 4.0 &&
+			(c.LeaderRank == 0 || c.LeaderRank > 2 || c.VolumeLeaderPct < 60.0) {
+			return "post-short-fade-long-block", true
+		}
+	default:
+		if strictFailedSqueeze &&
+			c.PriceVsVWAPPct > 6.0 &&
+			c.StockSelectionScore < 4.7 {
+			return "post-short-fade-long-block", true
+		}
+	}
+
+	return "", false
+}
+
+func isElitePostShortFadeLong(c domain.Candidate) bool {
+	if !domain.IsLong(c.Direction) {
+		return false
+	}
+	if c.StockSelectionScore < 4.8 || c.Score < 9.2 || c.RelativeVolume < 30.0 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 1 && c.VolumeLeaderPct < 80.0 {
+		return false
+	}
+
+	switch c.SetupType {
+	case "pullback":
+		return isLeaderOpenDrivePullback(c) &&
+			c.PriceVsVWAPPct <= 4.0 &&
+			c.ThreeMinuteReturnPct >= 3.0 &&
+			c.FiveMinuteReturnPct >= 2.0
+	case "hod_pullback":
+		return isStructuredHODPullback(c) &&
+			c.DistanceFromHighPct <= 1.0 &&
+			c.PriceVsVWAPPct <= 5.0
+	case "orb_breakout", "hod_breakout":
+		return c.GapPercent >= 5.0 &&
+			c.PriceVsVWAPPct <= 4.0 &&
+			c.BreakoutPct >= 1.0 &&
+			c.OneMinuteReturnPct >= 1.5 &&
+			c.ThreeMinuteReturnPct >= 4.0
+	default:
+		return false
+	}
+}
+
+func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (string, bool) {
+	if !domain.IsLong(c.Direction) {
+		return "", false
+	}
+	if isExceptionalSqueezeBreakout(c) || isExceptionalSqueezePullback(c) {
+		return "", false
+	}
+
+	switch c.SetupType {
+	case "hod_pullback":
+		return rejectWeakHODPullback(c, cfg)
+	case "hod_breakout":
+		// Continue into the breakout-specific quality checks below.
+	case "orb_breakout":
+		if c.Price < 6.0 &&
+			c.LeaderRank > 2 &&
+			c.VolumeLeaderPct < 35.0 &&
+			c.RelativeVolume < 12.0 {
+			return "low-leader-cheap-breakout", true
+		}
+		if c.GapPercent < 0 &&
+			c.PriceVsVWAPPct > 6.0 &&
+			c.RelativeVolume < 80.0 &&
+			(c.LeaderRank == 0 || c.LeaderRank > 2 || c.VolumeLeaderPct < 60.0) {
+			return "negative-gap-breakout-chase", true
+		}
+		return "", false
+	default:
+		return "", false
+	}
+
+	minScore := math.Max(cfg.MinEntryScore+0.8, 4.6)
+	if c.Score < minScore {
+		return "hod-breakout-quality", true
+	}
+	if c.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume, 5.0) {
+		return "hod-breakout-quality", true
+	}
+	leaderLimit := cfg.MaxVolumeLeaders
+	if leaderLimit <= 0 || leaderLimit > 4 {
+		leaderLimit = 4
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > leaderLimit && c.VolumeLeaderPct < 20 {
+		return "hod-breakout-quality", true
+	}
+	if c.LeaderRank > 1 &&
+		c.VolumeLeaderPct < 5 &&
+		c.StockSelectionScore < 3.7 {
+		return "hod-breakout-quality", true
+	}
+	if c.LeaderRank > 1 &&
+		c.VolumeLeaderPct < 15 &&
+		c.ThreeMinuteReturnPct < 3.0 {
+		return "hod-breakout-quality", true
+	}
+	if c.Price < 6.0 &&
+		c.LeaderRank > 2 &&
+		c.VolumeLeaderPct < 35.0 &&
+		c.RelativeVolume < 12.0 {
+		return "low-leader-cheap-breakout", true
+	}
+	if c.SetupType == "hod_breakout" &&
+		c.VolumeRate < 10000 &&
+		c.RelativeVolume < 20.0 {
+		return "hod-breakout-quality", true
+	}
+	if c.SetupType == "hod_breakout" &&
+		c.RelativeVolume < 6.5 &&
+		c.FiveMinuteReturnPct < 1.6 &&
+		c.ThreeMinuteReturnPct < 5.0 &&
+		c.PriceVsVWAPPct > 5.0 {
+		return "hod-breakout-quality", true
+	}
+	if c.DistanceFromHighPct > 0.6 {
+		return "hod-breakout-quality", true
+	}
+	if c.OneMinuteReturnPct < math.Max(cfg.MinOneMinuteReturnPct, 0.35) {
+		return "hod-breakout-quality", true
+	}
+	if c.ThreeMinuteReturnPct < math.Max(cfg.MinThreeMinuteReturnPct, 1.0) {
+		return "hod-breakout-quality", true
+	}
+	if c.FiveMinuteReturnPct < math.Max(cfg.MinThreeMinuteReturnPct, 1.1) {
+		return "hod-breakout-quality", true
+	}
+	if c.PriceVsVWAPPct < 0.8 {
+		return "hod-breakout-quality", true
+	}
+	if c.PullbackDepthPct > 0 &&
+		c.PullbackDepthPct < 2.5 &&
+		c.ConsolidationRangePct > 10.0 &&
+		c.PriceVsVWAPPct > 8.0 {
+		return "hod-breakout-quality", true
+	}
+	if c.OneMinuteReturnPct > math.Max(3.5, c.ThreeMinuteReturnPct*1.25) &&
+		c.ThreeMinuteReturnPct < 3.0 &&
+		c.PriceVsVWAPPct > 6.0 &&
+		c.ConsolidationRangePct < 7.0 {
+		return "hod-breakout-quality", true
+	}
+	if c.PriceVsVWAPPct > 9.0 &&
+		c.ATRPct >= 4.0 &&
+		c.FiveMinuteReturnPct >= 5.0 &&
+		(c.OneMinuteReturnPct >= 4.0 || c.ThreeMinuteReturnPct >= 8.0) {
+		return "late-extension-chase", true
+	}
+	if c.PriceVsVWAPPct > 11.0 &&
+		c.RelativeVolume < 12.0 &&
+		c.FiveMinuteReturnPct >= 8.0 &&
+		c.ThreeMinuteReturnPct >= 8.0 {
+		return "late-extension-chase", true
+	}
+	if c.PriceVsVWAPPct > 15.0 &&
+		c.FiveMinuteReturnPct >= 4.0 &&
+		c.OneMinuteReturnPct >= 2.5 {
+		return "late-extension-chase", true
+	}
+	if c.PriceVsVWAPPct > 18.0 &&
+		c.OneMinuteReturnPct >= 5.5 &&
+		c.ThreeMinuteReturnPct >= 10.0 {
+		return "late-extension-chase", true
+	}
+	if c.GapPercent < 0 &&
+		c.PriceVsVWAPPct > 6.0 &&
+		c.RelativeVolume < 80.0 &&
+		(c.LeaderRank == 0 || c.LeaderRank > 2 || c.VolumeLeaderPct < 60.0) {
+		return "negative-gap-breakout-chase", true
+	}
+	if c.PriceVsVWAPPct > 25.0 &&
+		c.ConsolidationRangePct > 10.0 &&
+		c.RelativeVolume < 40.0 {
+		return "late-extension-chase", true
+	}
+
+	lateChaseVWAPCap := 12.0
+	if c.ATRPct > 0 {
+		atrCap := c.ATRPct * 1.25
+		if atrCap > lateChaseVWAPCap && atrCap < 18.0 {
+			lateChaseVWAPCap = atrCap
+		}
+	}
+	if c.PriceVsVWAPPct > lateChaseVWAPCap && c.BreakoutPct < 0.35 {
+		if !isExplosiveLeaderReExpansionBreakout(c) {
+			return "late-extension-chase", true
+		}
+	}
+
+	freshBreakout := c.BreakoutPct >= 0.15
+	if !freshBreakout && c.DistanceFromHighPct <= 0.15 && c.OneMinuteReturnPct >= math.Max(cfg.MinOneMinuteReturnPct, 0.6) {
+		freshBreakout = true
+	}
+	if !freshBreakout {
+		if c.ThreeMinuteReturnPct < 2.0 ||
+			c.FiveMinuteReturnPct < 1.5 ||
+			c.PriceVsVWAPPct > 12.0 ||
+			(c.VolumeLeaderPct < 15 && (c.LeaderRank == 0 || c.LeaderRank > 3)) {
+			return "await-breakout-expansion", true
+		}
+	}
+
+	return "", false
+}
+
+func isExceptionalSqueezeBreakout(c domain.Candidate) bool {
+	if !domain.IsLong(c.Direction) {
+		return false
+	}
+	switch c.SetupType {
+	case "hod_breakout", "orb_breakout":
+	default:
+		return false
+	}
+	if c.Score < 7.5 || c.RelativeVolume < 10.0 {
+		return false
+	}
+	if c.IntradayReturnPct < 60.0 {
+		return false
+	}
+	if c.OneMinuteReturnPct < 5.0 || c.FiveMinuteReturnPct < 4.0 {
+		return false
+	}
+	if c.PriceVsVWAPPct < 18.0 || c.PriceVsVWAPPct > 40.0 {
+		return false
+	}
+	if c.DistanceFromHighPct > 0.5 {
+		return false
+	}
+	if c.ConsolidationRangePct < 10.0 {
+		return false
+	}
+	// Keep this carve-out for fresh ignition bars on thin squeeze names, not
+	// already-crowded multi-bar vertical runs that should still face the normal
+	// HOD breakout quality filters.
+	if c.ThreeMinuteReturnPct > 8.0 && c.FiveMinuteReturnPct > 12.0 {
+		return false
+	}
+	if c.RelativeVolume > 40.0 && c.VolumeRate > 15000 {
+		return false
+	}
+	return true
+}
+
+func rejectWeakHODPullback(c domain.Candidate, cfg config.TradingConfig) (string, bool) {
+	minScore := math.Max(cfg.MinEntryScore+1.0, 4.8)
+	if c.Score < minScore {
+		return "pullback-reclaim-filter", true
+	}
+	if c.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume, 5.0) {
+		return "pullback-reclaim-filter", true
+	}
+	if c.LeaderRank > 1 &&
+		c.VolumeLeaderPct < 20.0 &&
+		c.DistanceFromHighPct > 2.0 &&
+		c.PriceVsVWAPPct > 5.0 {
+		return "pullback-reclaim-filter", true
+	}
+	if c.DistanceFromHighPct > allowedHODPullbackDistance(c) {
+		return "pullback-reclaim-filter", true
+	}
+	if c.OneMinuteReturnPct < math.Max(cfg.MinOneMinuteReturnPct, 0.35) {
+		return "pullback-reclaim-filter", true
+	}
+	if c.ThreeMinuteReturnPct < math.Max(cfg.MinThreeMinuteReturnPct, 0.85) {
+		return "pullback-reclaim-filter", true
+	}
+	if c.FiveMinuteReturnPct < math.Max(cfg.MinThreeMinuteReturnPct, 1.2) {
+		return "pullback-reclaim-filter", true
+	}
+	if c.PriceVsVWAPPct < 1.0 {
+		return "pullback-reclaim-filter", true
+	}
+
+	structuredReclaim := isStructuredHODPullback(c)
+	explosiveReclaim := isExplosiveHODPullback(c)
+
+	lateChaseVWAPCap := structuredHODPullbackVWAPCap(c)
+	if explosiveReclaim {
+		lateChaseVWAPCap = math.Max(lateChaseVWAPCap, explosiveHODPullbackVWAPCap(c))
+	}
+	if c.PriceVsVWAPPct > lateChaseVWAPCap && !explosiveReclaim {
+		return "pullback-late-extension", true
+	}
+	if explosiveReclaim && c.PriceVsVWAPPct > lateChaseVWAPCap+4.0 {
+		return "pullback-late-extension", true
+	}
+	if c.DistanceFromHighPct > 3.25 &&
+		c.PriceVsVWAPPct > 3.5 &&
+		c.CloseOffHighPct < 0.75 &&
+		c.PullbackDepthPct < 15.0 {
+		return "pullback-reclaim-filter", true
+	}
+	if c.DistanceFromHighPct > 4.75 &&
+		c.PriceVsVWAPPct > 9.0 &&
+		c.OneMinuteReturnPct > 4.0 &&
+		c.PullbackDepthPct < 15.0 {
+		return "pullback-late-extension", true
+	}
+
+	if !structuredReclaim && !explosiveReclaim {
+		return "pullback-reclaim-filter", true
+	}
+
+	return "", false
+}
+
+func allowedHODPullbackDistance(c domain.Candidate) float64 {
+	cap := 2.2
+	if c.IntradayReturnPct >= 8 &&
+		c.RelativeVolume >= 8 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 &&
+		cap < 4.25 {
+		cap = 4.25
+	}
+	if c.IntradayReturnPct >= 15 &&
+		c.RelativeVolume >= 15 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 &&
+		cap < 6.5 {
+		cap = 6.5
+	}
+	return cap
+}
+
+func isStructuredHODPullback(c domain.Candidate) bool {
+	distCap := 1.8
+	rangeCap := 3.2
+	closeOffHighCap := 1.15
+	minPullbackDepth := 18.0
+	if c.IntradayReturnPct >= 8 &&
+		c.RelativeVolume >= 8 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 {
+		distCap = 4.25
+		rangeCap = 8.5
+		closeOffHighCap = 2.5
+	}
+	if c.IntradayReturnPct >= 15 &&
+		c.RelativeVolume >= 15 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 {
+		distCap = 6.5
+		minPullbackDepth = 8.0
+	}
+	if c.DistanceFromHighPct > distCap {
+		return false
+	}
+	if c.ConsolidationRangePct < 0.35 || c.ConsolidationRangePct > rangeCap {
+		return false
+	}
+	if c.PullbackDepthPct < minPullbackDepth || c.PullbackDepthPct > 82 {
+		return false
+	}
+	if c.CloseOffHighPct > closeOffHighCap {
+		return false
+	}
+	if c.OneMinuteReturnPct < 0.5 {
+		return false
+	}
+	if c.ThreeMinuteReturnPct < 1.2 {
+		return false
+	}
+	if c.FiveMinuteReturnPct < 1.5 {
+		return false
+	}
+	priceVsVWAPCap := structuredHODPullbackVWAPCap(c)
+	if c.PriceVsVWAPPct > priceVsVWAPCap {
+		return false
+	}
+	return true
+}
+
+func isExplosiveHODPullback(c domain.Candidate) bool {
+	if c.OneMinuteReturnPct < 3.0 ||
+		c.ThreeMinuteReturnPct < 6.0 ||
+		c.FiveMinuteReturnPct < 4.0 {
+		return false
+	}
+	if c.RelativeVolume < 8.0 {
+		return false
+	}
+	if c.DistanceFromHighPct > 1.2 {
+		return false
+	}
+	if c.CloseOffHighPct > 0.9 {
+		return false
+	}
+	priceVsVWAPCap := explosiveHODPullbackVWAPCap(c)
+	if c.PriceVsVWAPPct > priceVsVWAPCap {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 15 {
+		return false
+	}
+	if c.PullbackDepthPct > 85 {
+		return false
+	}
+	return true
+}
+
+func structuredHODPullbackVWAPCap(c domain.Candidate) float64 {
+	cap := 8.0
+	if c.ATRPct > 0 {
+		dynamicCap := c.ATRPct * 1.8
+		if dynamicCap > cap && dynamicCap < 18.0 {
+			cap = dynamicCap
+		}
+	}
+	if c.IntradayReturnPct >= 8 &&
+		c.RelativeVolume >= 8 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 {
+		intradayCap := c.IntradayReturnPct
+		if intradayCap > cap && intradayCap < 22.0 {
+			cap = intradayCap
+		}
+	}
+	if c.IntradayReturnPct >= 8 &&
+		c.RelativeVolume >= 8 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 &&
+		cap < 9.0 {
+		cap = 9.0
+	}
+	return cap
+}
+
+func explosiveHODPullbackVWAPCap(c domain.Candidate) float64 {
+	cap := 12.0
+	if c.ATRPct > 0 {
+		dynamicCap := c.ATRPct * 3.25
+		if dynamicCap > cap && dynamicCap < 28.0 {
+			cap = dynamicCap
+		}
+	}
+	if c.IntradayReturnPct >= 20 &&
+		c.RelativeVolume >= 10 &&
+		c.LeaderRank > 0 &&
+		c.LeaderRank <= 2 &&
+		cap < 20.0 {
+		cap = 20.0
+	}
+	return cap
+}
+
+func isExplosiveLeaderReExpansionBreakout(c domain.Candidate) bool {
+	if c.SetupType != "hod_breakout" {
+		return false
+	}
+	if c.RelativeVolume < 20 {
+		return false
+	}
+	if c.IntradayReturnPct < 20 {
+		return false
+	}
+	if c.OneMinuteReturnPct < 4.0 || c.ThreeMinuteReturnPct < 7.0 || c.FiveMinuteReturnPct < 7.0 {
+		return false
+	}
+	if c.LeaderRank > 0 && c.LeaderRank > 2 && c.VolumeLeaderPct < 30 {
+		return false
+	}
+	return true
+}
+
+func isHODContinuationSetup(setupType string) bool {
+	switch setupType {
+	case "hod_breakout", "hod_pullback":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Strategy) getSymbolState(symbol, dayKey string) symbolTradeState {

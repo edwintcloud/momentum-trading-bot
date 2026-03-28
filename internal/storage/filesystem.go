@@ -32,6 +32,10 @@ func (f *FilesystemStore) RecordCandidate(c domain.Candidate) {
 	f.appendJSON("candidates.jsonl", c)
 }
 
+func (f *FilesystemStore) RecordCandidateEvaluation(c domain.CandidateEvaluation) {
+	f.appendJSON("candidate_evaluations.jsonl", c)
+}
+
 func (f *FilesystemStore) RecordLog(entry domain.LogEntry) {
 	f.appendJSON("logs.jsonl", entry)
 }
@@ -80,6 +84,46 @@ func NewFilesystemRecorder(ctx context.Context, dir string) (domain.EventRecorde
 	}
 	return NewFilesystemStore(dir), nil
 }
+
+type CandidateEvaluationFileRecorder struct {
+	path string
+}
+
+func NewCandidateEvaluationFileRecorder(path string) (domain.EventRecorder, error) {
+	if path == "" {
+		return nil, fmt.Errorf("candidate evaluation recorder: path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("candidate evaluation recorder: %w", err)
+	}
+	return &CandidateEvaluationFileRecorder{path: path}, nil
+}
+
+func (r *CandidateEvaluationFileRecorder) RecordCandidate(domain.Candidate) {}
+
+func (r *CandidateEvaluationFileRecorder) RecordCandidateEvaluation(c domain.CandidateEvaluation) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+	file, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	data = append(data, '\n')
+	_, _ = file.Write(data)
+}
+
+func (r *CandidateEvaluationFileRecorder) RecordLog(domain.LogEntry) {}
+
+func (r *CandidateEvaluationFileRecorder) RecordExecution(domain.ExecutionReport) {}
+
+func (r *CandidateEvaluationFileRecorder) RecordClosedTrade(domain.ClosedTrade) {}
+
+func (r *CandidateEvaluationFileRecorder) RecordDashboard(domain.DashboardSnapshot) {}
+
+func (r *CandidateEvaluationFileRecorder) RecordIndicatorState(domain.IndicatorSnapshot) {}
 
 // LoadTodayClosedTrades reads closed_trades.jsonl and returns trades from today (ET).
 func (f *FilesystemStore) LoadTodayClosedTrades() ([]domain.ClosedTrade, error) {

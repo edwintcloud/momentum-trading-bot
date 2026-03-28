@@ -41,6 +41,8 @@ type symbolState struct {
 	seedPreMarketVol int64
 	dailyHigh        float64
 	dailyVolume      int64
+	currentFiveMin   time.Time
+	currentFiveVol   int64
 	minuteBars       []minuteBar
 }
 
@@ -113,17 +115,18 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 		state.seedPreMarketVol = 0
 		state.dailyHigh = 0
 		state.dailyVolume = 0
+		state.currentFiveMin = time.Time{}
+		state.currentFiveVol = 0
 		state.minuteBars = nil
 	}
 
 	state.lastClose = bar.Close
 	state.open = firstPositive(state.open, bar.Open)
-	state.minuteBars = upsertMinuteBar(state.minuteBars, minuteBar{
+	state.applyMinuteBar(minuteBar{
 		timestamp: bar.Timestamp,
 		high:      bar.High,
 		volume:    bar.Volume,
 	})
-	state.recomputeSessionMetrics()
 
 	gapPercent := 0.0
 	if state.previousClose > 0 && state.open > 0 {
@@ -133,7 +136,7 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 	relativeVolume := calculateRelativeVolume(state, bar.Timestamp)
 	recentVolumes := lastNMinuteVolumes(state.minuteBars, 5)
 	volumeSpike := isVolumeSpike(recentVolumes, bar.Volume, relativeVolume)
-	fiveMinuteVolume := currentFiveMinuteVolume(state.minuteBars, bar.Timestamp)
+	fiveMinuteVolume := state.fiveMinuteVolumeAt(bar.Timestamp)
 
 	return domain.Tick{
 		Symbol:           bar.Symbol,
@@ -169,11 +172,16 @@ func (n *Normalizer) UpdateDailyBar(symbol string, high float64, volume int64, o
 	}
 	if high > state.dailyHigh {
 		state.dailyHigh = high
+		if high > state.highOfDay {
+			state.highOfDay = high
+		}
 	}
 	if volume > state.dailyVolume {
 		state.dailyVolume = volume
+		if volume > state.totalVolume {
+			state.totalVolume = volume
+		}
 	}
-	state.recomputeSessionMetrics()
 }
 
 func isPremarket(timestamp time.Time) bool {
@@ -212,44 +220,66 @@ func round2(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
-func (s *symbolState) recomputeSessionMetrics() {
-	totalVolume := int64(0)
-	preMarketVol := int64(0)
+func (s *symbolState) applyMinuteBar(next minuteBar) {
+	n := len(s.minuteBars)
+	bucket := fiveMinuteBucketStart(next.timestamp)
+	if n > 0 && s.minuteBars[n-1].timestamp.Equal(next.timestamp) {
+		prev := s.minuteBars[n-1]
+		s.minuteBars[n-1] = next
+		deltaVolume := next.volume - prev.volume
+		s.totalVolume += deltaVolume
+		if isPremarket(next.timestamp) {
+			s.preMarketVol += deltaVolume
+		}
+		if s.currentFiveMin.Equal(bucket) {
+			s.currentFiveVol += deltaVolume
+		} else {
+			s.currentFiveMin = bucket
+			s.currentFiveVol = next.volume
+		}
+		if next.high >= s.highOfDay {
+			s.highOfDay = next.high
+		} else if prev.high == s.highOfDay && next.high < prev.high {
+			s.recomputeHighOfDay()
+		}
+	} else {
+		s.minuteBars = append(s.minuteBars, next)
+		s.totalVolume += next.volume
+		if isPremarket(next.timestamp) {
+			s.preMarketVol += next.volume
+		}
+		if next.high > s.highOfDay {
+			s.highOfDay = next.high
+		}
+		if s.currentFiveMin.Equal(bucket) {
+			s.currentFiveVol += next.volume
+		} else {
+			s.currentFiveMin = bucket
+			s.currentFiveVol = next.volume
+		}
+	}
+	if s.dailyVolume > s.totalVolume {
+		s.totalVolume = s.dailyVolume
+	}
+	if s.dailyHigh > s.highOfDay {
+		s.highOfDay = s.dailyHigh
+	}
+}
+
+func (s *symbolState) recomputeHighOfDay() {
 	highOfDay := 0.0
 	for _, bar := range s.minuteBars {
-		totalVolume += bar.volume
-		if isPremarket(bar.timestamp) {
-			preMarketVol += bar.volume
-		}
 		if bar.high > highOfDay {
 			highOfDay = bar.high
 		}
 	}
-	if s.seedDay == s.day {
-		totalVolume += s.seedTotalVolume
-		preMarketVol += s.seedPreMarketVol
-		if s.seedHighOfDay > highOfDay {
-			highOfDay = s.seedHighOfDay
-		}
-	}
-	if s.dailyVolume > totalVolume {
-		totalVolume = s.dailyVolume
+	if s.seedDay == s.day && s.seedHighOfDay > highOfDay {
+		highOfDay = s.seedHighOfDay
 	}
 	if s.dailyHigh > highOfDay {
 		highOfDay = s.dailyHigh
 	}
-	s.totalVolume = totalVolume
-	s.preMarketVol = preMarketVol
 	s.highOfDay = highOfDay
-}
-
-func upsertMinuteBar(bars []minuteBar, next minuteBar) []minuteBar {
-	n := len(bars)
-	if n > 0 && bars[n-1].timestamp.Equal(next.timestamp) {
-		bars[n-1] = next
-		return bars
-	}
-	return append(bars, next)
 }
 
 func lastNMinuteVolumes(bars []minuteBar, n int) []int64 {
@@ -266,19 +296,14 @@ func lastNMinuteVolumes(bars []minuteBar, n int) []int64 {
 	return out
 }
 
-func currentFiveMinuteVolume(bars []minuteBar, ts time.Time) int64 {
-	if len(bars) == 0 {
+func (s *symbolState) fiveMinuteVolumeAt(ts time.Time) int64 {
+	if s.currentFiveMin.IsZero() {
 		return 0
 	}
-	bucket := fiveMinuteBucketStart(ts)
-	total := int64(0)
-	for i := len(bars) - 1; i >= 0; i-- {
-		if !fiveMinuteBucketStart(bars[i].timestamp).Equal(bucket) {
-			break
-		}
-		total += bars[i].volume
+	if s.currentFiveMin.Equal(fiveMinuteBucketStart(ts)) {
+		return s.currentFiveVol
 	}
-	return total
+	return 0
 }
 
 func fiveMinuteBucketStart(ts time.Time) time.Time {

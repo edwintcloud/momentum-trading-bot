@@ -20,6 +20,11 @@ type DriftDetector struct {
 	// Rolling Sharpe tracking for ML-driven trades
 	recentReturns []float64
 	maxReturns    int
+
+	// Recent model probabilities for PSI checks against the training
+	// calibration-bin distribution.
+	recentProbabilities []float64
+	maxProbabilities    int
 }
 
 // NewDriftDetector creates a detector with the given training distribution
@@ -34,7 +39,43 @@ func NewDriftDetector(trainDist []float64, ewmaLambda float64) *DriftDetector {
 		trainDistribution: dist,
 		ewmaLambda:        ewmaLambda,
 		maxReturns:        500,
+		maxProbabilities:  500,
 	}
+}
+
+// RecordProbability records a model probability for later PSI checks.
+func (d *DriftDetector) RecordProbability(prob float64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if prob < 0 {
+		prob = 0
+	}
+	if prob > 1 {
+		prob = 1
+	}
+	d.recentProbabilities = append(d.recentProbabilities, prob)
+	if len(d.recentProbabilities) > d.maxProbabilities {
+		d.recentProbabilities = d.recentProbabilities[1:]
+	}
+}
+
+// ProbabilitySampleCount returns the number of recent model probabilities tracked.
+func (d *DriftDetector) ProbabilitySampleCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.recentProbabilities)
+}
+
+// LiveProbabilityDistribution returns the current recent probability distribution
+// binned into deciles over the [0,1] range.
+func (d *DriftDetector) LiveProbabilityDistribution() []float64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	values := make([]float64, len(d.recentProbabilities))
+	copy(values, d.recentProbabilities)
+	return BinIntoDeciles(values, 0, 1)
 }
 
 // ComputePSI calculates the Population Stability Index between two distributions.

@@ -15,9 +15,9 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 )
 
-// ShortabilityChecker reports whether a symbol may be shorted.
-type ShortabilityChecker interface {
-	IsShortable(symbol string) bool
+// BorrowChecker reports whether a symbol may be opened on the short side.
+type BorrowChecker interface {
+	IsEasyToBorrow(symbol string) bool
 }
 
 // Engine enforces position sizing and loss controls before execution.
@@ -26,7 +26,7 @@ type Engine struct {
 	config             config.TradingConfig
 	portfolio          *portfolio.Manager
 	runtime            *runtime.State
-	shortable          ShortabilityChecker
+	borrowable         BorrowChecker
 	dayKey             string
 	approved           int
 	lastMinuteKey      string
@@ -38,16 +38,16 @@ type Engine struct {
 }
 
 // NewEngine creates a new risk engine.
-func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State, shortable ...ShortabilityChecker) *Engine {
-	var checker ShortabilityChecker
-	if len(shortable) > 0 {
-		checker = shortable[0]
+func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State, borrowable ...BorrowChecker) *Engine {
+	var checker BorrowChecker
+	if len(borrowable) > 0 {
+		checker = borrowable[0]
 	}
 	e := &Engine{
 		config:             cfg,
 		portfolio:          portfolioManager,
 		runtime:            runtimeState,
-		shortable:          checker,
+		borrowable:         checker,
 		dayKey:             "",
 		CorrelationTracker: NewCorrelationTracker(cfg.CorrelationWindowSize),
 	}
@@ -189,9 +189,9 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: short exposure limit", signal.Symbol))
 			return domain.OrderRequest{}, false, "short-exposure-limit"
 		}
-		if e.shortable != nil && !e.shortable.IsShortable(signal.Symbol) {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: not shortable", signal.Symbol))
-			return domain.OrderRequest{}, false, "not-shortable"
+		if e.borrowable != nil && !e.borrowable.IsEasyToBorrow(signal.Symbol) {
+			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s short: not easy to borrow", signal.Symbol))
+			return domain.OrderRequest{}, false, "not-easy-to-borrow"
 		}
 	}
 
@@ -424,6 +424,11 @@ func (e *Engine) toOrderRequest(signal domain.TradeSignal) domain.OrderRequest {
 		Playbook:         signal.Playbook,
 		Sector:           signal.Sector,
 		AvgDailyVolume:   signal.AvgDailyVolume,
+		LeaderRank:       signal.LeaderRank,
+		VolumeLeaderPct:  signal.VolumeLeaderPct,
+		StockSelectScore: signal.StockSelectScore,
+		PriceVsVWAPPct:   signal.PriceVsVWAPPct,
+		DistanceHighPct:  signal.DistanceHighPct,
 		Timestamp:        signal.Timestamp,
 	}
 }

@@ -1,6 +1,27 @@
 import { DataTable } from '../components/DataTable';
 import { money, compactVolume, sideBadge } from '../lib/format';
 
+const timeFormat = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: true,
+});
+
+const sortKeys = {
+  Symbol:    (c) => c.symbol,
+  Direction: (c) => c.direction,
+  Score:     (c) => c.score,
+  Price:     (c) => c.price,
+  'Gap %':   (c) => c.gapPercent,
+  'Rel Vol': (c) => c.relativeVolume,
+  'PM Vol':  (c) => c.premarketVolume,
+  'VWAP %':  (c) => c.priceVsVwapPct,
+  Regime:    (c) => c.marketRegime,
+  Playbook:  (c) => c.playbook,
+  Time:      (c) => c.timestamp ? new Date(c.timestamp).getTime() : 0,
+};
+
 export function Scanner({ candidates }) {
   return (
     <div className="space-y-6">
@@ -11,7 +32,9 @@ export function Scanner({ candidates }) {
 
       <div className="panel">
         <DataTable
-          columns={['Symbol', 'Direction', 'Score', 'Price', 'Gap %', 'Rel Vol', 'PM Vol', 'VWAP %', 'Regime', 'Playbook', 'Catalyst']}
+          columns={['Symbol', 'Direction', 'Score', 'Price', 'Gap %', 'Rel Vol', 'PM Vol', 'VWAP %', 'Regime', 'Playbook', 'Time']}
+          sortKeys={sortKeys}
+          defaultSort={{ col: 'Time', asc: false }}
           rows={candidates}
           emptyMessage="No symbols currently satisfy the scanner filters."
           renderRow={(c) => (
@@ -36,15 +59,7 @@ export function Scanner({ candidates }) {
               <td>{c.priceVsVwapPct?.toFixed(2)}%</td>
               <td><span className="badge-info">{c.marketRegime || 'n/a'}</span></td>
               <td className="text-gray-300">{c.playbook || 'n/a'}</td>
-              <td>
-                {c.catalystUrl ? (
-                  <a href={c.catalystUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
-                    {c.catalyst || 'News'}
-                  </a>
-                ) : (
-                  <span className="text-muted">{c.catalyst || '—'}</span>
-                )}
-              </td>
+              <td className="text-muted font-mono text-xs">{c.timestamp ? timeFormat.format(new Date(c.timestamp)) : '—'}</td>
             </tr>
           )}
           renderCard={(c) => (

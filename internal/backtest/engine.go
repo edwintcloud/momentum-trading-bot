@@ -3,7 +3,9 @@ package backtest
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,12 +17,14 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/market"
+	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 	"github.com/edwintcloud/momentum-trading-bot/internal/pipeline"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/regime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 	"github.com/edwintcloud/momentum-trading-bot/internal/strategy"
 )
 
@@ -36,6 +40,7 @@ type RunConfig struct {
 	DebugSymbols   []string           // symbols to trace per-bar through scanner/strategy
 	FloatStore     *alpaca.FloatStore // optional float data for tick enrichment
 	BlockedSymbols map[string]string  // optional hard blocklist for ETF/derivative instruments
+	EasyToBorrow   map[string]bool    // optional symbol set allowed for opening short positions
 }
 
 // InputBar is an external bar shape accepted by the backtest engine.
@@ -69,11 +74,13 @@ type Result struct {
 	AvgMAER             float64
 	TrailingStopExitPct float64
 	AvgTimeToStopMin    float64
+	EntriesExecuted     int
 	Trades              int
 	Wins                int
 	Losses              int
 	WinRate             float64
 	OpenPositionsAtEnd  int
+	OpenSymbols         []string
 	Diagnostics         Diagnostics
 	ClosedTrades        []domain.ClosedTrade
 
@@ -100,27 +107,38 @@ type TradeBreakdown struct {
 
 // Diagnostics summarizes how bars moved through the backtest decision funnel.
 type Diagnostics struct {
-	BarsLoaded         int
-	BarsInWindow       int
-	EntryCandidates    int
-	EntrySignals       int
-	EntryRiskApproved  int
-	FillExpiries       int
-	ExitChecks         int
-	ExitSignals        int
-	ExitRiskApproved   int
-	ScannerRejects     map[string]int
-	EntryRejects       map[string]int
-	EntryRiskRejects   map[string]int
-	ExitRejects        map[string]int
-	ExitRiskRejects    map[string]int
-	ByRegime           map[string]TradeBreakdown
-	BySetup            map[string]TradeBreakdown
-	BySide             map[string]TradeBreakdown
-	EntrySignalSamples []EntrySample
-	EntryRejectSamples map[string]EntrySample
-	RiskRejectSamples  []RiskRejectSample
-	FillExpirySamples  []FillExpirySample
+	BarsLoaded          int
+	BarsInWindow        int
+	EntryCandidates     int
+	EntrySignals        int
+	EntryRiskApproved   int
+	FillExpiries        int
+	ExitChecks          int
+	ExitSignals         int
+	ExitRiskApproved    int
+	ScannerRejects      map[string]int
+	EntryRejects        map[string]int
+	EntryRiskRejects    map[string]int
+	ExitRejects         map[string]int
+	ExitRiskRejects     map[string]int
+	ByRegime            map[string]TradeBreakdown
+	BySetup             map[string]TradeBreakdown
+	BySide              map[string]TradeBreakdown
+	EntrySignalSamples  []EntrySample
+	EntryRejectSamples  map[string]EntrySample
+	RiskRejectSamples   []RiskRejectSample
+	FillExpirySamples   []FillExpirySample
+	DebugTrace          []DebugTraceEvent
+	MLShadowScored      int
+	MLShadowVetos       int
+	MLShadowUpsizes     int
+	MLShadowSamples     []MLShadowSample
+	MLAdvisoryEvaluated int
+	MLAdvisoryApplied   int
+	MLAdvisoryVetos     int
+	MLAdvisoryUpsizes   int
+	MLAdvisoryDownsizes int
+	MLAdvisorySamples   []MLAdvisorySample
 }
 
 // EntrySample captures a representative entry decision for diagnostics.
@@ -140,6 +158,7 @@ type EntrySample struct {
 	VolumeRate             float64
 	VolumeLeaderPct        float64
 	LeaderRank             int
+	StockSelectionScore    float64
 	ATRPct                 float64
 	PriceVsVWAPPct         float64
 	BreakoutPct            float64
@@ -172,6 +191,59 @@ type FillExpirySample struct {
 	SetupType  string
 }
 
+type DebugTraceEvent struct {
+	Stage                 string    `json:"stage"`
+	Symbol                string    `json:"symbol"`
+	Timestamp             time.Time `json:"timestamp"`
+	Passed                bool      `json:"passed"`
+	Reason                string    `json:"reason"`
+	SetupType             string    `json:"setupType,omitempty"`
+	Price                 float64   `json:"price,omitempty"`
+	Open                  float64   `json:"open,omitempty"`
+	HighOfDay             float64   `json:"highOfDay,omitempty"`
+	GapPercent            float64   `json:"gapPercent,omitempty"`
+	RelativeVolume        float64   `json:"relativeVolume,omitempty"`
+	FiveMinuteVolume      int64     `json:"fiveMinuteVolume,omitempty"`
+	Score                 float64   `json:"score,omitempty"`
+	DistanceFromHighPct   float64   `json:"distanceFromHighPct,omitempty"`
+	OneMinuteReturnPct    float64   `json:"oneMinuteReturnPct,omitempty"`
+	ThreeMinuteReturnPct  float64   `json:"threeMinuteReturnPct,omitempty"`
+	FiveMinuteReturnPct   float64   `json:"fiveMinuteReturnPct,omitempty"`
+	PriceVsVWAPPct        float64   `json:"priceVsVWAPPct,omitempty"`
+	BreakoutPct           float64   `json:"breakoutPct,omitempty"`
+	PullbackDepthPct      float64   `json:"pullbackDepthPct,omitempty"`
+	ConsolidationRangePct float64   `json:"consolidationRangePct,omitempty"`
+	CloseOffHighPct       float64   `json:"closeOffHighPct,omitempty"`
+}
+
+type MLShadowSample struct {
+	Symbol          string    `json:"symbol"`
+	Timestamp       time.Time `json:"timestamp"`
+	SetupType       string    `json:"setupType"`
+	StrategyReason  string    `json:"strategyReason"`
+	Probability     float64   `json:"probability"`
+	Threshold       float64   `json:"threshold"`
+	Decision        string    `json:"decision"`
+	DayRankSoFar    int       `json:"dayRankSoFar"`
+	BarRankSoFar    int       `json:"barRankSoFar"`
+	StrategyEmitted bool      `json:"strategyEmitted"`
+	RiskApproved    bool      `json:"riskApproved"`
+}
+
+type MLAdvisorySample struct {
+	Symbol           string    `json:"symbol"`
+	Timestamp        time.Time `json:"timestamp"`
+	SetupType        string    `json:"setupType"`
+	StrategyReason   string    `json:"strategyReason"`
+	Probability      float64   `json:"probability"`
+	Threshold        float64   `json:"threshold"`
+	Decision         string    `json:"decision"`
+	OriginalQuantity int64     `json:"originalQuantity"`
+	AdjustedQuantity int64     `json:"adjustedQuantity"`
+	SizeMultiplier   float64   `json:"sizeMultiplier"`
+	RiskApproved     bool      `json:"riskApproved"`
+}
+
 type bar = InputBar
 
 // Run executes a historical backtest by wiring components through the shared Pipeline.
@@ -196,6 +268,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		BySide:             make(map[string]TradeBreakdown),
 		EntryRejectSamples: make(map[string]EntrySample),
 	}
+	debugSymbols := make(map[string]bool, len(runCfg.DebugSymbols))
+	for _, symbol := range runCfg.DebugSymbols {
+		debugSymbols[strings.ToUpper(strings.TrimSpace(symbol))] = true
+	}
 
 	book := portfolio.NewManager(cfg)
 	book.SetNowFunc(func() time.Time {
@@ -208,26 +284,57 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	scan := scanner.NewScanner(cfg, runtimeState)
 	scan.SetBlockedSymbols(runCfg.BlockedSymbols)
 	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
-	riskEngine := risk.NewEngine(cfg, book, runtimeState)
+	broker := execution.NewPaperBroker(runCfg.EasyToBorrow)
+	riskEngine := risk.NewEngine(cfg, book, runtimeState, broker)
 	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
-	broker := execution.NewPaperBroker()
 	normalizer := market.NewNormalizer()
+	scorer, err := ml.ResolveScorer(cfg.MLScoringEnabled, cfg.MLModelPath)
+	if err != nil {
+		return Result{}, err
+	}
+
+	// Build signal aggregator from alpha config.
+	var sigAgg *signals.Aggregator
+	if cfg.OFIEnabled || cfg.VPINEnabled {
+		var sources []signals.SignalSource
+		if cfg.OFIEnabled {
+			sources = append(sources, signals.NewOFI(signals.OFIConfig{
+				Enabled:           true,
+				WindowBars:        cfg.OFIWindowBars,
+				ThresholdSigma:    cfg.OFIThresholdSigma,
+				PersistenceMinBar: cfg.OFIPersistenceMin,
+			}))
+		}
+		if cfg.VPINEnabled {
+			sources = append(sources, signals.NewVPIN(signals.VPINConfig{
+				Enabled:         true,
+				BucketDivisor:   cfg.VPINBucketDivisor,
+				LookbackBuckets: cfg.VPINLookbackBuckets,
+				HighThreshold:   cfg.VPINHighThreshold,
+				LowThreshold:    cfg.VPINLowThreshold,
+			}))
+		}
+		sigAgg = signals.NewAggregator(sources...)
+	}
 
 	peakEquity := cfg.StartingCapital
 	maxDrawdown := 0.0
 
 	pipe := pipeline.New(pipeline.Config{
-		TradingCfg:    cfg,
-		Runtime:       runtimeState,
-		Portfolio:     book,
-		Normalizer:    normalizer,
-		Scanner:       scan,
-		Strategy:      strat,
-		RiskEngine:    riskEngine,
-		VolEstimator:  volEstimator,
-		Broker:        broker,
-		Recorder:      runCfg.Recorder,
-		RegimeTracker: regimeTracker,
+		TradingCfg:                cfg,
+		Runtime:                   runtimeState,
+		Portfolio:                 book,
+		Normalizer:                normalizer,
+		Scanner:                   scan,
+		Strategy:                  strat,
+		RiskEngine:                riskEngine,
+		VolEstimator:              volEstimator,
+		Broker:                    broker,
+		Recorder:                  runCfg.Recorder,
+		Scorer:                    scorer,
+		RegimeTracker:             regimeTracker,
+		SignalAggregator:          sigAgg,
+		CandidateEvaluationSource: "backtest",
 		FloatLookup: func(sym string) int64 {
 			if runCfg.FloatStore != nil {
 				return runCfg.FloatStore.Get(sym)
@@ -247,6 +354,63 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			broker.UpdateBar(domBar)
 			simTimeNano.Store(domBar.Timestamp.UnixNano())
 		},
+		OnCandidateEvaluation: func(eval domain.CandidateEvaluation) {
+			mu.Lock()
+			defer mu.Unlock()
+			if eval.MLScored {
+				diagnostics.MLShadowScored++
+				if eval.MLShadowVeto {
+					diagnostics.MLShadowVetos++
+				}
+				if eval.MLShadowUpsize {
+					diagnostics.MLShadowUpsizes++
+				}
+				if len(diagnostics.MLShadowSamples) < 8 {
+					diagnostics.MLShadowSamples = append(diagnostics.MLShadowSamples, MLShadowSample{
+						Symbol:          eval.Candidate.Symbol,
+						Timestamp:       eval.RecordedAt,
+						SetupType:       eval.Candidate.SetupType,
+						StrategyReason:  eval.StrategyReason,
+						Probability:     eval.MLProbability,
+						Threshold:       eval.MLThreshold,
+						Decision:        eval.MLShadowDecision,
+						DayRankSoFar:    eval.MLDayRankSoFar,
+						BarRankSoFar:    eval.MLBarRankSoFar,
+						StrategyEmitted: eval.StrategyEmitted,
+						RiskApproved:    eval.RiskApproved,
+					})
+				}
+			}
+			if eval.MLAdvisoryEnabled && eval.StrategyEmitted {
+				diagnostics.MLAdvisoryEvaluated++
+				if eval.MLAdvisoryApplied {
+					diagnostics.MLAdvisoryApplied++
+					switch eval.MLAdvisoryDecision {
+					case "veto":
+						diagnostics.MLAdvisoryVetos++
+					case "upsize":
+						diagnostics.MLAdvisoryUpsizes++
+					case "downsize":
+						diagnostics.MLAdvisoryDownsizes++
+					}
+					if len(diagnostics.MLAdvisorySamples) < 8 {
+						diagnostics.MLAdvisorySamples = append(diagnostics.MLAdvisorySamples, MLAdvisorySample{
+							Symbol:           eval.Candidate.Symbol,
+							Timestamp:        eval.RecordedAt,
+							SetupType:        eval.Candidate.SetupType,
+							StrategyReason:   eval.StrategyReason,
+							Probability:      eval.MLProbability,
+							Threshold:        eval.MLThreshold,
+							Decision:         eval.MLAdvisoryDecision,
+							OriginalQuantity: eval.MLAdvisoryOriginalQuantity,
+							AdjustedQuantity: eval.MLAdvisoryAdjustedQuantity,
+							SizeMultiplier:   eval.MLAdvisorySizeMultiplier,
+							RiskApproved:     eval.RiskApproved,
+						})
+					}
+				}
+			}
+		},
 		TickFilter: func(t domain.Tick) bool {
 			return withinWindow(t.Timestamp, runCfg.Start, runCfg.End)
 		},
@@ -258,6 +422,35 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			} else {
 				incrementReason(diagnostics.ScannerRejects, reason)
 			}
+			if debugSymbols[strings.ToUpper(tick.Symbol)] {
+				event := DebugTraceEvent{
+					Stage:            "scan",
+					Symbol:           tick.Symbol,
+					Timestamp:        tick.Timestamp,
+					Passed:           passed,
+					Reason:           reason,
+					Price:            tick.Price,
+					Open:             tick.Open,
+					HighOfDay:        tick.HighOfDay,
+					GapPercent:       tick.GapPercent,
+					RelativeVolume:   tick.RelativeVolume,
+					FiveMinuteVolume: tick.FiveMinuteVolume,
+				}
+				if passed {
+					event.SetupType = candidate.SetupType
+					event.Score = candidate.Score
+					event.DistanceFromHighPct = candidate.DistanceFromHighPct
+					event.OneMinuteReturnPct = candidate.OneMinuteReturnPct
+					event.ThreeMinuteReturnPct = candidate.ThreeMinuteReturnPct
+					event.FiveMinuteReturnPct = candidate.FiveMinuteReturnPct
+					event.PriceVsVWAPPct = candidate.PriceVsVWAPPct
+					event.BreakoutPct = candidate.BreakoutPct
+					event.PullbackDepthPct = candidate.PullbackDepthPct
+					event.ConsolidationRangePct = candidate.ConsolidationRangePct
+					event.CloseOffHighPct = candidate.CloseOffHighPct
+				}
+				diagnostics.DebugTrace = append(diagnostics.DebugTrace, event)
+			}
 		},
 		OnEntryDecision: func(candidate domain.Candidate, decision strategy.CandidateDecision) {
 			mu.Lock()
@@ -268,6 +461,32 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			} else {
 				incrementReason(diagnostics.EntryRejects, decision.Reason)
 				rememberEntryRejectSample(&diagnostics, candidate, decision)
+			}
+			if debugSymbols[strings.ToUpper(candidate.Symbol)] {
+				diagnostics.DebugTrace = append(diagnostics.DebugTrace, DebugTraceEvent{
+					Stage:                 "entry",
+					Symbol:                candidate.Symbol,
+					Timestamp:             candidate.Timestamp,
+					Passed:                decision.Emit,
+					Reason:                decision.Reason,
+					SetupType:             candidate.SetupType,
+					Price:                 candidate.Price,
+					Open:                  candidate.Open,
+					HighOfDay:             candidate.HighOfDay,
+					GapPercent:            candidate.GapPercent,
+					RelativeVolume:        candidate.RelativeVolume,
+					FiveMinuteVolume:      0,
+					Score:                 candidate.Score,
+					DistanceFromHighPct:   candidate.DistanceFromHighPct,
+					OneMinuteReturnPct:    candidate.OneMinuteReturnPct,
+					ThreeMinuteReturnPct:  candidate.ThreeMinuteReturnPct,
+					FiveMinuteReturnPct:   candidate.FiveMinuteReturnPct,
+					PriceVsVWAPPct:        candidate.PriceVsVWAPPct,
+					BreakoutPct:           candidate.BreakoutPct,
+					PullbackDepthPct:      candidate.PullbackDepthPct,
+					ConsolidationRangePct: candidate.ConsolidationRangePct,
+					CloseOffHighPct:       candidate.CloseOffHighPct,
+				})
 			}
 		},
 		OnExitCheck: func(tick domain.Tick, signal domain.TradeSignal, shouldExit bool, reason string) {
@@ -315,6 +534,17 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 					incrementReason(diagnostics.ExitRiskRejects, reason)
 				}
 			}
+			if debugSymbols[strings.ToUpper(signal.Symbol)] {
+				diagnostics.DebugTrace = append(diagnostics.DebugTrace, DebugTraceEvent{
+					Stage:     "risk",
+					Symbol:    signal.Symbol,
+					Timestamp: signal.Timestamp,
+					Passed:    approved,
+					Reason:    reason,
+					SetupType: signal.SetupType,
+					Price:     signal.Price,
+				})
+			}
 		},
 		OnTickFanOut: func(tick domain.Tick) {
 			equity := cfg.StartingCapital + book.RealizedPnL() + book.UnrealizedPnL()
@@ -336,6 +566,8 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	// Feed bars from iterator into the pipeline.
 	barsLoaded := 0
 	barsInWindow := 0
+	progressEvery := 250000
+	lastProgressAt := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -354,6 +586,16 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		if withinWindow(currentBar.Timestamp, runCfg.Start, runCfg.End) {
 			barsInWindow++
 		}
+		if barsLoaded%progressEvery == 0 && time.Since(lastProgressAt) >= 15*time.Second {
+			log.Printf(
+				"Backtest progress bars_loaded=%d bars_in_window=%d last_bar=%s %s",
+				barsLoaded,
+				barsInWindow,
+				currentBar.Symbol,
+				currentBar.Timestamp.Format(time.RFC3339),
+			)
+			lastProgressAt = time.Now()
+		}
 		pipe.BarCh() <- domain.Bar{
 			Symbol:      currentBar.Symbol,
 			Timestamp:   currentBar.Timestamp,
@@ -367,8 +609,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 			CatalystURL: currentBar.CatalystURL,
 		}
 	}
+	log.Printf("Backtest bar feed complete bars_loaded=%d bars_in_window=%d waiting_for_pipeline=true", barsLoaded, barsInWindow)
 	pipe.Close()
 	pipe.Wait()
+	log.Printf("Backtest pipeline drain complete bars_loaded=%d bars_in_window=%d", barsLoaded, barsInWindow)
 
 	diagnostics.BarsLoaded = barsLoaded
 	diagnostics.BarsInWindow = barsInWindow
@@ -379,6 +623,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 
 	closedTrades := book.GetTradeHistory()
+	entriesExecuted := book.StatusSnapshot().EntriesToday
+	openPositions := book.GetPositions()
+	openSymbols := make([]string, 0, len(openPositions))
+	for _, pos := range openPositions {
+		openSymbols = append(openSymbols, pos.Symbol)
+	}
+	sort.Strings(openSymbols)
 	for _, trade := range closedTrades {
 		diagnostics.ByRegime[normalizeKey(trade.MarketRegime)] = updateBreakdown(diagnostics.ByRegime[normalizeKey(trade.MarketRegime)], trade)
 		diagnostics.BySetup[normalizeKey(trade.SetupType)] = updateBreakdown(diagnostics.BySetup[normalizeKey(trade.SetupType)], trade)
@@ -472,11 +723,13 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		AvgMAER:             round2(avgMAER),
 		TrailingStopExitPct: round2(trailingStopExitPct),
 		AvgTimeToStopMin:    round2(avgTimeToStopMin),
+		EntriesExecuted:     entriesExecuted,
 		Trades:              len(closedTrades),
 		Wins:                wins,
 		Losses:              losses,
 		WinRate:             round2(winRate),
 		OpenPositionsAtEnd:  openPositionsAtEnd,
+		OpenSymbols:         openSymbols,
 		Diagnostics:         diagnostics,
 		ClosedTrades:        closedTrades,
 	}
@@ -670,6 +923,7 @@ func buildEntrySample(candidate domain.Candidate, decision strategy.CandidateDec
 		VolumeRate:             round2(candidate.VolumeRate),
 		VolumeLeaderPct:        candidate.VolumeLeaderPct,
 		LeaderRank:             candidate.LeaderRank,
+		StockSelectionScore:    round2(candidate.StockSelectionScore),
 		ATRPct:                 round2(candidate.ATRPct),
 		PriceVsVWAPPct:         round2(candidate.PriceVsVWAPPct),
 		BreakoutPct:            round2(candidate.BreakoutPct),

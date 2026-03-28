@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,11 +52,11 @@ func NewClient(cfg config.AppConfig) *Client {
 
 // Account represents an Alpaca account.
 type Account struct {
-	Equity       float64 `json:"equity,string"`
-	BuyingPower  float64 `json:"buying_power,string"`
-	Cash         float64 `json:"cash,string"`
-	DayPnL       float64 `json:"unrealized_intraday_pl,string"`
-	Status       string  `json:"status"`
+	Equity      float64 `json:"equity,string"`
+	BuyingPower float64 `json:"buying_power,string"`
+	Cash        float64 `json:"cash,string"`
+	DayPnL      float64 `json:"unrealized_intraday_pl,string"`
+	Status      string  `json:"status"`
 }
 
 // GetAccount fetches the trading account information.
@@ -65,13 +68,35 @@ func (c *Client) GetAccount(ctx context.Context) (Account, error) {
 
 // AlpacaPosition represents a broker position.
 type AlpacaPosition struct {
-	Symbol       string  `json:"symbol"`
-	Qty          string  `json:"qty"`
-	Side         string  `json:"side"`
+	Symbol        string `json:"symbol"`
+	Qty           string `json:"qty"`
+	Side          string `json:"side"`
 	AvgEntryPrice string `json:"avg_entry_price"`
-	CurrentPrice string  `json:"current_price"`
-	MarketValue  string  `json:"market_value"`
-	UnrealizedPL string  `json:"unrealized_pl"`
+	CurrentPrice  string `json:"current_price"`
+	MarketValue   string `json:"market_value"`
+	UnrealizedPL  string `json:"unrealized_pl"`
+}
+
+// AlpacaOrder represents a broker order with fill metadata.
+type AlpacaOrder struct {
+	ID          string     `json:"id"`
+	Symbol      string     `json:"symbol"`
+	Side        string     `json:"side"`
+	Status      string     `json:"status"`
+	FilledQty   string     `json:"filled_qty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	SubmittedAt *time.Time `json:"submitted_at"`
+	FilledAt    *time.Time `json:"filled_at"`
+}
+
+func (o AlpacaOrder) EventTime() time.Time {
+	if o.FilledAt != nil && !o.FilledAt.IsZero() {
+		return *o.FilledAt
+	}
+	if o.SubmittedAt != nil && !o.SubmittedAt.IsZero() {
+		return *o.SubmittedAt
+	}
+	return o.CreatedAt
 }
 
 // GetPositions fetches current broker positions.
@@ -79,6 +104,24 @@ func (c *Client) GetPositions(ctx context.Context) ([]AlpacaPosition, error) {
 	var positions []AlpacaPosition
 	err := c.get(ctx, c.baseURL+"/v2/positions", &positions)
 	return positions, err
+}
+
+// ListRecentOrders fetches the most recent account orders with fill metadata.
+func (c *Client) ListRecentOrders(ctx context.Context, limit int) ([]AlpacaOrder, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	query := url.Values{}
+	query.Set("status", "all")
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set("direction", "desc")
+
+	var orders []AlpacaOrder
+	err := c.get(ctx, c.baseURL+"/v2/orders?"+query.Encode(), &orders)
+	return orders, err
 }
 
 // SubmitOrder submits an order to Alpaca. Always uses limit orders — never market.
@@ -154,28 +197,50 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 }
 
 // PollOrderStatus checks the status of an order.
-func (c *Client) PollOrderStatus(ctx context.Context, orderID string) (string, float64, error) {
+func (c *Client) PollOrderStatus(ctx context.Context, orderID string) (string, float64, int64, error) {
 	var result struct {
 		Status    string  `json:"status"`
 		FilledAvg *string `json:"filled_avg_price"`
+		FilledQty string  `json:"filled_qty"`
 	}
 	err := c.get(ctx, c.baseURL+"/v2/orders/"+orderID, &result)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 
 	fillPrice := 0.0
 	if result.FilledAvg != nil {
 		fmt.Sscanf(*result.FilledAvg, "%f", &fillPrice)
 	}
+	filledQty := parseFilledQuantity(result.FilledQty)
 
-	return result.Status, fillPrice, nil
+	return result.Status, fillPrice, filledQty, nil
 }
 
-// IsShortable checks if a symbol can be shorted.
-func (c *Client) IsShortable(symbol string) bool {
+func parseFilledQuantity(value string) int64 {
+	return ParseOrderQuantity(value)
+}
+
+func ParseOrderQuantity(value string) int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if whole, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return whole
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return int64(math.Round(parsed))
+}
+
+// IsEasyToBorrow checks if a symbol is currently eligible for opening short positions.
+func (c *Client) IsEasyToBorrow(symbol string) bool {
 	var result struct {
-		Shortable bool `json:"shortable"`
+		Shortable    bool `json:"shortable"`
+		EasyToBorrow bool `json:"easy_to_borrow"`
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -183,7 +248,7 @@ func (c *Client) IsShortable(symbol string) bool {
 	if err != nil {
 		return false
 	}
-	return result.Shortable
+	return result.Shortable && result.EasyToBorrow
 }
 
 // CancelOrder cancels a pending order by ID.
@@ -226,14 +291,14 @@ func (c *Client) ClosePosition(ctx context.Context, symbol string) error {
 
 // HistoricalBar is a single bar from Alpaca.
 type HistoricalBar struct {
-	Timestamp time.Time `json:"t"`
-	Open      float64   `json:"o"`
-	High      float64   `json:"h"`
-	Low       float64   `json:"l"`
-	Close     float64   `json:"c"`
-	Volume    int64     `json:"v"`
-	TradeCount int64    `json:"n"`
-	VWAP      float64   `json:"vw"`
+	Timestamp  time.Time `json:"t"`
+	Open       float64   `json:"o"`
+	High       float64   `json:"h"`
+	Low        float64   `json:"l"`
+	Close      float64   `json:"c"`
+	Volume     int64     `json:"v"`
+	TradeCount int64     `json:"n"`
+	VWAP       float64   `json:"vw"`
 }
 
 // GetHistoricalBars fetches historical bars for a single symbol with automatic pagination.

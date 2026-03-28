@@ -5,6 +5,7 @@ import "time"
 // EventRecorder persists operator-visible and trading events.
 type EventRecorder interface {
 	RecordCandidate(Candidate)
+	RecordCandidateEvaluation(CandidateEvaluation)
 	RecordLog(LogEntry)
 	RecordExecution(ExecutionReport)
 	RecordClosedTrade(ClosedTrade)
@@ -90,6 +91,7 @@ type Candidate struct {
 	VolumeRate            float64   `json:"volumeRate"`
 	VolumeLeaderPct       float64   `json:"volumeLeaderPct"`
 	LeaderRank            int       `json:"leaderRank"`
+	StockSelectionScore   float64   `json:"stockSelectionScore"`
 	MinutesSinceOpen      float64   `json:"minutesSinceOpen"`
 	ATR                   float64   `json:"atr"`
 	ATRPct                float64   `json:"atrPct"`
@@ -119,7 +121,58 @@ type Candidate struct {
 	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
+	OFIDirection          int       `json:"ofiDirection"`          // -1 short, 0 neutral, 1 long
+	OFIStrength           float64   `json:"ofiStrength"`           // 0-1 normalized
+	VPINDirection         int       `json:"vpinDirection"`         // -1 short, 0 neutral, 1 long
+	VPINStrength          float64   `json:"vpinStrength"`          // 0-1 normalized
 	Timestamp             time.Time `json:"timestamp"`
+}
+
+// CandidateEvaluation captures a scanner-passed candidate plus the strategy and
+// risk decisions that followed. This is the core export row for ML training.
+type CandidateEvaluation struct {
+	RecordedAt                  time.Time    `json:"recordedAt"`
+	Source                      string       `json:"source"`
+	Candidate                   Candidate    `json:"candidate"`
+	StrategyEvaluated           bool         `json:"strategyEvaluated"`
+	StrategyEmitted             bool         `json:"strategyEmitted"`
+	StrategyReason              string       `json:"strategyReason"`
+	PredictedReturnPct          float64      `json:"predictedReturnPct"`
+	RequiredReturnPct           float64      `json:"requiredReturnPct"`
+	AllowedDistanceHighPct      float64      `json:"allowedDistanceHighPct"`
+	StrongSqueeze               bool         `json:"strongSqueeze"`
+	MLScored                    bool         `json:"mlScored"`
+	MLProbability               float64      `json:"mlProbability"`
+	MLThreshold                 float64      `json:"mlThreshold"`
+	MLModelPath                 string       `json:"mlModelPath"`
+	MLModelSide                 string       `json:"mlModelSide"`
+	MLShadowDecision            string       `json:"mlShadowDecision"`
+	MLShadowVeto                bool         `json:"mlShadowVeto"`
+	MLShadowUpsize              bool         `json:"mlShadowUpsize"`
+	MLShadowSizeMultiplier      float64      `json:"mlShadowSizeMultiplier"`
+	MLDayRankSoFar              int          `json:"mlDayRankSoFar"`
+	MLBarRankSoFar              int          `json:"mlBarRankSoFar"`
+	MLAdvisoryEnabled           bool         `json:"mlAdvisoryEnabled"`
+	MLAdvisoryApplied           bool         `json:"mlAdvisoryApplied"`
+	MLAdvisoryDecision          string       `json:"mlAdvisoryDecision"`
+	MLAdvisoryVeto              bool         `json:"mlAdvisoryVeto"`
+	MLAdvisorySizeMultiplier    float64      `json:"mlAdvisorySizeMultiplier"`
+	MLAdvisoryOriginalQuantity  int64        `json:"mlAdvisoryOriginalQuantity"`
+	MLAdvisoryAdjustedQuantity  int64        `json:"mlAdvisoryAdjustedQuantity"`
+	MLDriftEnabled              bool         `json:"mlDriftEnabled"`
+	MLDriftActive               bool         `json:"mlDriftActive"`
+	MLDriftPSI                  float64      `json:"mlDriftPsi"`
+	MLDriftPSIThreshold         float64      `json:"mlDriftPsiThreshold"`
+	MLDriftProbabilitySamples   int          `json:"mlDriftProbabilitySamples"`
+	MLDriftRollingSharpe        float64      `json:"mlDriftRollingSharpe"`
+	MLDriftSharpeThreshold      float64      `json:"mlDriftSharpeThreshold"`
+	MLDriftConfidenceMultiplier float64      `json:"mlDriftConfidenceMultiplier"`
+	MLDriftPerformanceFallback  bool         `json:"mlDriftPerformanceFallback"`
+	Signal                      TradeSignal  `json:"signal"`
+	RiskEvaluated               bool         `json:"riskEvaluated"`
+	RiskApproved                bool         `json:"riskApproved"`
+	RiskReason                  string       `json:"riskReason"`
+	Order                       OrderRequest `json:"order"`
 }
 
 // TradeSignal is emitted by the strategy for both entries and exits.
@@ -142,6 +195,11 @@ type TradeSignal struct {
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
 	AvgDailyVolume   float64   `json:"avgDailyVolume"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 	Timestamp        time.Time `json:"timestamp"`
 }
 
@@ -165,6 +223,11 @@ type OrderRequest struct {
 	Playbook           string    `json:"playbook"`
 	Sector             string    `json:"sector"`
 	AvgDailyVolume     float64   `json:"avgDailyVolume"`
+	LeaderRank         int       `json:"leaderRank"`
+	VolumeLeaderPct    float64   `json:"volumeLeaderPct"`
+	StockSelectScore   float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct     float64   `json:"priceVsVwapPct"`
+	DistanceHighPct    float64   `json:"distanceFromHighPct"`
 	Timestamp          time.Time `json:"timestamp"`
 }
 
@@ -185,6 +248,11 @@ type ExecutionReport struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 	BrokerOrderID    string    `json:"brokerOrderId"`
 	BrokerStatus     string    `json:"brokerStatus"`
 	FilledAt         time.Time `json:"filledAt"`
@@ -207,6 +275,11 @@ type Position struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 	LastPrice        float64   `json:"lastPrice"`
 	HighestPrice     float64   `json:"highestPrice"`
 	LowestPrice      float64   `json:"lowestPrice"`
@@ -236,6 +309,11 @@ type ClosedTrade struct {
 	RegimeConfidence float64   `json:"regimeConfidence"`
 	Playbook         string    `json:"playbook"`
 	Sector           string    `json:"sector"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
 }
 
 // LogEntry is a structured operational event.

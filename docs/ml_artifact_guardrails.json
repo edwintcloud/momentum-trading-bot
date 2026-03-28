@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "created_at": "2026-03-26",
+  "purpose": "Promotion guardrails for adaptive ML artifacts, modeled after the profile auto-optimizer but applied to model artifacts and backtest-native inference.",
+  "code_targets": [
+    "../internal/ml",
+    "../internal/autooptimize",
+    "../internal/backtest",
+    "../internal/strategy"
+  ],
+  "training_requirements": {
+    "walk_forward_required": true,
+    "rolling_windows_required": true,
+    "purge_gap_required": true,
+    "out_of_sample_only": true,
+    "same_day_training_for_same_day_trading_allowed": false
+  },
+  "artifact_requirements": {
+    "backtest_replayable": true,
+    "same_artifact_for_live_and_backtest": true,
+    "candidate_schema_versioned": true,
+    "calibration_required": true,
+    "drift_monitoring_required": true
+  },
+  "promotion_thresholds": {
+    "min_out_of_sample_profit_factor": 1.0,
+    "min_out_of_sample_win_rate_pct": 30.0,
+    "max_out_of_sample_drawdown_pct": 20.0,
+    "min_out_of_sample_trade_count": 30,
+    "max_brier_score": 0.25,
+    "max_psi_before_downweight": 0.2,
+    "min_ml_trade_count_for_perf_drift": 30
+  },
+  "baseline_reference": "../.cache/backtest/plan_baseline/baseline_summary.json",
+  "required_regressions": {
+    "anna_regression": {
+      "must_pass": true,
+      "minimum_net_pnl": 1000.0,
+      "minimum_trade_count": 3
+    },
+    "afjk_regression": {
+      "must_pass": true,
+      "minimum_net_pnl": 5000.0,
+      "minimum_trade_count": 1
+    },
+    "bear_week_june": {
+      "must_pass": true,
+      "minimum_net_pnl": 0.0
+    },
+    "bear_week_september": {
+      "must_pass": true,
+      "maximum_net_pnl_degradation_vs_baseline_pct": 10.0
+    },
+    "bear_week_october": {
+      "must_pass": true,
+      "maximum_net_pnl_degradation_vs_baseline_pct": 10.0
+    },
+    "annual_2025": {
+      "must_pass": true,
+      "primary_objective": "improve_net_pnl_vs_baseline",
+      "max_drawdown_pct_ceiling": 20.0
+    }
+  },
+  "determinism": {
+    "required": true,
+    "reference_window_id": "bear_week_september",
+    "repeats": 2,
+    "comparison": "byte_for_byte_report_match"
+  },
+  "promotion_policy": {
+    "require_improvement_over_current_artifact": true,
+    "fallback_to_rules_only_on_guardrail_failure": true,
+    "fallback_to_rules_only_on_drift_failure": true,
+    "shadow_mode_before_live_gating": true
+  }
+}

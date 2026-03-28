@@ -162,6 +162,11 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 		RegimeConfidence: report.RegimeConfidence,
 		Playbook:         report.Playbook,
 		Sector:           report.Sector,
+		LeaderRank:       report.LeaderRank,
+		VolumeLeaderPct:  report.VolumeLeaderPct,
+		StockSelectScore: report.StockSelectScore,
+		PriceVsVWAPPct:   report.PriceVsVWAPPct,
+		DistanceHighPct:  report.DistanceHighPct,
 		LastPrice:        report.Price,
 		HighestPrice:     report.Price,
 		LowestPrice:      report.Price,
@@ -238,6 +243,11 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 		RegimeConfidence: pos.RegimeConfidence,
 		Playbook:         pos.Playbook,
 		Sector:           pos.Sector,
+		LeaderRank:       pos.LeaderRank,
+		VolumeLeaderPct:  pos.VolumeLeaderPct,
+		StockSelectScore: pos.StockSelectScore,
+		PriceVsVWAPPct:   pos.PriceVsVWAPPct,
+		DistanceHighPct:  pos.DistanceHighPct,
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)
@@ -769,6 +779,15 @@ func (m *Manager) DayPnL() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.dayPnL
+}
+
+// RefreshDayIfNeeded syncs day-boundary state to the injected clock.
+// This is important in backtests where "read-only" checks may happen before
+// any portfolio mutation on a new simulated trading day.
+func (m *Manager) RefreshDayIfNeeded() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetDayIfNeeded()
 }
 
 // PortfolioHeat returns the total dollar risk across all open positions.

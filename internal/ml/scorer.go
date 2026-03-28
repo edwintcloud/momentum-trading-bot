@@ -1,6 +1,15 @@
 package ml
 
-import "math"
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
+)
 
 // ScorerFeatures extracts the feature vector for ML scoring from a candidate.
 type ScorerFeatures struct {
@@ -21,7 +30,7 @@ type ScorerFeatures struct {
 	RegimeProb         float64 // bullish probability
 	VolumeLeaderPct    float64
 	MACDHistogram      float64
-	Direction          string  // "long" or "short"
+	Direction          string // "long" or "short"
 }
 
 // ToSlice converts features to a float64 slice for model input.
@@ -70,12 +79,185 @@ func FeatureNames() []string {
 	}
 }
 
+// FeaturesFromCandidate converts a scanner/strategy candidate into the stable
+// tabular feature vector used by the scoring and training pipeline.
+func FeaturesFromCandidate(candidate domain.Candidate) ScorerFeatures {
+	emaAlignment := 0.0
+	if candidate.EMASlow != 0 {
+		emaAlignment = (candidate.EMAFast - candidate.EMASlow) / candidate.EMASlow
+	}
+
+	regimeProb := 0.5
+	switch candidate.MarketRegime {
+	case domain.RegimeBullish:
+		regimeProb = 0.5 + candidate.RegimeConfidence/2
+	case domain.RegimeBearish:
+		regimeProb = 0.5 - candidate.RegimeConfidence/2
+	}
+
+	timeOfDay := candidate.MinutesSinceOpen / 390.0
+	if timeOfDay < 0 {
+		timeOfDay = 0
+	}
+	if timeOfDay > 1 {
+		timeOfDay = 1
+	}
+
+	return ScorerFeatures{
+		RelativeVolume:     candidate.RelativeVolume,
+		GapPercent:         candidate.GapPercent,
+		VolumeRate:         candidate.VolumeRate,
+		OneMinuteReturn:    candidate.OneMinuteReturnPct,
+		ThreeMinuteReturn:  candidate.ThreeMinuteReturnPct,
+		BreakoutPct:        candidate.BreakoutPct,
+		PriceVsVWAPPct:     candidate.PriceVsVWAPPct,
+		EMAAlignment:       emaAlignment,
+		RSI:                candidate.RSI,
+		RSIMASlope:         candidate.RSIMASlope,
+		ATR:                candidate.ATRPct,
+		ConsolidationRange: candidate.ConsolidationRangePct,
+		PullbackDepth:      candidate.PullbackDepthPct,
+		TimeOfDay:          timeOfDay,
+		RegimeProb:         regimeProb,
+		VolumeLeaderPct:    candidate.VolumeLeaderPct,
+		MACDHistogram:      candidate.MACDHistogram,
+		Direction:          candidate.Direction,
+	}
+}
+
 // Scorer defines the interface for ML-based trade probability scoring.
 type Scorer interface {
 	// Score returns P(profitable trade) for the given features.
 	Score(features ScorerFeatures) (float64, error)
 	// Enabled returns whether the scorer has a loaded model.
 	Enabled() bool
+}
+
+// ArtifactScorer loads saved long/short model artifacts and scores candidates
+// using the same feature schema as the trainer output.
+type ArtifactScorer struct {
+	modelPath string
+	models    map[string]LogisticModelArtifact
+	report    *TrainingReport
+}
+
+// NewArtifactScorer loads one or more saved model artifacts from a directory or file.
+// If a directory is provided, it looks for long_model.json and short_model.json.
+func NewArtifactScorer(modelPath string) (*ArtifactScorer, error) {
+	modelPath = strings.TrimSpace(modelPath)
+	if modelPath == "" {
+		return nil, fmt.Errorf("artifact scorer: model path is required")
+	}
+	info, err := os.Stat(modelPath)
+	if err != nil {
+		return nil, err
+	}
+
+	scorer := &ArtifactScorer{
+		modelPath: modelPath,
+		models:    make(map[string]LogisticModelArtifact),
+	}
+	if info.IsDir() {
+		reportPath := filepath.Join(modelPath, "training_report.json")
+		if report, err := loadTrainingReport(reportPath); err == nil {
+			scorer.report = report
+		}
+		for _, side := range []string{"long", "short"} {
+			path := filepath.Join(modelPath, side+"_model.json")
+			model, err := loadLogisticModelArtifact(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, err
+			}
+			scorer.models[side] = model
+		}
+	} else {
+		model, err := loadLogisticModelArtifact(modelPath)
+		if err != nil {
+			return nil, err
+		}
+		side := strings.ToLower(strings.TrimSpace(model.Side))
+		if side == "" {
+			return nil, fmt.Errorf("artifact scorer: model side missing in %s", modelPath)
+		}
+		scorer.models[side] = model
+	}
+	if len(scorer.models) == 0 {
+		return nil, fmt.Errorf("artifact scorer: no model artifacts found at %s", modelPath)
+	}
+	return scorer, nil
+}
+
+func (s *ArtifactScorer) Score(features ScorerFeatures) (float64, error) {
+	side := strings.ToLower(strings.TrimSpace(features.Direction))
+	model, ok := s.models[side]
+	if !ok {
+		return 0.5, fmt.Errorf("artifact scorer: no model loaded for side %s", side)
+	}
+	return scoreLogisticModel(model, features), nil
+}
+
+func (s *ArtifactScorer) Enabled() bool {
+	return len(s.models) > 0
+}
+
+func (s *ArtifactScorer) ModelPath() string {
+	return s.modelPath
+}
+
+func (s *ArtifactScorer) HasSide(side string) bool {
+	_, ok := s.models[strings.ToLower(strings.TrimSpace(side))]
+	return ok
+}
+
+func (s *ArtifactScorer) TrainingProbabilityDistribution(side string) []float64 {
+	model, ok := s.models[strings.ToLower(strings.TrimSpace(side))]
+	if !ok || len(model.CalibrationBins) == 0 {
+		return nil
+	}
+	total := 0
+	for _, bin := range model.CalibrationBins {
+		total += bin.Count
+	}
+	if total <= 0 {
+		return nil
+	}
+	dist := make([]float64, 0, len(model.CalibrationBins))
+	for _, bin := range model.CalibrationBins {
+		p := float64(bin.Count) / float64(total)
+		if p == 0 {
+			p = 1e-8
+		}
+		dist = append(dist, p)
+	}
+	return dist
+}
+
+func (s *ArtifactScorer) AggregateAvgReturn(side string) float64 {
+	if s.report == nil {
+		return 0
+	}
+	report, ok := s.report.SideReports[strings.ToLower(strings.TrimSpace(side))]
+	if !ok {
+		return 0
+	}
+	return report.Aggregate.AvgReturn
+}
+
+// ResolveScorer returns the configured scorer implementation.
+// If scoring is disabled it returns a stub scorer.
+// If scoring is enabled and a model path is present it loads saved artifacts.
+// Otherwise it falls back to the built-in rule-based scorer.
+func ResolveScorer(enabled bool, modelPath string) (Scorer, error) {
+	if !enabled {
+		return NewStubScorer(), nil
+	}
+	if strings.TrimSpace(modelPath) != "" {
+		return NewArtifactScorer(modelPath)
+	}
+	return NewRuleBasedScorer(), nil
 }
 
 // StubScorer is a no-op scorer that returns a neutral probability.
@@ -201,4 +383,28 @@ func clamp(x, lo, hi float64) float64 {
 
 func sigmoid(x float64) float64 {
 	return 1.0 / (1.0 + math.Exp(-x))
+}
+
+func loadLogisticModelArtifact(path string) (LogisticModelArtifact, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return LogisticModelArtifact{}, err
+	}
+	var model LogisticModelArtifact
+	if err := json.Unmarshal(raw, &model); err != nil {
+		return LogisticModelArtifact{}, err
+	}
+	return model, nil
+}
+
+func loadTrainingReport(path string) (*TrainingReport, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var report TrainingReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
 }
