@@ -11,6 +11,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 )
 
 type symbolBar struct {
@@ -64,6 +65,7 @@ type Scanner struct {
 	blockedSymbols map[string]string
 	leaderDay      string
 	leaderMetrics  map[string]float64 // symbol → cumulative dollar volume for current day
+	signalLookup   func(symbol string) []signals.Signal
 }
 
 // NewScanner creates a scanner with the configured filters.
@@ -90,6 +92,13 @@ func (s *Scanner) SetBlockedSymbols(blocked map[string]string) {
 		copyMap[symbol] = reason
 	}
 	s.blockedSymbols = copyMap
+}
+
+// SetSignalLookup installs a function that returns the latest alpha signals for a symbol.
+func (s *Scanner) SetSignalLookup(fn func(symbol string) []signals.Signal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.signalLookup = fn
 }
 
 // volumeLeaderStats returns the daily dollar-volume rank and normalized strength
@@ -323,8 +332,70 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		}
 	}
 
+	// Path 3: Mean Reversion — stock at Bollinger Band extreme with low trend strength
+	meanRevQualified := false
+	if cfg.MeanReversionEnabled && metrics.bbUpper > 0 && metrics.bbLower > 0 && metrics.adx > 0 {
+		if metrics.adx <= cfg.MeanReversionMaxADX && tick.RelativeVolume >= cfg.MinRelativeVolume {
+			if tick.Price <= metrics.bbLower || tick.Price >= metrics.bbUpper {
+				meanRevQualified = true
+			}
+		}
+	}
+
+	// Path 4: Gap Fade — large gap (>threshold) losing momentum, price reverting toward VWAP
+	gapFadeQualified := false
+	if cfg.GapFadeEnabled && markethours.IsMarketOpen(tick.Timestamp) {
+		minGap := cfg.GapFadeMinGapPct
+		if minGap <= 0 {
+			minGap = 4.0
+		}
+		maxRelVol := cfg.GapFadeMaxRelVol
+		if maxRelVol <= 0 {
+			maxRelVol = 6.0
+		}
+		absGap := tick.GapPercent
+		if absGap < 0 {
+			absGap = -absGap
+		}
+		if absGap >= minGap && tick.RelativeVolume >= cfg.MinRelativeVolume && tick.RelativeVolume <= maxRelVol {
+			if metrics.vwap > 0 {
+				// Gap up fading: price dropping back toward VWAP from above
+				if tick.GapPercent >= minGap && tick.Price < tick.Open && tick.Price > metrics.vwap {
+					gapFadeQualified = true
+				}
+				// Gap down fading: price recovering toward VWAP from below
+				if tick.GapPercent <= -minGap && tick.Price > tick.Open && tick.Price < metrics.vwap {
+					gapFadeQualified = true
+				}
+			}
+		}
+	}
+
+	// Path 5: Power Hour — last window of regular session, strong intraday stocks with momentum
+	powerHourQualified := false
+	if cfg.PowerHourEnabled && markethours.IsMarketOpen(tick.Timestamp) {
+		phWindow := cfg.PowerHourWindowMinutes
+		if phWindow <= 0 {
+			phWindow = 60
+		}
+		remaining := markethours.RemainingMinutes(tick.Timestamp)
+		minIntraday := cfg.PowerHourMinIntradayPct
+		if minIntraday <= 0 {
+			minIntraday = 3.0
+		}
+		if remaining > 0 && remaining <= phWindow && tick.Open > 0 {
+			phIntraday := (tick.Price - tick.Open) / tick.Open * 100
+			if phIntraday < 0 {
+				phIntraday = -phIntraday
+			}
+			if phIntraday >= minIntraday && tick.RelativeVolume >= cfg.MinRelativeVolume {
+				powerHourQualified = true
+			}
+		}
+	}
+
 	// Must qualify via at least one path
-	if !gapQualified && !hodMomoQualified {
+	if !gapQualified && !hodMomoQualified && !meanRevQualified && !gapFadeQualified && !powerHourQualified {
 		return domain.Candidate{}, false, classifyTickRejection(tick, cfg)
 	}
 
@@ -419,6 +490,43 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		}
 	}
 
+	// New playbook setup type overrides — only apply when qualified via their
+	// specific path and existing classifiers haven't already assigned a structured type.
+	if meanRevQualified && (metrics.setupType == "early" || metrics.setupType == "pullback" || metrics.setupType == "breakdown") {
+		if tick.Price <= metrics.bbLower {
+			metrics.setupType = "mean_reversion_long"
+			direction = domain.DirectionLong
+		} else if tick.Price >= metrics.bbUpper {
+			if cfg.EnableShorts {
+				metrics.setupType = "mean_reversion_short"
+				direction = domain.DirectionShort
+			}
+		}
+	}
+
+	if gapFadeQualified && (metrics.setupType == "early" || metrics.setupType == "breakout" || metrics.setupType == "breakdown") {
+		if tick.GapPercent > 0 && tick.Price < tick.Open {
+			metrics.setupType = "gap_fade_short"
+			if cfg.EnableShorts {
+				direction = domain.DirectionShort
+			}
+		} else if tick.GapPercent < 0 && tick.Price > tick.Open {
+			metrics.setupType = "gap_fade_long"
+			direction = domain.DirectionLong
+		}
+	}
+
+	if powerHourQualified && (metrics.setupType == "early" || metrics.setupType == "pullback" || metrics.setupType == "breakout") {
+		phIntraday := (tick.Price - tick.Open) / tick.Open * 100
+		if phIntraday > 0 {
+			metrics.setupType = "power_hour_long"
+			direction = domain.DirectionLong
+		} else if phIntraday < 0 && cfg.EnableShorts {
+			metrics.setupType = "power_hour_short"
+			direction = domain.DirectionShort
+		}
+	}
+
 	if metrics.setupType == "early" {
 		return domain.Candidate{}, false, "setup-early"
 	}
@@ -470,6 +578,32 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 	}
 	score := computeCandidateScore(cfg, tick, metrics, direction, setupType, intradayReturnPct, leaderRank, leaderStrengthPct, distFromHighPct, referenceHigh, stockSelectionScore)
 
+	// Look up alpha signals (OFI, VPIN) and boost score when signals confirm direction.
+	var ofiDir int
+	var ofiStrength float64
+	var vpinDir int
+	var vpinStrength float64
+	if s.signalLookup != nil {
+		for _, sig := range s.signalLookup(tick.Symbol) {
+			switch sig.Type {
+			case signals.SignalTypeOFI:
+				ofiDir = int(sig.Direction)
+				ofiStrength = sig.Strength
+				if (domain.IsLong(direction) && sig.Direction == signals.DirectionLong) ||
+					(domain.IsShort(direction) && sig.Direction == signals.DirectionShort) {
+					score += 0.5 * sig.Strength // confirming OFI boosts score
+				}
+			case signals.SignalTypeVPIN:
+				vpinDir = int(sig.Direction)
+				vpinStrength = sig.Strength
+				if (domain.IsLong(direction) && sig.Direction == signals.DirectionLong) ||
+					(domain.IsShort(direction) && sig.Direction == signals.DirectionShort) {
+					score += 0.35 * sig.Strength // confirming VPIN boosts score
+				}
+			}
+		}
+	}
+
 	candidate := domain.Candidate{
 		Symbol:                tick.Symbol,
 		Direction:             direction,
@@ -517,6 +651,10 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		PrevDayVolume:         tick.PrevDayVolume,
 		Catalyst:              tick.Catalyst,
 		CatalystURL:           tick.CatalystURL,
+		OFIDirection:          ofiDir,
+		OFIStrength:           ofiStrength,
+		VPINDirection:         vpinDir,
+		VPINStrength:          vpinStrength,
 		Timestamp:             tick.Timestamp,
 	}
 
@@ -1457,6 +1595,12 @@ func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string
 		return "pullback"
 	case "parabolic-failed-reclaim-short":
 		return "reversal"
+	case "mean_reversion_long", "mean_reversion_short":
+		return "mean_reversion"
+	case "gap_fade_long", "gap_fade_short":
+		return "gap_fade"
+	case "power_hour_long", "power_hour_short":
+		return "power_hour"
 	}
 	if direction == domain.DirectionLong {
 		return "continuation"

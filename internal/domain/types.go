@@ -121,6 +121,10 @@ type Candidate struct {
 	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
+	OFIDirection          int       `json:"ofiDirection"`          // -1 short, 0 neutral, 1 long
+	OFIStrength           float64   `json:"ofiStrength"`           // 0-1 normalized
+	VPINDirection         int       `json:"vpinDirection"`         // -1 short, 0 neutral, 1 long
+	VPINStrength          float64   `json:"vpinStrength"`          // 0-1 normalized
 	Timestamp             time.Time `json:"timestamp"`
 }
 

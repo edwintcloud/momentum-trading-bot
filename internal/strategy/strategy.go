@@ -734,6 +734,12 @@ func (s *Strategy) getPlaybookExitConfig(playbook string) config.PlaybookExitCon
 		return cfg.PlaybookExits.Continuation
 	case "reversal":
 		return cfg.PlaybookExits.Reversal
+	case "mean_reversion":
+		return cfg.PlaybookExits.MeanReversion
+	case "gap_fade":
+		return cfg.PlaybookExits.GapFade
+	case "power_hour":
+		return cfg.PlaybookExits.PowerHour
 	default:
 		return cfg.PlaybookExits.Breakout
 	}
@@ -960,6 +966,11 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		return "stop-loss", true
 	}
 
+	// Power Hour forced exit: close 5 minutes before market close
+	if pos.Playbook == "power_hour" && markethours.RemainingMinutes(tick.Timestamp) <= 5 {
+		return "power-hour-eod-exit", true
+	}
+
 	// Phase 3 Change 4: Partial exit framework
 	if cfg.PartialExitsEnabled && pos.OriginalQuantity > 0 && pos.Quantity > 0 {
 		partialReason, partialExit := s.checkPartialExit(pos, r)
@@ -1055,7 +1066,11 @@ func (s *Strategy) checkPartialExit(pos domain.Position, r float64) (string, boo
 }
 
 func isMeanReversionSetup(setupType string) bool {
-	return setupType == "mean_reversion_long" || setupType == "mean_reversion_short"
+	switch setupType {
+	case "mean_reversion_long", "mean_reversion_short", "gap_fade_long", "gap_fade_short":
+		return true
+	}
+	return false
 }
 
 // volRegimeTrailFactor returns a multiplier for trail distances based on volatility regime.

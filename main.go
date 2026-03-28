@@ -30,6 +30,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 	"github.com/edwintcloud/momentum-trading-bot/internal/storage"
 	"github.com/edwintcloud/momentum-trading-bot/internal/strategy"
 	"github.com/edwintcloud/momentum-trading-bot/internal/telemetry"
@@ -194,6 +195,30 @@ func runLive() {
 		log.Fatalf("ml scorer: %v", err)
 	}
 
+	// Build signal aggregator from alpha config.
+	var sigAgg *signals.Aggregator
+	if tradingCfg.OFIEnabled || tradingCfg.VPINEnabled {
+		var sources []signals.SignalSource
+		if tradingCfg.OFIEnabled {
+			sources = append(sources, signals.NewOFI(signals.OFIConfig{
+				Enabled:           true,
+				WindowBars:        tradingCfg.OFIWindowBars,
+				ThresholdSigma:    tradingCfg.OFIThresholdSigma,
+				PersistenceMinBar: tradingCfg.OFIPersistenceMin,
+			}))
+		}
+		if tradingCfg.VPINEnabled {
+			sources = append(sources, signals.NewVPIN(signals.VPINConfig{
+				Enabled:         true,
+				BucketDivisor:   tradingCfg.VPINBucketDivisor,
+				LookbackBuckets: tradingCfg.VPINLookbackBuckets,
+				HighThreshold:   tradingCfg.VPINHighThreshold,
+				LowThreshold:    tradingCfg.VPINLowThreshold,
+			}))
+		}
+		sigAgg = signals.NewAggregator(sources...)
+	}
+
 	pipe := pipeline.New(pipeline.Config{
 		TradingCfg:                tradingCfg,
 		Runtime:                   runtimeState,
@@ -207,6 +232,7 @@ func runLive() {
 		Recorder:                  logger,
 		Scorer:                    scorer,
 		RegimeTracker:             regimeTracker,
+		SignalAggregator:          sigAgg,
 		FloatLookup:               floatStore.Get,
 		CandidateEvaluationSource: "live",
 	})

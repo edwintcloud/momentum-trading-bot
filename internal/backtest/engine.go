@@ -24,6 +24,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 	"github.com/edwintcloud/momentum-trading-bot/internal/strategy"
 )
 
@@ -292,6 +293,30 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		return Result{}, err
 	}
 
+	// Build signal aggregator from alpha config.
+	var sigAgg *signals.Aggregator
+	if cfg.OFIEnabled || cfg.VPINEnabled {
+		var sources []signals.SignalSource
+		if cfg.OFIEnabled {
+			sources = append(sources, signals.NewOFI(signals.OFIConfig{
+				Enabled:           true,
+				WindowBars:        cfg.OFIWindowBars,
+				ThresholdSigma:    cfg.OFIThresholdSigma,
+				PersistenceMinBar: cfg.OFIPersistenceMin,
+			}))
+		}
+		if cfg.VPINEnabled {
+			sources = append(sources, signals.NewVPIN(signals.VPINConfig{
+				Enabled:         true,
+				BucketDivisor:   cfg.VPINBucketDivisor,
+				LookbackBuckets: cfg.VPINLookbackBuckets,
+				HighThreshold:   cfg.VPINHighThreshold,
+				LowThreshold:    cfg.VPINLowThreshold,
+			}))
+		}
+		sigAgg = signals.NewAggregator(sources...)
+	}
+
 	peakEquity := cfg.StartingCapital
 	maxDrawdown := 0.0
 
@@ -308,6 +333,7 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		Recorder:                  runCfg.Recorder,
 		Scorer:                    scorer,
 		RegimeTracker:             regimeTracker,
+		SignalAggregator:          sigAgg,
 		CandidateEvaluationSource: "backtest",
 		FloatLookup: func(sym string) int64 {
 			if runCfg.FloatStore != nil {

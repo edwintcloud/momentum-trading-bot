@@ -6,7 +6,7 @@ import re
 import sys
 
 SUMMARY_PATTERN = re.compile(
-    r"PnL\s+(?:roi=[^\s]+\s+)?net=([+-]?\d+(?:\.\d+)?)\s+realized=([+-]?\d+(?:\.\d+)?)\s+"
+    r"PnL\s+(?:roi=([+-]?\d+(?:\.\d+)?)%?\s+)?net=([+-]?\d+(?:\.\d+)?)\s+realized=([+-]?\d+(?:\.\d+)?)\s+"
     r"unrealized=([+-]?\d+(?:\.\d+)?)\s+ending_equity=([+-]?\d+(?:\.\d+)?)"
 )
 GO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "go-build")
@@ -15,10 +15,11 @@ GO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "go-build")
 def extract_backtest_metrics(output):
     match = SUMMARY_PATTERN.search(output)
     if not match:
-        return None, None
-    net_pnl = float(match.group(1))
-    ending_equity = float(match.group(4))
-    return net_pnl, ending_equity
+        return None, None, None
+    roi = float(match.group(1)) if match.group(1) else None
+    net_pnl = float(match.group(2))
+    ending_equity = float(match.group(5))
+    return net_pnl, ending_equity, roi
 
 
 def run_backtest(start_date, end_date):
@@ -37,17 +38,18 @@ def run_backtest(start_date, end_date):
             print(output.strip(), flush=True)
         return None, None
 
-    net_pnl, ending_equity = extract_backtest_metrics(output)
+    net_pnl, ending_equity, roi = extract_backtest_metrics(output)
     if net_pnl is None or ending_equity is None:
         print("Failed to find backtest results in output.", flush=True)
         if output.strip():
             print(output.strip(), flush=True)
         return None, None
 
-    initial_equity = ending_equity - net_pnl
-    profit_percentage = 0.0
-    if initial_equity > 0:
-        profit_percentage = (net_pnl / initial_equity) * 100
+    if roi is not None:
+        profit_percentage = roi
+    else:
+        initial_equity = ending_equity - net_pnl
+        profit_percentage = (net_pnl / initial_equity) * 100 if initial_equity > 0 else 0.0
 
     return net_pnl, profit_percentage
 

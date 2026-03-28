@@ -566,11 +566,13 @@ func logBacktestSummary(start, end time.Time, result backtest.Result) {
 }
 
 func backtestSummaryLines(start, end time.Time, result backtest.Result) []string {
+	actualStart := result.EndingEquity - result.NetPnL
+	roiPct := safeROIPct(result.NetPnL, actualStart)
 	lines := []string{
 		"Backtest Summary",
 		fmt.Sprintf("  Window       %s -> %s", formatLogTime(start), formatLogTime(end)),
-		fmt.Sprintf("  PnL          roi=%.0f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
-			result.NetPnL/result.StartingCapital*100,
+		fmt.Sprintf("  PnL          roi=%.2f%% net=%s realized=%s unrealized=%s ending_equity=%s max_drawdown=%.2f%%",
+			roiPct,
 			formatMoney(result.NetPnL),
 			formatMoney(result.RealizedPnL),
 			formatMoney(result.UnrealizedPnL),

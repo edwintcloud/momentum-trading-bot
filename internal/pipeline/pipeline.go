@@ -20,6 +20,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
+	"github.com/edwintcloud/momentum-trading-bot/internal/signals"
 	"github.com/edwintcloud/momentum-trading-bot/internal/strategy"
 )
 
@@ -39,6 +40,10 @@ type Config struct {
 
 	// RegimeTracker is optional; if set the pipeline updates it on every tick.
 	RegimeTracker *regime.Tracker
+
+	// SignalAggregator is optional; if set the pipeline feeds bars to signal sources
+	// and attaches signal data to candidates.
+	SignalAggregator *signals.Aggregator
 
 	// OnTick is called for every normalized tick before fan-out.
 	// Use this to feed PaperBroker.UpdateBar or attach custom hooks.
@@ -95,6 +100,8 @@ type Pipeline struct {
 	mlDrift         map[string]*ml.DriftDetector
 	mlPerfDrift     *ml.DriftDetector
 	mlDriftState    map[string]bool
+	sigMu           sync.RWMutex
+	latestSignals   map[string][]signals.Signal // latest signals per symbol
 }
 
 type deterministicPendingOrder struct {
@@ -110,15 +117,48 @@ type signalEnvelope struct {
 // New creates a pipeline but does not start it.
 func New(cfg Config) *Pipeline {
 	p := &Pipeline{
-		cfg:          cfg,
-		barCh:        make(chan domain.Bar, 1024),
-		closeAllCh:   make(chan domain.OrderRequest, 64),
-		fillCh:       make(chan domain.ExecutionReport, 64),
-		mlDrift:      make(map[string]*ml.DriftDetector),
-		mlDriftState: make(map[string]bool),
+		cfg:           cfg,
+		barCh:         make(chan domain.Bar, 1024),
+		closeAllCh:    make(chan domain.OrderRequest, 64),
+		fillCh:        make(chan domain.ExecutionReport, 64),
+		mlDrift:       make(map[string]*ml.DriftDetector),
+		mlDriftState:  make(map[string]bool),
+		latestSignals: make(map[string][]signals.Signal),
 	}
 	p.initMLDrift()
+	if cfg.SignalAggregator != nil {
+		cfg.Scanner.SetSignalLookup(p.lookupSignals)
+	}
 	return p
+}
+
+// feedSignals feeds a bar to the signal aggregator and stores the latest signals.
+func (p *Pipeline) feedSignals(symbol string, bar domain.Bar) {
+	if p.cfg.SignalAggregator == nil {
+		return
+	}
+	sigs := p.cfg.SignalAggregator.OnBar(symbol, signals.Bar{
+		Open:      bar.Open,
+		High:      bar.High,
+		Low:       bar.Low,
+		Close:     bar.Close,
+		Volume:    bar.Volume,
+		Timestamp: bar.Timestamp,
+	})
+	p.sigMu.Lock()
+	if len(sigs) > 0 {
+		p.latestSignals[symbol] = sigs
+	} else {
+		delete(p.latestSignals, symbol)
+	}
+	p.sigMu.Unlock()
+}
+
+// lookupSignals returns the latest signals for a symbol.
+func (p *Pipeline) lookupSignals(symbol string) []signals.Signal {
+	p.sigMu.RLock()
+	defer p.sigMu.RUnlock()
+	return p.latestSignals[symbol]
 }
 
 // BarCh returns the channel callers use to feed bars into the pipeline.
@@ -167,6 +207,7 @@ func (p *Pipeline) Start(ctx context.Context) {
 		defer p.wg.Done()
 		defer close(tickCh)
 		for bar := range p.barCh {
+			p.feedSignals(bar.Symbol, bar)
 			tick := p.cfg.Normalizer.Normalize(bar)
 			if p.cfg.FloatLookup != nil {
 				tick.Float = p.cfg.FloatLookup(tick.Symbol)
@@ -794,6 +835,7 @@ func (p *Pipeline) processDeterministicBar(
 	diagnostics bool,
 	pendingEntries *[]deterministicPendingOrder,
 ) bool {
+	p.feedSignals(bar.Symbol, bar)
 	tick := p.cfg.Normalizer.Normalize(bar)
 	if p.cfg.FloatLookup != nil {
 		tick.Float = p.cfg.FloatLookup(tick.Symbol)

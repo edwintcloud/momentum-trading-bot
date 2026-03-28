@@ -233,13 +233,14 @@ func runBatchBacktestWindow(
 		return batchBacktestWindowRun{}, err
 	}
 
+	actualStart := result.EndingEquity - result.NetPnL
 	return batchBacktestWindowRun{
 		ID:             window.ID,
 		Start:          window.Start,
 		End:            window.End,
 		ReportPath:     reportPath,
 		NetPnL:         result.NetPnL,
-		ROI:            safeROIPct(result.NetPnL, result.StartingCapital),
+		ROI:            safeROIPct(result.NetPnL, actualStart),
 		Trades:         result.Trades,
 		WinRate:        result.WinRate,
 		MaxDrawdownPct: result.MaxDrawdownPct,

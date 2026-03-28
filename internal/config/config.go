@@ -30,6 +30,12 @@ type ScannerConfig struct {
 	MeanReversionMaxADX        float64
 	BollingerPeriod            int
 	BollingerK                 float64
+	GapFadeEnabled             bool
+	GapFadeMinGapPct           float64
+	GapFadeMaxRelVol           float64
+	PowerHourEnabled           bool
+	PowerHourMinIntradayPct    float64
+	PowerHourWindowMinutes     int
 	HODMomoEnabled             bool
 	HODMomoMinIntradayPct      float64
 	HODMomoMinRelativeVolume   float64
@@ -83,7 +89,6 @@ type StrategyConfig struct {
 	AdaptiveTrailEnabled          bool
 	EntryDeadlineMinutesAfterOpen int
 	MinRiskRewardRatio            float64
-	MidDayScoreMultiplier         float64
 	MinPositionNotionalPct        float64
 	MaxEntriesPerMinute           int
 	MinATRBars                    int
@@ -381,10 +386,13 @@ type PlaybookExitConfig struct {
 
 // PlaybookExitsConfig holds exit configs for all playbooks.
 type PlaybookExitsConfig struct {
-	Breakout     PlaybookExitConfig
-	Pullback     PlaybookExitConfig
-	Continuation PlaybookExitConfig
-	Reversal     PlaybookExitConfig
+	Breakout       PlaybookExitConfig
+	Pullback       PlaybookExitConfig
+	Continuation   PlaybookExitConfig
+	Reversal       PlaybookExitConfig
+	MeanReversion  PlaybookExitConfig
+	GapFade        PlaybookExitConfig
+	PowerHour      PlaybookExitConfig
 }
 
 // DefaultTradingConfig returns the tuned baseline.
