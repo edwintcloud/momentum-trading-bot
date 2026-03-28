@@ -50,7 +50,7 @@
     },
     "Strategy": {
       "EnableShorts": false,
-      "RiskPerTradePct": 0.08,
+      "RiskPerTradePct": 0.05,
       "MaxTradesPerDay": 10,
       "MaxOpenPositions": 1,
       "MaxExposurePct": 1.2,

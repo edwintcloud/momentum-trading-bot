@@ -1575,7 +1575,7 @@ func rejectWeakLongStockSelection(c domain.Candidate) (string, bool) {
 	if !domain.IsLong(c.Direction) {
 		return "", false
 	}
-	if isLeaderOpenDrivePullback(c) || isExceptionalSqueezeBreakout(c) || isExceptionalSqueezePullback(c) {
+	if isExceptionalSqueezeBreakout(c) || isExceptionalSqueezePullback(c) {
 		return "", false
 	}
 
