@@ -27,7 +27,7 @@ func NewHMMRegimeDetector() *HMMRegimeDetector {
 			{0.03, 0.97}, // bear → bull 3%, bear → bear 97%
 		},
 		emissionMeans:   []float64{0.0005, -0.0003}, // bull: +5bps/bar, bear: -3bps/bar
-		emissionStddevs: []float64{0.008, 0.015},     // bear has higher vol
+		emissionStddevs: []float64{0.008, 0.015},    // bear has higher vol
 		statePrior:      []float64{0.6, 0.4},
 		forwardProbs:    []float64{0.6, 0.4},
 	}

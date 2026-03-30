@@ -33,7 +33,7 @@ func (m ExecutionMethod) String() string {
 // RoutingDecision contains the router's chosen execution method and any
 // pre-computed schedule.
 type RoutingDecision struct {
-	Method       ExecutionMethod
+	Method ExecutionMethod
 }
 
 // RouteOrder decides how to execute an order based on its size relative to

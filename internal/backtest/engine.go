@@ -51,7 +51,7 @@ type InputBar struct {
 	High        float64
 	Low         float64
 	Close       float64
-	Volume      int64
+	Volume      uint64
 	PrevClose   float64
 	Catalyst    string
 	CatalystURL string
@@ -165,7 +165,7 @@ type EntrySample struct {
 	SetupType              string
 	Score                  float64
 	StrongSqueeze          bool
-	Volume                 int64
+	Volume                 uint64
 }
 
 // RiskRejectSample captures when a strategy-approved signal is blocked by risk.
@@ -203,7 +203,7 @@ type DebugTraceEvent struct {
 	HighOfDay             float64   `json:"highOfDay,omitempty"`
 	GapPercent            float64   `json:"gapPercent,omitempty"`
 	RelativeVolume        float64   `json:"relativeVolume,omitempty"`
-	FiveMinuteVolume      int64     `json:"fiveMinuteVolume,omitempty"`
+	FiveMinuteVolume      uint64    `json:"fiveMinuteVolume,omitempty"`
 	Score                 float64   `json:"score,omitempty"`
 	DistanceFromHighPct   float64   `json:"distanceFromHighPct,omitempty"`
 	OneMinuteReturnPct    float64   `json:"oneMinuteReturnPct,omitempty"`

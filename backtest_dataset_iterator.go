@@ -326,5 +326,7 @@ func filterJobsByTimeRange(jobs []historicalFetchJob, start, end time.Time) []hi
 // emptyIterator is an InputBarIterator that returns no bars.
 type emptyIterator struct{}
 
-func (e *emptyIterator) Next() (backtest.InputBar, bool, error) { return backtest.InputBar{}, false, nil }
-func (e *emptyIterator) Close() error                           { return nil }
+func (e *emptyIterator) Next() (backtest.InputBar, bool, error) {
+	return backtest.InputBar{}, false, nil
+}
+func (e *emptyIterator) Close() error { return nil }

@@ -26,16 +26,16 @@ import (
 
 // Config holds all the components needed to wire a trading pipeline.
 type Config struct {
-	TradingCfg   config.TradingConfig
-	Runtime      *runtime.State
-	Portfolio    *portfolio.Manager
-	Normalizer   *market.Normalizer
-	Scanner      *scanner.Scanner
-	Strategy     *strategy.Strategy
-	RiskEngine   *risk.Engine
-	Broker       execution.BrokerClient
-	Recorder     domain.EventRecorder // optional
-	Scorer       ml.Scorer            // optional shadow-mode scorer
+	TradingCfg config.TradingConfig
+	Runtime    *runtime.State
+	Portfolio  *portfolio.Manager
+	Normalizer *market.Normalizer
+	Scanner    *scanner.Scanner
+	Strategy   *strategy.Strategy
+	RiskEngine *risk.Engine
+	Broker     execution.BrokerClient
+	Recorder   domain.EventRecorder // optional
+	Scorer     ml.Scorer            // optional shadow-mode scorer
 
 	// RegimeTracker is optional; if set the pipeline updates it on every tick.
 	RegimeTracker *regime.Tracker

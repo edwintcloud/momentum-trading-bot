@@ -21,7 +21,7 @@ type symbolBar struct {
 	high      float64
 	low       float64
 	close     float64
-	volume    int64
+	volume    uint64
 	vwap      float64
 }
 
@@ -1367,7 +1367,7 @@ func qualifiesExplosiveSqueezeVolumeException(tick domain.Tick, metrics scanMetr
 	if tick.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume*2, 10.0) {
 		return false
 	}
-	if cfg.MinFiveMinuteVolume > 0 && tick.FiveMinuteVolume < max(cfg.MinFiveMinuteVolume*2, int64(20000)) {
+	if cfg.MinFiveMinuteVolume > 0 && tick.FiveMinuteVolume < max(cfg.MinFiveMinuteVolume*2, uint64(20000)) {
 		return false
 	}
 	if metrics.vwap <= 0 || tick.Price <= metrics.vwap || tick.Price <= tick.Open {
@@ -1532,7 +1532,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 		// Volume-on-pullback: check if recent bars have decreasing volume
 		if m.setupType == "pullback" && n >= 5 {
-			barVols := make([]int64, n)
+			barVols := make([]uint64, n)
 			for i := 0; i < n; i++ {
 				barVols[i] = max(bars[i].volume, 0)
 			}
@@ -1884,7 +1884,7 @@ func averageBarVolume(bars []symbolBar) float64 {
 	if len(bars) == 0 {
 		return 0
 	}
-	total := int64(0)
+	total := uint64(0)
 	for _, bar := range bars {
 		total += max(bar.volume, 0)
 	}

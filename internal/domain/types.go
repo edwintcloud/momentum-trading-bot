@@ -40,20 +40,20 @@ type Tick struct {
 	BarOpen          float64   `json:"barOpen"`
 	BarHigh          float64   `json:"barHigh"`
 	BarLow           float64   `json:"barLow"`
-	BarVolume        int64     `json:"barVolume"`
+	BarVolume        uint64    `json:"barVolume"`
 	Open             float64   `json:"open"`
 	HighOfDay        float64   `json:"highOfDay"`
-	Volume           int64     `json:"volume"`
+	Volume           uint64    `json:"volume"`
 	RelativeVolume   float64   `json:"relativeVolume"`
 	GapPercent       float64   `json:"gapPercent"`
-	PreMarketVolume  int64     `json:"premarketVolume"`
+	PreMarketVolume  uint64    `json:"premarketVolume"`
 	VolumeSpike      bool      `json:"volumeSpike"`
 	Float            int64     `json:"float"`         // shares available to trade (0 = unknown)
-	PrevDayVolume    int64     `json:"prevDayVolume"` // previous day's total volume (0 = unknown)
+	PrevDayVolume    uint64    `json:"prevDayVolume"` // previous day's total volume (0 = unknown)
 	Catalyst         string    `json:"catalyst"`
 	CatalystURL      string    `json:"catalystUrl"`
 	Timestamp        time.Time `json:"timestamp"`
-	FiveMinuteVolume int64     `json:"fiveMinuteVolume"`
+	FiveMinuteVolume uint64    `json:"fiveMinuteVolume"`
 }
 
 // Bar is a unified OHLCV bar used across live trading, backtest, and optimizer.
@@ -66,7 +66,7 @@ type Bar struct {
 	High        float64
 	Low         float64
 	Close       float64
-	Volume      int64
+	Volume      uint64
 	PrevClose   float64 // optional; overrides tracked previousClose on day flip (0 = use tracked state)
 	Catalyst    string  // optional metadata
 	CatalystURL string  // optional metadata
@@ -80,8 +80,8 @@ type Candidate struct {
 	Open                  float64   `json:"open"`
 	GapPercent            float64   `json:"gapPercent"`
 	RelativeVolume        float64   `json:"relativeVolume"`
-	PreMarketVolume       int64     `json:"premarketVolume"`
-	Volume                int64     `json:"volume"`
+	PreMarketVolume       uint64    `json:"premarketVolume"`
+	Volume                uint64    `json:"volume"`
 	HighOfDay             float64   `json:"highOfDay"`
 	PriceVsOpenPct        float64   `json:"priceVsOpenPct"`
 	DistanceFromHighPct   float64   `json:"distanceFromHighPct"`
@@ -117,14 +117,14 @@ type Candidate struct {
 	RegimeConfidence      float64   `json:"regimeConfidence"`
 	Playbook              string    `json:"playbook"`
 	Float                 int64     `json:"float"`
-	PrevDayVolume         int64     `json:"prevDayVolume"`
+	PrevDayVolume         uint64    `json:"prevDayVolume"`
 	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
-	OFIDirection          int       `json:"ofiDirection"`          // -1 short, 0 neutral, 1 long
-	OFIStrength           float64   `json:"ofiStrength"`           // 0-1 normalized
-	VPINDirection         int       `json:"vpinDirection"`         // -1 short, 0 neutral, 1 long
-	VPINStrength          float64   `json:"vpinStrength"`          // 0-1 normalized
+	OFIDirection          int       `json:"ofiDirection"`  // -1 short, 0 neutral, 1 long
+	OFIStrength           float64   `json:"ofiStrength"`   // 0-1 normalized
+	VPINDirection         int       `json:"vpinDirection"` // -1 short, 0 neutral, 1 long
+	VPINStrength          float64   `json:"vpinStrength"`  // 0-1 normalized
 	Timestamp             time.Time `json:"timestamp"`
 }
 

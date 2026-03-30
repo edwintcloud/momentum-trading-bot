@@ -84,17 +84,17 @@ var cumulativeProfile = []struct {
 	minutesSince4AM float64
 	fraction        float64
 }{
-	{0, 0.0},     // 4:00 AM
-	{330, 0.02},  // 9:30 AM (premarket contributes ~2%)
-	{360, 0.10},  // 10:00 AM
-	{390, 0.20},  // 10:30 AM
-	{420, 0.28},  // 11:00 AM
-	{480, 0.40},  // 12:00 PM
-	{540, 0.50},  // 1:00 PM
-	{600, 0.58},  // 2:00 PM
-	{660, 0.68},  // 3:00 PM
-	{720, 0.85},  // 4:00 PM
-	{960, 1.0},   // 8:00 PM (end of after-hours)
+	{0, 0.0},    // 4:00 AM
+	{330, 0.02}, // 9:30 AM (premarket contributes ~2%)
+	{360, 0.10}, // 10:00 AM
+	{390, 0.20}, // 10:30 AM
+	{420, 0.28}, // 11:00 AM
+	{480, 0.40}, // 12:00 PM
+	{540, 0.50}, // 1:00 PM
+	{600, 0.58}, // 2:00 PM
+	{660, 0.68}, // 3:00 PM
+	{720, 0.85}, // 4:00 PM
+	{960, 1.0},  // 8:00 PM (end of after-hours)
 }
 
 // ExpectedCumulativeShare returns the expected fraction of a symbol's prior

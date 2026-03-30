@@ -8,12 +8,14 @@ import (
 // RiskBudgetManager implements dynamic risk budgeting based on realized volatility.
 //
 // Volatility-targeted sizing:
-//   position_size_i = (risk_budget × vol_scalar) / (stock_vol_i × price_i)
-//   vol_scalar = target_vol / realized_vol
+//
+//	position_size_i = (risk_budget × vol_scalar) / (stock_vol_i × price_i)
+//	vol_scalar = target_vol / realized_vol
 //
 // Intraday dynamic budgeting:
-//   bar_risk_limit = daily_risk_budget / remaining_bars_ratio
-//   max_position = bar_risk_limit / (intraday_vol × price)
+//
+//	bar_risk_limit = daily_risk_budget / remaining_bars_ratio
+//	max_position = bar_risk_limit / (intraday_vol × price)
 type RiskBudgetManager struct {
 	mu                 sync.RWMutex
 	targetVolAnnual    float64 // target portfolio volatility (annualized)

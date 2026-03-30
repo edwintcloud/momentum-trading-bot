@@ -7,14 +7,14 @@ import (
 
 // VolatilityEstimator estimates realized volatility using recent returns.
 type VolatilityEstimator struct {
-	mu               sync.RWMutex
-	estimates        map[string]*volEstimate
-	defaultVol       float64
-	maxVol           float64
+	mu         sync.RWMutex
+	estimates  map[string]*volEstimate
+	defaultVol float64
+	maxVol     float64
 }
 
 type volEstimate struct {
-	realizedVol float64   // annualized realized volatility
+	realizedVol float64 // annualized realized volatility
 	lastPrice   float64
 	returns     []float64 // recent returns for computation
 }

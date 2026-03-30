@@ -15,36 +15,38 @@ import (
 // FloatStore stores float (shares available to trade) data per symbol.
 // Float values of 0 mean "unknown" and should not be used for filtering.
 type FloatStore struct {
-	mu     sync.RWMutex
-	floats map[string]int64
+	floats sync.Map
 }
 
 // NewFloatStore creates an empty FloatStore.
 func NewFloatStore() *FloatStore {
 	return &FloatStore{
-		floats: make(map[string]int64),
+		floats: sync.Map{},
 	}
 }
 
 // Set stores the float for a symbol.
 func (fs *FloatStore) Set(symbol string, shares int64) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	fs.floats[strings.ToUpper(symbol)] = shares
+	fs.floats.Store(strings.ToUpper(symbol), shares)
 }
 
 // Get returns the float for a symbol, or 0 if unknown.
 func (fs *FloatStore) Get(symbol string) int64 {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	return fs.floats[strings.ToUpper(symbol)]
+	v, ok := fs.floats.Load(strings.ToUpper(symbol))
+	if !ok {
+		return 0
+	}
+	return v.(int64)
 }
 
 // Len returns the number of symbols with float data.
 func (fs *FloatStore) Len() int {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	return len(fs.floats)
+	count := 0
+	fs.floats.Range(func(key, value any) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 // LoadFromCSV loads float data from a CSV source (file path or URL).

@@ -12,15 +12,15 @@ type ScannerConfig struct {
 	MaxPrice                   float64
 	MinGapPercent              float64
 	MinRelativeVolume          float64
-	MinPremarketVolume         int64
+	MinPremarketVolume         uint64
 	FloatOverrideURL           string
 	MaxFloat                   int64
 	MinFloat                   int64
-	MinPrevDayVolume           int64
+	MinPrevDayVolume           uint64
 	ScannerWorkers             int
 	MinOneMinuteReturnPct      float64
 	MinThreeMinuteReturnPct    float64
-	MinFiveMinuteVolume        int64
+	MinFiveMinuteVolume        uint64
 	MinVolumeRate              float64
 	MaxDistanceFromHighPct     float64
 	MACDFastPeriod             int
@@ -44,115 +44,116 @@ type ScannerConfig struct {
 
 // StrategyConfig holds entry/exit rules and position management parameters.
 type StrategyConfig struct {
-	EnableShorts                  bool
-	RiskPerTradePct               float64
-	MaxTradesPerDay               int
-	MaxOpenPositions              int
-	MaxExposurePct                float64
-	MaxShortOpenPositions         int
-	MaxShortExposurePct           float64
-	EntryCooldownSec              int
-	ExitCooldownSec               int
-	MinEntryScore                 float64
-	ShortMinEntryScore            float64
-	EntryATRPercentFallback       float64
-	EntryStopATRMultiplier        float64
-	MaxRiskATRMultiplier          float64
-	BreakEvenMinR                 float64
-	TrailActivationR              float64
-	TrailATRMultiplier            float64
-	TightTrailTriggerR            float64
-	TightTrailATRMultiplier       float64
-	ProfitTargetR                 float64
-	FailedBreakoutCutR            float64
-	ShortPeakExtensionMinPct      float64
-	ShortVWAPBreakMinPct          float64
-	PlaybookExits                 PlaybookExitsConfig
-	StagnationMinPeakR            float64
-	BreakoutFailureWindowMin      int
-	StagnationWindowMin           int
-	PartialExitsEnabled           bool
-	PartialTrigger1R              float64
-	PartialTrigger1Pct            float64
-	PartialTrigger2R              float64
-	PartialTrigger2Pct            float64
-	MoveStopAfterPartial          bool
-	MinPositionNotionalPct        float64
-	MaxEntriesPerMinute           int
-	MinATRBars                    int
-	DisableBearPressureLongBlock  bool
-	DailyProfitLockPct            float64
+	EnableShorts                 bool
+	RiskPerTradePct              float64
+	MaxTradesPerDay              int
+	MaxOpenPositions             int
+	MaxExposurePct               float64
+	MaxShortOpenPositions        int
+	MaxShortExposurePct          float64
+	EntryCooldownSec             int
+	ExitCooldownSec              int
+	MinEntryScore                float64
+	ShortMinEntryScore           float64
+	EntryATRPercentFallback      float64
+	EntryStopATRMultiplier       float64
+	MaxRiskATRMultiplier         float64
+	BreakEvenMinR                float64
+	TrailActivationR             float64
+	TrailATRMultiplier           float64
+	TightTrailTriggerR           float64
+	TightTrailATRMultiplier      float64
+	ProfitTargetR                float64
+	FailedBreakoutCutR           float64
+	ShortPeakExtensionMinPct     float64
+	ShortVWAPBreakMinPct         float64
+	PlaybookExits                PlaybookExitsConfig
+	StagnationMinPeakR           float64
+	BreakoutFailureWindowMin     int
+	StagnationWindowMin          int
+	PartialExitsEnabled          bool
+	PartialTrigger1R             float64
+	PartialTrigger1Pct           float64
+	PartialTrigger2R             float64
+	PartialTrigger2Pct           float64
+	MoveStopAfterPartial         bool
+	MinPositionNotionalPct       float64
+	MaxEntriesPerMinute          int
+	MinATRBars                   int
+	DisableBearPressureLongBlock bool
+	DailyProfitLockPct           float64
 }
 
 // RiskConfig holds risk management and position sizing parameters.
 type RiskConfig struct {
-	DailyLossLimitPct          float64
-	DailyLossModeratePct       float64
-	DailyLossSeverePct         float64
-	DailyLossHaltPct           float64
-	CorrelationCheckEnabled    bool
-	CorrelationWindowSize      int
-	MaxAvgCorrelation          float64
-	VolTargetSizingEnabled     bool
-	TargetVolPerPosition       float64
-	DrawdownRiskEnabled        bool
-	MaxAcceptableDrawdown      float64
-	SlippageLiquidBps          float64
-	SlippageMidBps             float64
-	SlippageIlliquidBps        float64
-	TargetVolAnnualized        float64
-	DailyRiskBudgetPct         float64
+	DailyLossLimitPct       float64
+	DailyLossModeratePct    float64
+	DailyLossSeverePct      float64
+	DailyLossHaltPct        float64
+	CorrelationCheckEnabled bool
+	CorrelationWindowSize   int
+	MaxAvgCorrelation       float64
+	VolTargetSizingEnabled  bool
+	TargetVolPerPosition    float64
+	DrawdownRiskEnabled     bool
+	MaxAcceptableDrawdown   float64
+	SlippageLiquidBps       float64
+	SlippageMidBps          float64
+	SlippageIlliquidBps     float64
+	TargetVolAnnualized     float64
+	DailyRiskBudgetPct      float64
 }
 
 // ExecutionConfig holds order execution parameters.
 type ExecutionConfig struct {
-	LimitOrderSlippageDollars     float64
-	HydrationRequestsPerMin       int
-	HydrationRetrySec             int
-	HydrationQueueSize            int
-	TransactionCostsEnabled       bool
-	CommissionPerShare            float64
-	DefaultSpreadBps              float64
+	LimitOrderSlippageDollars float64
+	MaxSpreadPct              float64
+	HydrationRequestsPerMin   int
+	HydrationRetrySec         int
+	HydrationQueueSize        int
+	TransactionCostsEnabled   bool
+	CommissionPerShare        float64
+	DefaultSpreadBps          float64
 }
 
 // BacktestConfig holds backtesting and optimization parameters.
 type BacktestConfig struct {
-	MonteCarloEnabled     bool
-	MonteCarloSims        int
-	OptimizerSamples      int
-	OptimizerUseLHS       bool
-	OptimizerTimeSplit    bool
-	WalkForwardEnabled    bool
-	WFISWindowDays        int
-	WFOOSWindowDays       int
-	WFPurgeGapDays        int
-	WFStepDays            int
-	CPCVEnabled           bool
-	CPCVGroups            int
-	CPCVPurgeGap          int
-	BayesianOptEnabled    bool
-	BayesianExploration   int
-	MHTCorrectionMethod   string
-	MHTAlpha              float64
+	MonteCarloEnabled   bool
+	MonteCarloSims      int
+	OptimizerSamples    int
+	OptimizerUseLHS     bool
+	OptimizerTimeSplit  bool
+	WalkForwardEnabled  bool
+	WFISWindowDays      int
+	WFOOSWindowDays     int
+	WFPurgeGapDays      int
+	WFStepDays          int
+	CPCVEnabled         bool
+	CPCVGroups          int
+	CPCVPurgeGap        int
+	BayesianOptEnabled  bool
+	BayesianExploration int
+	MHTCorrectionMethod string
+	MHTAlpha            float64
 }
 
 // AlphaConfig holds alpha signal source parameters.
 type AlphaConfig struct {
-	OFIEnabled           bool
-	OFIWindowBars        int
-	OFIThresholdSigma    float64
-	OFIPersistenceMin    int
-	VPINEnabled          bool
-	VPINBucketDivisor    int
-	VPINLookbackBuckets  int
-	VPINHighThreshold    float64
-	VPINLowThreshold     float64
-	ORBEnabled           bool
-	ORBWindowMinutes     int
-	ORBBufferPct         float64
-	ORBVolumeMultiplier  float64
-	ORBMaxGapPct         float64
-	ORBTargetMultiplier  float64
+	OFIEnabled          bool
+	OFIWindowBars       int
+	OFIThresholdSigma   float64
+	OFIPersistenceMin   int
+	VPINEnabled         bool
+	VPINBucketDivisor   int
+	VPINLookbackBuckets int
+	VPINHighThreshold   float64
+	VPINLowThreshold    float64
+	ORBEnabled          bool
+	ORBWindowMinutes    int
+	ORBBufferPct        float64
+	ORBVolumeMultiplier float64
+	ORBMaxGapPct        float64
+	ORBTargetMultiplier float64
 }
 
 // MLConfig holds machine learning pipeline parameters.
@@ -300,13 +301,13 @@ type PlaybookExitConfig struct {
 
 // PlaybookExitsConfig holds exit configs for all playbooks.
 type PlaybookExitsConfig struct {
-	Breakout       PlaybookExitConfig
-	Pullback       PlaybookExitConfig
-	Continuation   PlaybookExitConfig
-	Reversal       PlaybookExitConfig
-	MeanReversion  PlaybookExitConfig
-	GapFade        PlaybookExitConfig
-	PowerHour      PlaybookExitConfig
+	Breakout      PlaybookExitConfig
+	Pullback      PlaybookExitConfig
+	Continuation  PlaybookExitConfig
+	Reversal      PlaybookExitConfig
+	MeanReversion PlaybookExitConfig
+	GapFade       PlaybookExitConfig
+	PowerHour     PlaybookExitConfig
 }
 
 // DefaultTradingConfig returns the tuned baseline.

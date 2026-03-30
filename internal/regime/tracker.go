@@ -11,7 +11,7 @@ import (
 )
 
 type benchmarkState struct {
-	lastVolume           int64
+	lastVolume           uint64
 	cumulativeDollarFlow float64
 	vwap                 float64
 	emaFast              float64

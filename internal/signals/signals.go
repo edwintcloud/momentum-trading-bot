@@ -44,8 +44,8 @@ type Signal struct {
 	Type      SignalType `json:"type"`
 	Symbol    string     `json:"symbol"`
 	Direction Direction  `json:"direction"`
-	Strength  float64   `json:"strength"`
-	Timestamp time.Time `json:"timestamp"`
+	Strength  float64    `json:"strength"`
+	Timestamp time.Time  `json:"timestamp"`
 }
 
 // Bar is a standard OHLCV bar used across signal computations.
@@ -54,7 +54,7 @@ type Bar struct {
 	High      float64
 	Low       float64
 	Close     float64
-	Volume    int64
+	Volume    uint64
 	Timestamp time.Time
 }
 

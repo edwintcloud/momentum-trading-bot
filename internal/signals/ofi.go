@@ -25,7 +25,7 @@ func DefaultOFIConfig() OFIConfig {
 
 // ofiState tracks per-symbol OFI state.
 type ofiState struct {
-	volumes    []int64
+	volumes    []uint64
 	ofiValues  []float64
 	lastClose  float64
 	hasFirst   bool
@@ -106,7 +106,7 @@ func (o *OFI) OnBar(symbol string, bar Bar) *Signal {
 
 	// Compute rolling OFI and normalized OFI
 	var sumOFI float64
-	var totalVol int64
+	var totalVol uint64
 	for i, v := range st.ofiValues {
 		sumOFI += v
 		totalVol += st.volumes[i]

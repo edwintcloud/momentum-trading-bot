@@ -12,17 +12,17 @@ import (
 // SeedState holds historical context for seeding the normalizer on startup.
 type SeedState struct {
 	PreviousClose float64
-	PrevDayVolume int64
+	PrevDayVolume uint64
 	TodayOpen     float64
 	TodayHigh     float64
-	TodayVolume   int64
-	PreMarketVol  int64
+	TodayVolume   uint64
+	PreMarketVol  uint64
 }
 
 type minuteBar struct {
 	timestamp time.Time
 	high      float64
-	volume    int64
+	volume    uint64
 }
 
 // symbolState tracks per-symbol daily state for normalization.
@@ -31,18 +31,18 @@ type symbolState struct {
 	previousClose    float64
 	open             float64
 	highOfDay        float64
-	totalVolume      int64
-	preMarketVol     int64
-	prevDayVolume    int64
+	totalVolume      uint64
+	preMarketVol     uint64
+	prevDayVolume    uint64
 	lastClose        float64
 	seedDay          string
 	seedHighOfDay    float64
-	seedTotalVolume  int64
-	seedPreMarketVol int64
+	seedTotalVolume  uint64
+	seedPreMarketVol uint64
 	dailyHigh        float64
-	dailyVolume      int64
+	dailyVolume      uint64
 	currentFiveMin   time.Time
-	currentFiveVol   int64
+	currentFiveVol   uint64
 	minuteBars       []minuteBar
 }
 
@@ -162,7 +162,7 @@ func (n *Normalizer) Normalize(bar domain.Bar) domain.Tick {
 
 // UpdateDailyBar updates the session high-of-day and volume from a daily bar message.
 // Daily bars are emitted every minute after market open and contain cumulative session data.
-func (n *Normalizer) UpdateDailyBar(symbol string, high float64, volume int64, open float64) {
+func (n *Normalizer) UpdateDailyBar(symbol string, high float64, volume uint64, open float64) {
 	state := n.states[symbol]
 	if state == nil {
 		return
@@ -201,14 +201,14 @@ func calculateRelativeVolume(state *symbolState, timestamp time.Time) float64 {
 	return float64(state.totalVolume) / expected
 }
 
-func isVolumeSpike(recent []int64, latest int64, relativeVolume float64) bool {
+func isVolumeSpike(recent []uint64, latest uint64, relativeVolume float64) bool {
 	if relativeVolume >= 5 {
 		return true
 	}
 	if len(recent) < 3 {
 		return false
 	}
-	var total int64
+	var total uint64
 	for _, volume := range recent[:len(recent)-1] {
 		total += volume
 	}
@@ -282,21 +282,21 @@ func (s *symbolState) recomputeHighOfDay() {
 	s.highOfDay = highOfDay
 }
 
-func lastNMinuteVolumes(bars []minuteBar, n int) []int64 {
+func lastNMinuteVolumes(bars []minuteBar, n int) []uint64 {
 	if n <= 0 || len(bars) == 0 {
 		return nil
 	}
 	if len(bars) > n {
 		bars = bars[len(bars)-n:]
 	}
-	out := make([]int64, 0, len(bars))
+	out := make([]uint64, 0, len(bars))
 	for _, bar := range bars {
 		out = append(out, bar.volume)
 	}
 	return out
 }
 
-func (s *symbolState) fiveMinuteVolumeAt(ts time.Time) int64 {
+func (s *symbolState) fiveMinuteVolumeAt(ts time.Time) uint64 {
 	if s.currentFiveMin.IsZero() {
 		return 0
 	}
