@@ -30,10 +30,11 @@ type Client struct {
 	dataURL   string
 	http      *http.Client
 	paper     bool
+	tradingCfg config.TradingConfig
 }
 
 // NewClient creates an Alpaca API client.
-func NewClient(cfg config.AppConfig) *Client {
+func NewClient(cfg config.AppConfig, tradingCfg config.TradingConfig) *Client {
 	base := paperBaseURL
 	if !cfg.AlpacaPaper {
 		base = liveBaseURL
@@ -47,6 +48,7 @@ func NewClient(cfg config.AppConfig) *Client {
 			Timeout: 30 * time.Second,
 		},
 		paper: cfg.AlpacaPaper,
+		tradingCfg: tradingCfg,
 	}
 }
 
@@ -87,6 +89,11 @@ type AlpacaOrder struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	SubmittedAt *time.Time `json:"submitted_at"`
 	FilledAt    *time.Time `json:"filled_at"`
+}
+
+type AlpacaQuote struct {
+	AskPrice float64 `json:"ap"`
+	BidPrice float64 `json:"bp"`
 }
 
 func (o AlpacaOrder) EventTime() time.Time {
@@ -134,10 +141,22 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 		"time_in_force":  "day",
 		"extended_hours": true,
 	}
+	
+	var limitPrice float64
 
-	limitPrice := order.Price
+	// set price to latest quote
+	quote, err := c.LatestQuote(ctx, order.Symbol)
+	if err != nil {
+		return "", fmt.Errorf("fetch latest quote: %w", err)
+	}
+	if order.Side == domain.SideBuy {
+		limitPrice = quote.AskPrice * (1 + c.tradingCfg.LimitOrderSlippageDollars)
+	} else {
+		limitPrice = quote.BidPrice * (1 - c.tradingCfg.LimitOrderSlippageDollars)
+	}
+
 	// Percentage-based slippage by liquidity tier
-	slippage := computeOrderSlippage(order.Price, order.AvgDailyVolume,
+	slippage := computeOrderSlippage(limitPrice, order.AvgDailyVolume,
 		5.0, 10.0, 20.0) // liquid, mid, illiquid bps
 	if slippage < 0.01 {
 		slippage = 0.05 // minimum slippage floor
@@ -249,6 +268,17 @@ func (c *Client) IsEasyToBorrow(symbol string) bool {
 		return false
 	}
 	return result.Shortable && result.EasyToBorrow
+}
+
+func (c *Client) LatestQuote(ctx context.Context, symbol string) (AlpacaQuote, error) {
+	var result struct {
+		Quote AlpacaQuote `json:"quote"`
+	}
+	err := c.get(ctx, c.dataURL+"/v2/stocks/"+symbol+"/quotes/latest?feed="+c.DataFeed(), &result)
+	if err != nil {
+		return result.Quote, err
+	}
+	return result.Quote, nil
 }
 
 // CancelOrder cancels a pending order by ID.

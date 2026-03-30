@@ -66,7 +66,6 @@ func runBacktest(args []string) error {
 	}
 
 	cfg := config.DefaultTradingConfig()
-	profilePath := config.ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH"))
 
 	logDir := os.Getenv("BACKTEST_LOG_DIR")
 	if logDir == "" {
@@ -123,7 +122,7 @@ func runBacktest(args []string) error {
 		if err != nil {
 			return err
 		}
-		client := alpaca.NewClient(alpacaCfg)
+		client := alpaca.NewClient(alpacaCfg, cfg)
 
 		historicalRateLimit := 0
 		if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
@@ -135,7 +134,6 @@ func runBacktest(args []string) error {
 		// Backtests must start from the profile/default capital, not the live broker
 		// account balance, otherwise ROI and sizing depend on whatever happened in the
 		// paper/live account outside the historical window.
-		cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
 		universe, err := resolveBacktestSymbols(setupCtx, client, end, configuredSymbols)
 		if err != nil {
 			return err
@@ -163,18 +161,7 @@ func runBacktest(args []string) error {
 			len(universe.EasyToBorrow),
 		)
 	}
-	profileLabel := ""
-	if profilePath != "" {
-		cfg, profileLabel, err = applyConfiguredTradingProfile(cfg, profilePath)
-		if err != nil {
-			return err
-		}
-		if profileLabel != "" {
-			log.Printf("Backtest loaded trading profile %s", profileLabel)
-		}
-	} else {
-		log.Printf("Backtest using broker-tuned baseline config (no bundled trading profile found)")
-	}
+
 	if *mlModelPath != "" {
 		cfg.MLScoringEnabled = true
 		cfg.MLModelPath = *mlModelPath

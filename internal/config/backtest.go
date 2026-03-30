@@ -70,8 +70,3 @@ func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConf
 	cfg.StrategyProfileVersion = profile.Version
 	return cfg
 }
-
-// NormalizeStrategyProfile ensures all strategy profile fields have sane defaults.
-func NormalizeStrategyProfile(cfg TradingConfig) TradingConfig {
-	return TuneTradingConfig(cfg, cfg.StartingCapital, 0)
-}

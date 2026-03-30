@@ -255,7 +255,7 @@ func loadLabelBars(dataPath string, symbols []string, start, end time.Time) (map
 	if err != nil {
 		return nil, err
 	}
-	client := alpaca.NewClient(alpacaCfg)
+	client := alpaca.NewClient(alpacaCfg, config.DefaultTradingConfig())
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
