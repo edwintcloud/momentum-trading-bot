@@ -328,7 +328,7 @@ func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 	if symbolCount <= 0 {
 		return 20 * time.Minute
 	}
-	
+
 	dayCount := len(tradingDayWindows(start, end, markethours.Location()))
 	if dayCount == 0 {
 		dayCount = 1

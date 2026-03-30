@@ -141,7 +141,7 @@ func (r *historicalJobCacheReader) Next() (backtest.InputBar, bool, error) {
 		High:      decodeHistoricalPrice(highPrice),
 		Low:       decodeHistoricalPrice(lowPrice),
 		Close:     decodeHistoricalPrice(closePrice),
-		Volume:    int64(volume),
+		Volume:    volume,
 		PrevClose: decodeHistoricalPrice(prevClose),
 	}, true, nil
 }

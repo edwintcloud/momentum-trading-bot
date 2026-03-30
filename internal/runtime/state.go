@@ -11,16 +11,16 @@ const maxLogs = 500
 
 // State manages the runtime state of the trading system.
 type State struct {
-	mu             sync.RWMutex
-	paused         bool
-	emergencyStop  bool
-	ready          bool
-	candidates     []domain.Candidate
-	logs           []domain.LogEntry
-	marketRegime   domain.MarketRegimeSnapshot
-	eventRecorder  domain.EventRecorder
-	depStatuses    map[string]bool
-	heartbeats     map[string]time.Time
+	mu            sync.RWMutex
+	paused        bool
+	emergencyStop bool
+	ready         bool
+	candidates    []domain.Candidate
+	logs          []domain.LogEntry
+	marketRegime  domain.MarketRegimeSnapshot
+	eventRecorder domain.EventRecorder
+	depStatuses   map[string]bool
+	heartbeats    map[string]time.Time
 }
 
 // NewState creates a new runtime state.
@@ -48,12 +48,12 @@ func (s *State) TriggerDailyLossStop(at time.Time) {
 
 // OptimizerStatus tracks the optimizer lifecycle state.
 type OptimizerStatus struct {
-	ActiveProfileName           string
-	ActiveProfileVersion        string
-	PendingProfileName          string
-	PendingProfileVersion       string
-	LastOptimizerRun            time.Time
-	LastPaperValidationResult   string
+	ActiveProfileName         string
+	ActiveProfileVersion      string
+	PendingProfileName        string
+	PendingProfileVersion     string
+	LastOptimizerRun          time.Time
+	LastPaperValidationResult string
 }
 
 // Pause stops new entries from being taken.

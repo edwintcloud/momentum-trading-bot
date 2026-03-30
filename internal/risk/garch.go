@@ -23,11 +23,11 @@ type GARCHForecaster struct {
 }
 
 type garchState struct {
-	lastReturn    float64 // ε_{t-1}
-	lastVariance  float64 // σ²_{t-1}
-	lastPrice     float64
-	initialized   bool
-	observations  int
+	lastReturn   float64 // ε_{t-1}
+	lastVariance float64 // σ²_{t-1}
+	lastPrice    float64
+	initialized  bool
+	observations int
 }
 
 // NewGARCHForecaster creates a GARCH(1,1) forecaster.

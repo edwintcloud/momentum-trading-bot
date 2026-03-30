@@ -64,19 +64,19 @@ type mlAutoCheck struct {
 }
 
 type mlPromotionMetadata struct {
-	PromotedAt             time.Time             `json:"promotedAt"`
-	TargetModelDir         string                `json:"targetModelDir"`
-	SourceCandidateModel   string                `json:"sourceCandidateModelDir"`
-	TrainingReportPath     string                `json:"trainingReportPath"`
-	RegressionSummaryPath  string                `json:"regressionSummaryPath"`
-	AnnualSummaryPath      string                `json:"annualSummaryPath"`
-	CurrentAnnualSummary   string                `json:"currentAnnualSummaryPath,omitempty"`
-	CurrentRegressionPath  string                `json:"currentRegressionSummaryPath,omitempty"`
-	CandidateRegression    mlRegressionSummary   `json:"candidateRegression"`
-	CandidateAnnual        batchBacktestSummary  `json:"candidateAnnual"`
-	CurrentRegression      *mlRegressionSummary  `json:"currentRegression,omitempty"`
-	CurrentAnnual          *batchBacktestSummary `json:"currentAnnual,omitempty"`
-	Validation             mlAutoValidationResult `json:"validation"`
+	PromotedAt            time.Time              `json:"promotedAt"`
+	TargetModelDir        string                 `json:"targetModelDir"`
+	SourceCandidateModel  string                 `json:"sourceCandidateModelDir"`
+	TrainingReportPath    string                 `json:"trainingReportPath"`
+	RegressionSummaryPath string                 `json:"regressionSummaryPath"`
+	AnnualSummaryPath     string                 `json:"annualSummaryPath"`
+	CurrentAnnualSummary  string                 `json:"currentAnnualSummaryPath,omitempty"`
+	CurrentRegressionPath string                 `json:"currentRegressionSummaryPath,omitempty"`
+	CandidateRegression   mlRegressionSummary    `json:"candidateRegression"`
+	CandidateAnnual       batchBacktestSummary   `json:"candidateAnnual"`
+	CurrentRegression     *mlRegressionSummary   `json:"currentRegression,omitempty"`
+	CurrentAnnual         *batchBacktestSummary  `json:"currentAnnual,omitempty"`
+	Validation            mlAutoValidationResult `json:"validation"`
 }
 
 type mlAutoPromotionGuardrails struct {

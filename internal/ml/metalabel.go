@@ -12,7 +12,7 @@ type Bar struct {
 	High      float64
 	Low       float64
 	Close     float64
-	Volume    int64
+	Volume    uint64
 }
 
 // BarrierLabel labels a trade based on which barrier is hit first.

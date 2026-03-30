@@ -44,9 +44,9 @@ type Report struct {
 	HoldoutWeeks    int                 `json:"holdoutWeeks"`
 	Candidates      []CandidateResult   `json:"candidates"`
 	Recommendation  *CandidateResult    `json:"recommendation"`
-	DSR             float64              `json:"dsr,omitempty"`
-	MHT             *backtest.MHTResult  `json:"mht,omitempty"`
-	Sensitivity     *SensitivityResult   `json:"sensitivity,omitempty"`
+	DSR             float64             `json:"dsr,omitempty"`
+	MHT             *backtest.MHTResult `json:"mht,omitempty"`
+	Sensitivity     *SensitivityResult  `json:"sensitivity,omitempty"`
 }
 
 // CandidateResult is one optimizer trial.

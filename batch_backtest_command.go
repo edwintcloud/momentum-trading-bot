@@ -48,14 +48,14 @@ type batchBacktestWindowRun struct {
 }
 
 type batchBacktestTotalsSummary struct {
-	WindowCount      int     `json:"windowCount"`
-	TotalNetPnL      float64 `json:"totalNetPnL"`
-	AverageROI       float64 `json:"averageROI"`
-	WinningWindows   int     `json:"winningWindows"`
-	LosingWindows    int     `json:"losingWindows"`
-	BestWindowID     string  `json:"bestWindowId,omitempty"`
-	BestWindowNetPnL float64 `json:"bestWindowNetPnL,omitempty"`
-	WorstWindowID    string  `json:"worstWindowId,omitempty"`
+	WindowCount       int     `json:"windowCount"`
+	TotalNetPnL       float64 `json:"totalNetPnL"`
+	AverageROI        float64 `json:"averageROI"`
+	WinningWindows    int     `json:"winningWindows"`
+	LosingWindows     int     `json:"losingWindows"`
+	BestWindowID      string  `json:"bestWindowId,omitempty"`
+	BestWindowNetPnL  float64 `json:"bestWindowNetPnL,omitempty"`
+	WorstWindowID     string  `json:"worstWindowId,omitempty"`
 	WorstWindowNetPnL float64 `json:"worstWindowNetPnL,omitempty"`
 }
 
@@ -138,10 +138,10 @@ func runBatchBacktest(args []string) error {
 			window.End,
 		)
 		run, err := runBatchBacktestWindow(window, resolvedProfilePath, *outDir, batchBacktestWindowOptions{
-			MLModelPath:       strings.TrimSpace(*mlModelPath),
-			MLThreshold:       *mlThreshold,
-			MLAdvisory:        *mlAdvisory,
-			MLAdvisoryMinProb: *mlAdvisoryMinProb,
+			MLModelPath:        strings.TrimSpace(*mlModelPath),
+			MLThreshold:        *mlThreshold,
+			MLAdvisory:         *mlAdvisory,
+			MLAdvisoryMinProb:  *mlAdvisoryMinProb,
 			MLAdvisoryMaxVetos: *mlAdvisoryMaxVetos,
 		})
 		if err != nil {

@@ -2,11 +2,15 @@ package alpaca
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 )
 
 // APIError is returned when the Alpaca API returns a non-200 status code.
@@ -31,32 +35,22 @@ type MarketDataCapabilities struct {
 	HistoricalRateLimitPerMin int
 }
 
-// EquityAsset is Alpaca asset metadata for a US equity symbol.
-type EquityAsset struct {
-	Symbol       string   `json:"symbol"`
-	Name         string   `json:"name"`
-	Status       string   `json:"status"`
-	Exchange     string   `json:"exchange"`
-	Class        string   `json:"class"`
-	Tradable     bool     `json:"tradable"`
-	Shortable    bool     `json:"shortable"`
-	EasyToBorrow bool     `json:"easy_to_borrow"`
-	Attributes   []string `json:"attributes"`
-}
-
 // ListEquityAssets returns Alpaca metadata for active NASDAQ and NYSE US equities.
-func (c *Client) ListEquityAssets(ctx context.Context, activeOnly bool) ([]EquityAsset, error) {
-	var assets []EquityAsset
+func (c *Client) ListEquityAssets(ctx context.Context, activeOnly bool) ([]alpaca.Asset, error) {
 	status := "all"
 	if activeOnly {
 		status = "active"
 	}
-	url := fmt.Sprintf("%s/v2/assets?status=%s&asset_class=us_equity", c.baseURL, status)
-	if err := c.get(ctx, url, &assets); err != nil {
+
+	assets, err := c.tradeClient.GetAssets(alpaca.GetAssetsRequest{
+		Status:     status,
+		AssetClass: "us_equity",
+	})
+	if err != nil {
 		return nil, fmt.Errorf("list equity assets: %w", err)
 	}
 
-	filtered := make([]EquityAsset, 0, len(assets))
+	filtered := []alpaca.Asset{}
 	for _, a := range assets {
 		if !a.Tradable {
 			continue
@@ -68,27 +62,30 @@ func (c *Client) ListEquityAssets(ctx context.Context, activeOnly bool) ([]Equit
 		}
 	}
 
-	slices.SortFunc(filtered, func(a, b EquityAsset) int {
+	slices.SortFunc(filtered, func(a, b alpaca.Asset) int {
 		return strings.Compare(a.Symbol, b.Symbol)
 	})
 
 	return filtered, nil
 }
 
-// ListEquitySymbols returns all active NASDAQ and NYSE equity symbols.
-func (c *Client) ListEquitySymbols(ctx context.Context, activeOnly bool) ([]string, error) {
-	assets, err := c.ListEquityAssets(ctx, activeOnly)
-	if err != nil {
+// ListMostActiveSymbols returns the top N symbols by volume from Alpaca's screener.
+// Returns nil, nil if the endpoint is unavailable.
+func (c *Client) ListMostActiveSymbols(ctx context.Context, top int) ([]string, error) {
+	url := fmt.Sprintf("%s/v1beta1/screener/stocks/most-actives?by=volume&top=%d", c.dataURL, top)
+	var result struct {
+		MostActives []struct {
+			Symbol string `json:"symbol"`
+			Volume int64  `json:"volume"`
+		} `json:"most_actives"`
+	}
+	if err := c.get(ctx, url, &result); err != nil {
 		return nil, err
 	}
-
-	symbols := make([]string, 0, len(assets))
-	for _, a := range assets {
-		symbols = append(symbols, a.Symbol)
+	symbols := make([]string, len(result.MostActives))
+	for i, a := range result.MostActives {
+		symbols[i] = strings.ToUpper(a.Symbol)
 	}
-
-	slices.Sort(symbols)
-
 	return symbols, nil
 }
 
@@ -128,27 +125,49 @@ func (c *Client) DetectMarketDataCapabilities(ctx context.Context) (MarketDataCa
 	return MarketDataCapabilities{HistoricalRateLimitPerMin: 1000}, nil
 }
 
-// ListMostActiveSymbols returns the top N symbols by volume from Alpaca's screener.
-// Returns nil, nil if the endpoint is unavailable.
-func (c *Client) ListMostActiveSymbols(ctx context.Context, top int) ([]string, error) {
-	url := fmt.Sprintf("%s/v1beta1/screener/stocks/most-actives?by=volume&top=%d", c.dataURL, top)
-	var result struct {
-		MostActives []struct {
-			Symbol string `json:"symbol"`
-			Volume int64  `json:"volume"`
-		} `json:"most_actives"`
+func (c *Client) get(ctx context.Context, url string, dest interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
 	}
-	if err := c.get(ctx, url, &result); err != nil {
-		return nil, err
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
 	}
-	symbols := make([]string, len(result.MostActives))
-	for i, a := range result.MostActives {
-		symbols[i] = strings.ToUpper(a.Symbol)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return &APIError{StatusCode: resp.StatusCode, Message: string(body)}
 	}
-	return symbols, nil
+
+	return json.NewDecoder(resp.Body).Decode(dest)
 }
 
-// DataFeed returns the data feed name based on the account type.
-func (c *Client) DataFeed() string {
-	return "sip"
+func (c *Client) getWithHeaders(ctx context.Context, url string, dest interface{}) (http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return resp.Header, &APIError{StatusCode: resp.StatusCode, Message: string(body)}
+	}
+
+	return resp.Header, json.NewDecoder(resp.Body).Decode(dest)
+}
+
+func (c *Client) setAuth(req *http.Request) {
+	req.Header.Set("APCA-API-KEY-ID", c.apiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", c.apiSecret)
 }

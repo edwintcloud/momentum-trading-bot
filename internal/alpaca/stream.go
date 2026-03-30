@@ -35,7 +35,7 @@ type StreamBar struct {
 	High       float64   `json:"h"`
 	Low        float64   `json:"l"`
 	Close      float64   `json:"c"`
-	Volume     int64     `json:"v"`
+	Volume     uint64    `json:"v"`
 	Timestamp  time.Time `json:"t"`
 	TradeCount int64     `json:"n"`
 	VWAP       float64   `json:"vw"`

@@ -143,7 +143,7 @@ func parseInputBar(columns map[string]int, row []string) (InputBar, error) {
 	if err != nil {
 		return InputBar{}, err
 	}
-	volume, err := strconv.ParseInt(cell(columns, row, "volume"), 10, 64)
+	volume, err := strconv.ParseUint(cell(columns, row, "volume"), 10, 64)
 	if err != nil {
 		return InputBar{}, err
 	}

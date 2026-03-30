@@ -12,10 +12,10 @@ const DefaultArtifactDir = ".cache/optimizer"
 
 // ArtifactStatus summarizes the latest optimizer run metadata.
 type ArtifactStatus struct {
-	PendingProfileName          string    `json:"pendingProfileName"`
-	PendingProfileVersion       string    `json:"pendingProfileVersion"`
-	LastOptimizerRun            time.Time `json:"lastOptimizerRun"`
-	LastPaperValidationResult   string    `json:"lastPaperValidationResult"`
+	PendingProfileName        string    `json:"pendingProfileName"`
+	PendingProfileVersion     string    `json:"pendingProfileVersion"`
+	LastOptimizerRun          time.Time `json:"lastOptimizerRun"`
+	LastPaperValidationResult string    `json:"lastPaperValidationResult"`
 }
 
 // LoadArtifactStatus reads the latest optimizer run metadata from the given directory.

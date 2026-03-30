@@ -128,7 +128,7 @@ func runLive() {
 		log.Fatalf("alpaca: %v", err)
 	}
 	log.Printf("alpaca: equity=%.2f buying_power=%.2f status=%s", acct.Equity, acct.BuyingPower, acct.Status)
-	tradingCfg.StartingCapital = acct.Equity
+	tradingCfg.StartingCapital = acct.Equity.InexactFloat64()
 	runtimeState.SetDependencyStatus("alpaca", true)
 	runtimeState.SetDependencyStatus("storage", true)
 
@@ -141,7 +141,7 @@ func runLive() {
 
 	// Initialize pipeline components
 	portfolioMgr := portfolio.NewManager(tradingCfg, logger)
-	portfolioMgr.SetBrokerEquity(acct.Equity)
+	portfolioMgr.SetBrokerEquity(acct.Equity.InexactFloat64())
 
 	// Seed broker positions
 	brokerPositions, err := alpacaClient.GetPositions(ctx)
@@ -245,7 +245,7 @@ func runLive() {
 		}
 		for _, bp := range bPositions {
 			var currentPrice float64
-			fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
+			fmt.Sscanf(bp.CurrentPrice.String(), "%f", &currentPrice)
 			if currentPrice > 0 {
 				portfolioMgr.UpdatePrice(bp.Symbol, currentPrice)
 			}
@@ -317,7 +317,7 @@ func runLive() {
 			if snap.PrevDailyBar.Close <= 0 {
 				continue
 			}
-			preMarketVol := int64(0)
+			preMarketVol := uint64(0)
 			if markethours.IsPreMarket(now) {
 				// During premarket, all of today's volume is premarket volume
 				preMarketVol = snap.DailyBar.Volume
@@ -414,7 +414,7 @@ func runLive() {
 				// Update broker equity
 				bAcct, err := alpacaClient.GetAccount(ctx)
 				if err == nil {
-					portfolioMgr.SetBrokerEquity(bAcct.Equity)
+					portfolioMgr.SetBrokerEquity(bAcct.Equity.InexactFloat64())
 				}
 				// Update portfolio prices from broker and detect mismatches
 				pmPositions := portfolioMgr.GetPositions()
@@ -446,7 +446,7 @@ func runLive() {
 					// Update portfolio price from broker's current price so positions
 					// stay fresh even when no streaming bars are received.
 					var currentPrice float64
-					fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
+					fmt.Sscanf(bp.CurrentPrice.String(), "%f", &currentPrice)
 					if currentPrice > 0 {
 						portfolioMgr.UpdatePrice(bp.Symbol, currentPrice)
 						// Inject a synthetic bar so the strategy evaluates exit conditions.
@@ -643,20 +643,6 @@ func runOptimize(args []string) error {
 	return nil
 }
 
-func brokerCashValue(acct alpaca.Account) (float64, bool) {
-	if acct.Cash > 0 {
-		return acct.Cash, true
-	}
-	return 0, false
-}
-
-func brokerAccountValues(acct alpaca.Account) (float64, float64, bool) {
-	if acct.Equity > 0 {
-		return acct.Equity, acct.BuyingPower, true
-	}
-	return 0, 0, false
-}
-
 func runAutoOptimize(args []string) error {
 	fs := flag.NewFlagSet("auto-optimize", flag.ContinueOnError)
 	profilePath := fs.String("profile", "profiles/default.json", "path to the active profile to update")
@@ -785,7 +771,7 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 // that are missing risk metadata (StopPrice, RiskPerShare, OriginalQuantity, EntryATR).
 // When snapshots are provided, the previous day's low/high is used as a natural support/resistance
 // level. Otherwise, a percentage-based fallback is used (EntryATRPercentFallback or 2% default).
-func computeSeededPositionStops(portfolioMgr *portfolio.Manager, tradingCfg config.TradingConfig, snapshots map[string]alpaca.Snapshot) {
+func computeSeededPositionStops(portfolioMgr *portfolio.Manager, tradingCfg config.TradingConfig, snapshots map[string]*alpaca.Snapshot) {
 	for _, pos := range portfolioMgr.GetPositions() {
 		if !pos.BrokerSeeded || pos.StopPrice != 0 {
 			continue
@@ -843,7 +829,7 @@ func seedBrokerPosition(portfolioMgr *portfolio.Manager, bp alpaca.AlpacaPositio
 }
 
 func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition, openedAt time.Time) (domain.Position, bool) {
-	qty := alpaca.ParseOrderQuantity(bp.Qty)
+	qty := bp.Qty.IntPart()
 	if qty <= 0 {
 		return domain.Position{}, false
 	}
@@ -854,10 +840,10 @@ func brokerPositionToDomainPosition(bp alpaca.AlpacaPosition, openedAt time.Time
 	}
 
 	var avgPrice, currentPrice, marketValue, unrealizedPL float64
-	fmt.Sscanf(bp.AvgEntryPrice, "%f", &avgPrice)
-	fmt.Sscanf(bp.CurrentPrice, "%f", &currentPrice)
-	fmt.Sscanf(bp.MarketValue, "%f", &marketValue)
-	fmt.Sscanf(bp.UnrealizedPL, "%f", &unrealizedPL)
+	fmt.Sscanf(bp.AvgEntryPrice.String(), "%f", &avgPrice)
+	fmt.Sscanf(bp.CurrentPrice.String(), "%f", &currentPrice)
+	fmt.Sscanf(bp.MarketValue.String(), "%f", &marketValue)
+	fmt.Sscanf(bp.UnrealizedPL.String(), "%f", &unrealizedPL)
 	now := time.Now()
 	if openedAt.IsZero() {
 		openedAt = now
@@ -899,10 +885,10 @@ func inferBrokerPositionOpenedAtMap(ctx context.Context, alpacaClient *alpaca.Cl
 		if _, ok := wanted[order.Symbol]; !ok {
 			continue
 		}
-		if alpaca.ParseOrderQuantity(order.FilledQty) <= 0 {
+		if order.FilledQty.IntPart() <= 0 {
 			continue
 		}
-		if order.EventTime().IsZero() {
+		if alpaca.OrderEventTime(order).IsZero() {
 			continue
 		}
 		orderGroups[order.Symbol] = append(orderGroups[order.Symbol], order)
@@ -918,18 +904,18 @@ func inferBrokerPositionOpenedAtMap(ctx context.Context, alpacaClient *alpaca.Cl
 }
 
 func inferPositionOpenedAt(position alpaca.AlpacaPosition, orders []alpaca.AlpacaOrder) (time.Time, bool) {
-	remainingQty := alpaca.ParseOrderQuantity(position.Qty)
+	remainingQty := position.Qty.IntPart()
 	if remainingQty <= 0 || len(orders) == 0 {
 		return time.Time{}, false
 	}
 
 	sort.Slice(orders, func(i, j int) bool {
-		return orders[i].EventTime().After(orders[j].EventTime())
+		return alpaca.OrderEventTime(orders[i]).After(alpaca.OrderEventTime(orders[j]))
 	})
 
 	isShort := position.Side == "short"
 	for _, order := range orders {
-		filledQty := alpaca.ParseOrderQuantity(order.FilledQty)
+		filledQty := order.FilledQty.IntPart()
 		if filledQty <= 0 {
 			continue
 		}
@@ -937,14 +923,14 @@ func inferPositionOpenedAt(position alpaca.AlpacaPosition, orders []alpaca.Alpac
 		case !isShort && order.Side == domain.SideBuy:
 			remainingQty -= filledQty
 			if remainingQty <= 0 {
-				return order.EventTime(), true
+				return alpaca.OrderEventTime(order), true
 			}
 		case !isShort && order.Side == domain.SideSell:
 			remainingQty += filledQty
 		case isShort && order.Side == domain.SideSell:
 			remainingQty -= filledQty
 			if remainingQty <= 0 {
-				return order.EventTime(), true
+				return alpaca.OrderEventTime(order), true
 			}
 		case isShort && order.Side == domain.SideBuy:
 			remainingQty += filledQty

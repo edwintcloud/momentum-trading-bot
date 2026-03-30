@@ -7,11 +7,11 @@ import (
 
 // VPINConfig holds configuration for the VPIN signal.
 type VPINConfig struct {
-	Enabled          bool
-	BucketDivisor    int     // ADV / BucketDivisor = bucket size
-	LookbackBuckets  int     // number of buckets for rolling average
-	HighThreshold    float64 // above this → momentum/toxic flow
-	LowThreshold     float64 // below this → mean-reversion conditions
+	Enabled         bool
+	BucketDivisor   int     // ADV / BucketDivisor = bucket size
+	LookbackBuckets int     // number of buckets for rolling average
+	HighThreshold   float64 // above this → momentum/toxic flow
+	LowThreshold    float64 // below this → mean-reversion conditions
 }
 
 // DefaultVPINConfig returns sensible defaults for VPIN.
@@ -27,21 +27,21 @@ func DefaultVPINConfig() VPINConfig {
 
 // vpinBucket tracks buy/sell classification within a volume bucket.
 type vpinBucket struct {
-	buyVolume  int64
-	sellVolume int64
-	totalVolume int64
+	buyVolume   uint64
+	sellVolume  uint64
+	totalVolume uint64
 }
 
 // vpinState tracks per-symbol VPIN computation state.
 type vpinState struct {
-	adv            float64 // average daily volume (set externally or auto-calibrated)
-	bucketSize     int64
-	currentBucket  vpinBucket
+	adv             float64 // average daily volume (set externally or auto-calibrated)
+	bucketSize      uint64
+	currentBucket   vpinBucket
 	completeBuckets []vpinBucket
-	lastClose      float64
-	hasFirst       bool
-	cumulativeVol  int64 // accumulated volume for auto-calibration
-	cumulativeBars int   // accumulated bars for auto-calibration
+	lastClose       float64
+	hasFirst        bool
+	cumulativeVol   uint64 // accumulated volume for auto-calibration
+	cumulativeBars  int    // accumulated bars for auto-calibration
 }
 
 // VPIN implements Volume-Synchronized Probability of Informed Trading.
@@ -78,7 +78,7 @@ func (v *VPIN) SetADV(symbol string, adv float64) {
 	st := v.getState(symbol)
 	st.adv = adv
 	if v.cfg.BucketDivisor > 0 {
-		st.bucketSize = int64(adv / float64(v.cfg.BucketDivisor))
+		st.bucketSize = uint64(adv / float64(v.cfg.BucketDivisor))
 	}
 	if st.bucketSize <= 0 {
 		st.bucketSize = 1
@@ -101,7 +101,7 @@ func (v *VPIN) OnBar(symbol string, bar Bar) *Signal {
 		avgBarVol := float64(st.cumulativeVol) / float64(st.cumulativeBars)
 		estimatedADV := avgBarVol * 390
 		if v.cfg.BucketDivisor > 0 {
-			st.bucketSize = int64(estimatedADV / float64(v.cfg.BucketDivisor))
+			st.bucketSize = uint64(estimatedADV / float64(v.cfg.BucketDivisor))
 		}
 		if st.bucketSize <= 0 {
 			st.bucketSize = 10000
@@ -122,7 +122,7 @@ func (v *VPIN) OnBar(symbol string, bar Bar) *Signal {
 	}
 
 	// Bulk trade classification using tick rule
-	var buyVol, sellVol int64
+	var buyVol, sellVol uint64
 	if bar.Close > st.lastClose {
 		buyVol = bar.Volume
 	} else if bar.Close < st.lastClose {
@@ -154,7 +154,7 @@ func (v *VPIN) OnBar(symbol string, bar Bar) *Signal {
 		totalBarVol := buyVol + sellVol
 		if totalBarVol > 0 {
 			buyFraction := float64(buyVol) / float64(totalBarVol)
-			buyFill := int64(float64(fill) * buyFraction)
+			buyFill := uint64(float64(fill) * buyFraction)
 			sellFill := fill - buyFill
 			st.currentBucket.buyVolume += buyFill
 			st.currentBucket.sellVolume += sellFill

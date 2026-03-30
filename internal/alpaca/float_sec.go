@@ -234,9 +234,6 @@ func (fs *FloatStore) saveToCSV(path string) error {
 		return err
 	}
 
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -246,10 +243,13 @@ func (fs *FloatStore) saveToCSV(path string) error {
 	if _, err := fmt.Fprintln(f, "symbol,float"); err != nil {
 		return err
 	}
-	for sym, shares := range fs.floats {
+	fs.floats.Range(func(key, value any) bool {
+		sym := key.(string)
+		shares := value.(int64)
 		if _, err := fmt.Fprintf(f, "%s,%d\n", sym, shares); err != nil {
-			return err
+			return false
 		}
-	}
+		return true
+	})
 	return nil
 }
