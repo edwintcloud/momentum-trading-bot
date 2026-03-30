@@ -63,7 +63,8 @@ func IsMarketOpen(t time.Time) bool {
 	return !ny.Before(open) && ny.Before(close)
 }
 
-// IsPreMarket returns true if the time is between 4:00 AM and 9:30 AM ET on a market day.
+// IsPreMarket returns true if the time is between 7:30 AM and 9:30 AM ET on a market day.
+// We are not using 4 am here to prevent bad fills during the very low-liquidity premarket session, which can be 4-9:30 am but is often not worth trading until 7:30 or later.
 func IsPreMarket(t time.Time) bool {
 	ny := t.In(nyLoc)
 	weekday := ny.Weekday()
@@ -73,7 +74,7 @@ func IsPreMarket(t time.Time) bool {
 	if IsMarketHoliday(ny) {
 		return false
 	}
-	preOpen := time.Date(ny.Year(), ny.Month(), ny.Day(), 4, 0, 0, 0, nyLoc)
+	preOpen := time.Date(ny.Year(), ny.Month(), ny.Day(), 7, 30, 0, 0, nyLoc)
 	open := MarketOpen(t)
 	return !ny.Before(preOpen) && ny.Before(open)
 }

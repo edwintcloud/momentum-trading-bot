@@ -79,7 +79,6 @@ type StrategyConfig struct {
 	StagnationMinPeakR            float64
 	BreakoutFailureWindowMin      int
 	StagnationWindowMin           int
-	TimeOfDayEnabled              bool
 	PartialExitsEnabled           bool
 	PartialTrigger1R              float64
 	PartialTrigger1Pct            float64

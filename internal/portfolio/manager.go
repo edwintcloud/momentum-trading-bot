@@ -664,6 +664,17 @@ func (m *Manager) SymbolHadLossToday(symbol string) bool {
 	return false
 }
 
+func (m *Manager) SymbolHitProfitLockToday(symbol string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, t := range m.closedTrades {
+		if t.Symbol == symbol && t.ExitPrice >= t.EntryPrice*(1+m.config.DailyProfitLockPct) {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveStalePosition removes a position that no longer exists at the broker,
 // recording it as a closed trade with the last known price.
 func (m *Manager) RemoveStalePosition(symbol string) {

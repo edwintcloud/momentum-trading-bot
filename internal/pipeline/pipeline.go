@@ -91,6 +91,7 @@ type Pipeline struct {
 	closeAllCh      chan domain.OrderRequest
 	fillCh          chan domain.ExecutionReport
 	wg              sync.WaitGroup
+	lastDayKey      string
 	mlMu            sync.Mutex
 	mlDayKey        string
 	mlDayScores     []float64
@@ -230,6 +231,16 @@ func (p *Pipeline) Start(ctx context.Context) {
 		for tick := range tickCh {
 			if p.cfg.RegimeTracker != nil && p.cfg.RegimeTracker.IsBenchmark(tick.Symbol) {
 				p.cfg.RegimeTracker.UpdateTick(tick)
+			}
+			// Resume trading at the start of each new trading day so that a
+			// daily-loss-limit pause from a prior day does not carry over.
+			dayKey := markethours.TradingDay(tick.Timestamp)
+			if dayKey != p.lastDayKey {
+				if p.lastDayKey != "" {
+					p.cfg.Runtime.Resume()
+				}
+				p.lastDayKey = dayKey
+				p.cfg.Portfolio.RefreshDayIfNeeded()
 			}
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
@@ -849,6 +860,16 @@ func (p *Pipeline) processDeterministicBar(
 
 	if p.cfg.RegimeTracker != nil && p.cfg.RegimeTracker.IsBenchmark(tick.Symbol) {
 		p.cfg.RegimeTracker.UpdateTick(tick)
+	}
+	// Resume trading at the start of each new trading day so that a
+	// daily-loss-limit pause from a prior day does not carry over.
+	dayKey := markethours.TradingDay(tick.Timestamp)
+	if dayKey != p.lastDayKey {
+		if p.lastDayKey != "" {
+			p.cfg.Runtime.Resume()
+		}
+		p.lastDayKey = dayKey
+		p.cfg.Portfolio.RefreshDayIfNeeded()
 	}
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
