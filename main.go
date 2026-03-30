@@ -152,7 +152,6 @@ func runLive() {
 	// Initialize pipeline components
 	portfolioMgr := portfolio.NewManager(tradingCfg, logger)
 	portfolioMgr.SetBrokerEquity(acct.Equity)
-	volEstimator := risk.NewVolatilityEstimator(tradingCfg.DefaultVolatility, tradingCfg.MaxVolEstimate)
 
 	// Seed broker positions
 	brokerPositions, err := alpacaClient.GetPositions(ctx)
@@ -187,7 +186,7 @@ func runLive() {
 	// Pipeline channels
 	scannerInst := scanner.NewScanner(tradingCfg, runtimeState)
 	riskEngine := risk.NewEngine(tradingCfg, portfolioMgr, runtimeState, alpacaClient)
-	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine, volEstimator)
+	strategyInst := strategy.NewStrategy(tradingCfg, portfolioMgr, runtimeState, riskEngine)
 	regimeTracker := regime.NewTracker(tradingCfg, runtimeState)
 	normalizer := market.NewNormalizer()
 	scorer, err := ml.ResolveScorer(tradingCfg.MLScoringEnabled, tradingCfg.MLModelPath)
@@ -227,7 +226,6 @@ func runLive() {
 		Scanner:                   scannerInst,
 		Strategy:                  strategyInst,
 		RiskEngine:                riskEngine,
-		VolEstimator:              volEstimator,
 		Broker:                    alpacaClient,
 		Recorder:                  logger,
 		Scorer:                    scorer,
