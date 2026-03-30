@@ -169,8 +169,8 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 					}
 				}
 				t := atomic.LoadInt64(&prev)
-				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" && candidate.Symbol != "" && time.Since(time.Unix(0, t)) >= 30*time.Second {
-					s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
+				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" &&  tick.Symbol != "" && time.Since(time.Unix(0, t)) >= 5*time.Second {
+					s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", tick.Symbol, reason))
 					atomic.StoreInt64(&prev, time.Now().UnixNano())
 				}
 			}
