@@ -314,7 +314,7 @@ func runLive() {
 		now := time.Now()
 		seeded := 0
 		for symbol, snap := range snapshots {
-			if snap.PrevDailyBar.Close <= 0 {
+			if snap.PrevDailyBar == nil || snap.DailyBar == nil {
 				continue
 			}
 			preMarketVol := uint64(0)
