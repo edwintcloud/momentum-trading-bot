@@ -436,8 +436,11 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 
 	// Determine direction
 	direction := domain.DirectionLong
-	if s.config.EnableShorts && metrics.setupType == "parabolic-failed-reclaim-short" {
+	if metrics.setupType == "parabolic-failed-reclaim-short" {
 		direction = domain.DirectionShort
+		if !cfg.EnableShorts {
+			return domain.Candidate{}, false, "shorts-disabled"
+		}
 	}
 	priceVsVWAPPct := safePct(tick.Price-metrics.vwap, metrics.vwap) * 100
 	if s.qualifiesShortMomentumProfile(tick, priceVsVWAPPct, metrics) {
@@ -506,8 +509,8 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 
 	if gapFadeQualified && (metrics.setupType == "early" || metrics.setupType == "breakout" || metrics.setupType == "breakdown") {
 		if tick.GapPercent > 0 && tick.Price < tick.Open {
-			metrics.setupType = "gap_fade_short"
 			if cfg.EnableShorts {
+				metrics.setupType = "gap_fade_short"
 				direction = domain.DirectionShort
 			}
 		} else if tick.GapPercent < 0 && tick.Price > tick.Open {
@@ -543,9 +546,9 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		}
 	}
 
-	// RSI momentum slope: longs generally need positive momentum, but fast breakout prints
-	// can briefly outrun smoothed RSI slope and should not be filtered out for that alone.
-	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 && !breakoutBypass && !pullbackBypass {
+	// RSI momentum slope: longs require positive RSI SMA slope, shorts require negative.
+	// When insufficient bars exist to compute the slope it defaults to 0 and is rejected.
+	if direction == domain.DirectionLong && metrics.rsiMASlope < 0 {
 		return domain.Candidate{}, false, "rsi-slope"
 	}
 	if direction == domain.DirectionShort && metrics.rsiMASlope > 0 {
@@ -1460,19 +1463,22 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 
 	// RSI and RSI MA Slope (14-period Wilder RSI) on aligned 5-minute candles
 	m.rsi = computeRSI(bars5, 14)
-	if n5 >= 15 {
-		rsiValues := make([]float64, 0, 10)
-		start := n5 - 10
-		if start < 0 {
-			start = 0
+	// RSI MA Slope: slope of SMA(14) of RSI computed from completed 5-minute bars only.
+	// The current in-progress bar is excluded to avoid transient spikes within a candle.
+	// Need 15 consecutive RSI values to form two overlapping SMA(14) windows.
+	completedBars5 := bars5[:max(n5-1, 0)] // exclude in-progress bar
+	nc := len(completedBars5)
+	if nc >= 29 { // 14 bars for RSI warm-up + 15 RSI data points
+		rsiValues := make([]float64, 15)
+		for i := 0; i < 15; i++ {
+			rsiValues[i] = computeRSI(completedBars5[:nc-14+i], 14)
 		}
-		for i := start; i < n5; i++ {
-			subBars := bars5[:i+1]
-			rsiValues = append(rsiValues, computeRSI(subBars, 14))
+		var smaPrev, smaCurr float64
+		for i := 0; i < 14; i++ {
+			smaPrev += rsiValues[i]
+			smaCurr += rsiValues[i+1]
 		}
-		if len(rsiValues) >= 2 {
-			m.rsiMASlope = (rsiValues[len(rsiValues)-1] - rsiValues[0]) / float64(len(rsiValues))
-		}
+		m.rsiMASlope = (smaCurr - smaPrev) / 14
 	}
 
 	// ADX for mean-reversion detection
@@ -1549,6 +1555,7 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 				breakdownLow > 0 &&
 				current.close < breakdownLow &&
 				reclaimFailureHigh > current.close &&
+				s.config.EnableShorts &&
 				reclaimFailureHigh < peakHigh {
 				m.setupType = "parabolic-failed-reclaim-short"
 				m.setupHigh = reclaimFailureHigh

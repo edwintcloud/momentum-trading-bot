@@ -300,6 +300,10 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "losing-ticker-blocked"
 	}
 
+	if s.portfolio.SymbolHitProfitLockToday(c.Symbol) {
+		return domain.TradeSignal{}, false, "ticker-profit-lock"
+	}
+
 	// Too many losses on this symbol today
 	if state.lossExits >= 2 && now.Sub(state.lastLossAt) < 30*time.Minute {
 		return domain.TradeSignal{}, false, "loss-cooldown"
@@ -356,14 +360,14 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// VWAP: price must be above VWAP for longs, below for shorts
-	if c.VWAP > 0 {
-		if domain.IsLong(c.Direction) && c.Price < c.VWAP {
-			return domain.TradeSignal{}, false, "vwap-filter"
-		}
-		if domain.IsShort(c.Direction) && c.Price > c.VWAP {
-			return domain.TradeSignal{}, false, "vwap-filter"
-		}
-	}
+	// if c.VWAP > 0 {
+	// 	if domain.IsLong(c.Direction) && c.Price < c.VWAP {
+	// 		return domain.TradeSignal{}, false, "vwap-filter"
+	// 	}
+	// 	if domain.IsShort(c.Direction) && c.Price > c.VWAP {
+	// 		return domain.TradeSignal{}, false, "vwap-filter"
+	// 	}
+	// }
 
 	// EMA9: price must be above EMA9 for longs, below for shorts
 	if domain.IsLong(c.Direction) && c.PriceVsEMA9Pct < 0 {
@@ -379,9 +383,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	}
 
 	// Use the aligned 5-minute candle return for long-side momentum confirmation.
-	if domain.IsLong(c.Direction) && c.FiveMinuteReturnPct < cfg.MinThreeMinuteReturnPct {
-		return domain.TradeSignal{}, false, "no-confirmation"
-	}
+	// if domain.IsLong(c.Direction) && c.ThreeMinuteReturnPct > c.FiveMinuteReturnPct {
+	// 	return domain.TradeSignal{}, false, "no-confirmation"
+	// }
 
 	// Regime gating: hard reject on clear directional mismatch
 	if cfg.RegimeGatingEnabled {
@@ -467,7 +471,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 		riskBudget *= drawdownFactor
 	}
-	riskBudget *= entryRiskMultiplier(c)
+	riskBudget *= min(entryRiskMultiplier(c), 1)
 	riskBudget *= longBearPressureRiskMultiplier(c, tape)
 
 	// Update HWM tracking
@@ -477,6 +481,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	if quantity <= 0 {
 		return domain.TradeSignal{}, false, "position-too-small"
 	}
+
+	// don't take a position larger than 80% of our cash equity
+	quantity = min(quantity, int64(math.Floor(0.8*currentEquity/c.Price)))
 
 	// Volatility-based position sizing cap
 	if cfg.VolTargetSizingEnabled && s.volEstimator != nil {
@@ -1987,6 +1994,9 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 	case "hod_breakout":
 		// Continue into the breakout-specific quality checks below.
 	case "orb_breakout":
+		if c.StockSelectionScore < 4 {
+			return "orb-breakout-quality", true
+		}
 		if c.Price < 6.0 &&
 			c.LeaderRank > 2 &&
 			c.VolumeLeaderPct < 35.0 &&
@@ -2008,7 +2018,7 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 	if c.Score < minScore {
 		return "hod-breakout-quality", true
 	}
-	if c.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume, 5.0) {
+	if c.RelativeVolume < cfg.HODMomoMinRelativeVolume {
 		return "hod-breakout-quality", true
 	}
 	leaderLimit := cfg.MaxVolumeLeaders
@@ -2046,7 +2056,7 @@ func rejectWeakLongBreakout(c domain.Candidate, cfg config.TradingConfig) (strin
 		c.PriceVsVWAPPct > 5.0 {
 		return "hod-breakout-quality", true
 	}
-	if c.DistanceFromHighPct > 0.6 {
+	if c.DistanceFromHighPct > 1.5 {
 		return "hod-breakout-quality", true
 	}
 	if c.OneMinuteReturnPct < math.Max(cfg.MinOneMinuteReturnPct, 0.35) {
@@ -2180,7 +2190,7 @@ func rejectWeakHODPullback(c domain.Candidate, cfg config.TradingConfig) (string
 	if c.Score < minScore {
 		return "pullback-reclaim-filter", true
 	}
-	if c.RelativeVolume < math.Max(cfg.HODMomoMinRelativeVolume, 5.0) {
+	if c.RelativeVolume < cfg.HODMomoMinRelativeVolume {
 		return "pullback-reclaim-filter", true
 	}
 	if c.LeaderRank > 1 &&

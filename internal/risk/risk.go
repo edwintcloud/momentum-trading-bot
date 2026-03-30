@@ -438,5 +438,8 @@ func (e *Engine) resetDayIfNeeded(at time.Time) {
 	if today != e.dayKey {
 		e.dayKey = today
 		e.approved = 0
+		// Resume trading if it was paused by the previous day's loss limit.
+		// The daily loss limit is per-day; a new trading day should start fresh.
+		e.runtime.Resume()
 	}
 }
