@@ -2,7 +2,9 @@ package alpaca
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -148,7 +150,49 @@ func (c *Client) ListMostActiveSymbols(ctx context.Context, top int) ([]string, 
 	return symbols, nil
 }
 
-// DataFeed returns the data feed name based on the account type.
-func (c *Client) DataFeed() string {
-	return "sip"
+func (c *Client) get(ctx context.Context, url string, dest interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return &APIError{StatusCode: resp.StatusCode, Message: string(body)}
+	}
+
+	return json.NewDecoder(resp.Body).Decode(dest)
+}
+
+func (c *Client) getWithHeaders(ctx context.Context, url string, dest interface{}) (http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return resp.Header, &APIError{StatusCode: resp.StatusCode, Message: string(body)}
+	}
+
+	return resp.Header, json.NewDecoder(resp.Body).Decode(dest)
+}
+
+func (c *Client) setAuth(req *http.Request) {
+	req.Header.Set("APCA-API-KEY-ID", c.apiKey)
+	req.Header.Set("APCA-API-SECRET-KEY", c.apiSecret)
 }
