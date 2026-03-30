@@ -13,16 +13,6 @@ type OFIConfig struct {
 	PersistenceMinBar int // minimum consecutive bars of imbalance (anti-spoofing)
 }
 
-// DefaultOFIConfig returns sensible defaults for OFI.
-func DefaultOFIConfig() OFIConfig {
-	return OFIConfig{
-		Enabled:           false,
-		WindowBars:        60,
-		ThresholdSigma:    3.0,
-		PersistenceMinBar: 3,
-	}
-}
-
 // ofiState tracks per-symbol OFI state.
 type ofiState struct {
 	volumes    []uint64

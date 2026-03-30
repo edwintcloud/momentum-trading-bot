@@ -59,11 +59,6 @@ type CandidateResult struct {
 	Config           config.TradingConfig `json:"config"`
 }
 
-// NewOptimizer creates an optimizer from bars.
-func NewOptimizer(bars []backtest.InputBar, asOf time.Time, outDir string) *Optimizer {
-	return &Optimizer{bars: bars, asOf: asOf, outDir: outDir}
-}
-
 // NewStreamingOptimizer creates an optimizer that streams bars from disk cache
 // instead of loading them all into RAM.
 func NewStreamingOptimizer(iterFactory func(start, end time.Time) (backtest.InputBarIterator, error), lookbackStart, asOf time.Time, outDir string) *Optimizer {

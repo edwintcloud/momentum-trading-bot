@@ -85,23 +85,6 @@ func (h *HMMRegimeDetector) CurrentRegime() (string, float64) {
 	return "bearish", bearProb
 }
 
-// ForwardProbs returns a copy of the current forward probability vector.
-func (h *HMMRegimeDetector) ForwardProbs() []float64 {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	out := make([]float64, len(h.forwardProbs))
-	copy(out, h.forwardProbs)
-	return out
-}
-
-// Reset restores the HMM to its initial prior state.
-func (h *HMMRegimeDetector) Reset() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	copy(h.forwardProbs, h.statePrior)
-	h.returnHistory = h.returnHistory[:0]
-}
-
 // gaussianPDF evaluates the Gaussian probability density function.
 func gaussianPDF(x, mean, stddev float64) float64 {
 	if stddev <= 0 {

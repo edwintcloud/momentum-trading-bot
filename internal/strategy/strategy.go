@@ -34,35 +34,6 @@ type TimeWindowConfig struct {
 	ProfitTargetMultiplier   float64
 }
 
-var defaultTimeWindowConfigs = map[TimeWindow]TimeWindowConfig{
-	TimeWindowOpen:    {ScoreThresholdMultiplier: 1.0, RiskMultiplier: 1.3, ProfitTargetMultiplier: 1.0},
-	TimeWindowMorning: {ScoreThresholdMultiplier: 1.0, RiskMultiplier: 1.0, ProfitTargetMultiplier: 1.0},
-	TimeWindowMidDay:  {ScoreThresholdMultiplier: 1.15, RiskMultiplier: 0.85, ProfitTargetMultiplier: 0.8},
-	TimeWindowClose:   {ScoreThresholdMultiplier: 1.3, RiskMultiplier: 0.7, ProfitTargetMultiplier: 0.6},
-}
-
-// currentTimeWindow classifies the market session period using ET.
-func currentTimeWindow(ts time.Time) TimeWindow {
-	loc := markethours.Location()
-	et := ts.In(loc)
-	open := markethours.MarketOpen(ts)
-	openET := open.In(loc)
-	minutesSinceOpen := et.Sub(openET).Minutes()
-	closeET := markethours.MarketClose(ts).In(loc)
-	minutesToClose := closeET.Sub(et).Minutes()
-
-	switch {
-	case minutesSinceOpen < 30:
-		return TimeWindowOpen
-	case minutesToClose <= 60:
-		return TimeWindowClose
-	case minutesSinceOpen < 120:
-		return TimeWindowMorning
-	default:
-		return TimeWindowMidDay
-	}
-}
-
 // Strategy implements breakout entries and managed exits.
 type Strategy struct {
 	config              config.TradingConfig
@@ -2305,20 +2276,4 @@ func (s *Strategy) getSymbolState(symbol, dayKey string) symbolTradeState {
 		}
 	}
 	return state
-}
-
-// KellyFraction computes the optimal Kelly bet fraction.
-// f* = (b*p - q) / b where p=win rate, q=loss rate, b=avg win/avg loss
-func KellyFraction(winRate, avgWinLossRatio float64) float64 {
-	if avgWinLossRatio <= 0 || winRate <= 0 || winRate >= 1 {
-		return 0
-	}
-	b := avgWinLossRatio
-	p := winRate
-	q := 1 - p
-	kelly := (b*p - q) / b
-	if kelly < 0 {
-		return 0
-	}
-	return kelly
 }

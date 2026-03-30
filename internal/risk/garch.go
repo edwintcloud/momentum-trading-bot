@@ -30,32 +30,6 @@ type garchState struct {
 	observations int
 }
 
-// NewGARCHForecaster creates a GARCH(1,1) forecaster.
-func NewGARCHForecaster(alpha, beta, longRunVar float64) *GARCHForecaster {
-	if alpha <= 0 {
-		alpha = 0.10
-	}
-	if beta <= 0 {
-		beta = 0.85
-	}
-	if longRunVar <= 0 {
-		longRunVar = 0.0004
-	}
-	// Ensure stationarity: α + β < 1
-	if alpha+beta >= 1 {
-		alpha = 0.10
-		beta = 0.85
-	}
-	omega := (1 - alpha - beta) * longRunVar
-	return &GARCHForecaster{
-		alpha:      alpha,
-		beta:       beta,
-		omega:      omega,
-		longRunVar: longRunVar,
-		estimates:  make(map[string]*garchState),
-	}
-}
-
 // UpdatePrice feeds a new price observation for a symbol.
 func (g *GARCHForecaster) UpdatePrice(symbol string, price float64) {
 	if price <= 0 {

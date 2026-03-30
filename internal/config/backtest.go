@@ -61,12 +61,3 @@ func ResolveTradingProfilePath(envValue string) string {
 	}
 	return ""
 }
-
-// ApplyTradingProfile applies a TradingProfile's config onto a base TradingConfig.
-func ApplyTradingProfile(base TradingConfig, profile TradingProfile) TradingConfig {
-	cfg := profile.Config
-	cfg.StartingCapital = base.StartingCapital
-	cfg.StrategyProfileName = string(profile.Name)
-	cfg.StrategyProfileVersion = profile.Version
-	return cfg
-}

@@ -268,28 +268,6 @@ func (e *Engine) DrawdownSizingFactor() float64 {
 	return factor
 }
 
-// sectorExposure tracks per-sector position count and notional value.
-type sectorExposure struct {
-	positionCount int
-	notionalValue float64
-}
-
-// sectorExposures computes per-sector exposure from the given positions.
-func (e *Engine) sectorExposures(positions []domain.Position) map[string]sectorExposure {
-	exposures := make(map[string]sectorExposure)
-	for _, pos := range positions {
-		sector := pos.Sector
-		if sector == "" {
-			sector = "unknown"
-		}
-		exp := exposures[sector]
-		exp.positionCount++
-		exp.notionalValue += math.Abs(pos.MarketValue)
-		exposures[sector] = exp
-	}
-	return exposures
-}
-
 func (e *Engine) inferIntent(signal domain.TradeSignal, pos domain.Position, exists bool) domain.TradeSignal {
 	signal.Side = domain.NormalizeSide(signal.Side)
 	if exists && signal.PositionSide == "" {

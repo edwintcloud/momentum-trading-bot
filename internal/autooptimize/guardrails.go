@@ -18,18 +18,6 @@ type Guardrails struct {
 	ImprovementMinPct  float64 // minimum improvement percentage (default 0.10 = 10%)
 }
 
-// DefaultGuardrails returns guardrails with sensible defaults.
-func DefaultGuardrails() Guardrails {
-	return Guardrails{
-		MinSharpeRatio:     0.5,
-		MinWinRate:         0.30,
-		MaxDrawdownPct:     0.20,
-		MinTradeCount:      20,
-		RequireImprovement: true,
-		ImprovementMinPct:  0.10,
-	}
-}
-
 // ValidationResult captures the outcome of guardrail validation.
 type ValidationResult struct {
 	Passed bool

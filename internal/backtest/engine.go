@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
-	"github.com/edwintcloud/momentum-trading-bot/internal/analytics"
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
@@ -85,17 +84,15 @@ type Result struct {
 	ClosedTrades        []domain.ClosedTrade
 
 	// Phase 4: Statistical rigor
-	MonteCarlo              *MonteCarloResult              `json:"monteCarlo,omitempty"`
-	Bootstrap               *BootstrapResult               `json:"bootstrap,omitempty"`
-	WalkForward             *WalkForwardResult             `json:"walkForward,omitempty"`
-	CPCV                    *CPCVResult                    `json:"cpcv,omitempty"`
-	FactorDecomposition     *analytics.FactorDecomposition `json:"factorDecomposition,omitempty"`
-	TotalCommissions        float64                        `json:"totalCommissions,omitempty"`
-	TotalSECFees            float64                        `json:"totalSECFees,omitempty"`
-	TotalTAFFees            float64                        `json:"totalTAFFees,omitempty"`
-	TotalSpreadCosts        float64                        `json:"totalSpreadCosts,omitempty"`
-	TotalTransactionCosts   float64                        `json:"totalTransactionCosts,omitempty"`
-	ImplementationShortfall float64                        `json:"implementationShortfall,omitempty"`
+	MonteCarlo              *MonteCarloResult  `json:"monteCarlo,omitempty"`
+	WalkForward             *WalkForwardResult `json:"walkForward,omitempty"`
+	CPCV                    *CPCVResult        `json:"cpcv,omitempty"`
+	TotalCommissions        float64            `json:"totalCommissions,omitempty"`
+	TotalSECFees            float64            `json:"totalSECFees,omitempty"`
+	TotalTAFFees            float64            `json:"totalTAFFees,omitempty"`
+	TotalSpreadCosts        float64            `json:"totalSpreadCosts,omitempty"`
+	TotalTransactionCosts   float64            `json:"totalTransactionCosts,omitempty"`
+	ImplementationShortfall float64            `json:"implementationShortfall,omitempty"`
 }
 
 type TradeBreakdown struct {
