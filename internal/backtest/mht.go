@@ -31,26 +31,6 @@ type TrialCounter struct {
 	count int
 }
 
-// NewTrialCounter creates a new trial counter starting at zero.
-func NewTrialCounter() *TrialCounter {
-	return &TrialCounter{}
-}
-
-// Add increments the trial counter by n.
-func (tc *TrialCounter) Add(n int) {
-	tc.count += n
-}
-
-// Inc increments the trial counter by one.
-func (tc *TrialCounter) Inc() {
-	tc.count++
-}
-
-// Count returns the current trial count.
-func (tc *TrialCounter) Count() int {
-	return tc.count
-}
-
 // BonferroniCorrection applies the Bonferroni correction to a set of p-values.
 //
 //	α_adjusted = α / N_tests

@@ -235,17 +235,6 @@ func (s *Stream) SyncTradeSubscriptions(ctx context.Context, symbols []string) e
 	return nil
 }
 
-// Unsubscribe removes symbols from the active subscription.
-func (s *Stream) Unsubscribe(ctx context.Context, symbols []string) error {
-	s.mu.Lock()
-	for _, sym := range symbols {
-		delete(s.barSymbols, sym)
-		delete(s.tradeSymbols, sym)
-	}
-	s.mu.Unlock()
-	return s.writeSymbolBatches("unsubscribe", symbols, "bars", "dailyBars", "trades")
-}
-
 // Close cleanly shuts down the stream.
 func (s *Stream) Close() error {
 	select {

@@ -14,11 +14,6 @@ func init() {
 	}
 }
 
-// NYLocation returns the Eastern Time location.
-func NYLocation() *time.Location {
-	return nyLoc
-}
-
 // Location is an alias for NYLocation.
 func Location() *time.Location {
 	return nyLoc
@@ -248,15 +243,4 @@ func RemainingMinutes(t time.Time) int {
 // TradingDay returns the date string (YYYY-MM-DD) for the trading day.
 func TradingDay(t time.Time) string {
 	return t.In(nyLoc).Format("2006-01-02")
-}
-
-// PreviousTradingDay returns the prior trading day (skipping weekends and holidays).
-func PreviousTradingDay(t time.Time) time.Time {
-	ny := t.In(nyLoc)
-	for {
-		ny = ny.AddDate(0, 0, -1)
-		if IsMarketDay(ny) {
-			return ny
-		}
-	}
 }

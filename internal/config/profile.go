@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -83,23 +81,4 @@ func LoadTradingProfile(path string) (TradingProfile, error) {
 	profile.Name = StrategyProfile(strings.TrimSpace(string(profile.Name)))
 	profile.Version = strings.TrimSpace(profile.Version)
 	return profile, nil
-}
-
-// LoadBundledTradingProfile loads the built-in default profile.
-func LoadBundledTradingProfile() (TradingProfile, error) {
-	_, callerFile, _, _ := runtime.Caller(0)
-	root := filepath.Join(filepath.Dir(callerFile), "..", "..")
-	return LoadTradingProfile(filepath.Join(root, bundledTradingProfileRelPath))
-}
-
-// SaveTradingProfile writes a profile artifact to disk.
-func SaveTradingProfile(path string, profile TradingProfile) error {
-	raw, err := json.MarshalIndent(profile, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode trading profile: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create profile directory: %w", err)
-	}
-	return os.WriteFile(path, raw, 0o644)
 }

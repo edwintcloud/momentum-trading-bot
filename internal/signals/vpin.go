@@ -14,17 +14,6 @@ type VPINConfig struct {
 	LowThreshold    float64 // below this → mean-reversion conditions
 }
 
-// DefaultVPINConfig returns sensible defaults for VPIN.
-func DefaultVPINConfig() VPINConfig {
-	return VPINConfig{
-		Enabled:         false,
-		BucketDivisor:   50,
-		LookbackBuckets: 50,
-		HighThreshold:   0.7,
-		LowThreshold:    0.3,
-	}
-}
-
 // vpinBucket tracks buy/sell classification within a volume bucket.
 type vpinBucket struct {
 	buyVolume   uint64

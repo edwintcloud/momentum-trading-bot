@@ -2,9 +2,7 @@ package scanner
 
 import (
 	"context"
-	"fmt"
 	"math"
-	"sort"
 	"sync"
 	"time"
 
@@ -152,27 +150,19 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 	}
 
 	work := make(chan domain.Tick, 256)
-	var prevTickMap sync.Map // symbol → time of last logged rejection
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for tick := range work {
-				candidate, shouldEmit, reason := s.evaluateDetailed(tick)
+				candidate, shouldEmit, _ := s.evaluateDetailed(tick)
 				if shouldEmit {
 					select {
 					case out <- candidate:
 					case <-ctx.Done():
 						return
 					}
-				}
-				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" && tick.Symbol != "" {
-					prev, _ := prevTickMap.LoadOrStore(tick.Symbol, time.Now())
-					if time.Since(prev.(time.Time)) > 30*time.Second {
-						s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", tick.Symbol, reason))
-					}
-					prevTickMap.Store(tick.Symbol, time.Now())
 				}
 			}
 		}()
@@ -676,28 +666,6 @@ func shouldBypassLongBreakoutFilters(cfg config.TradingConfig, metrics scanMetri
 	}
 	maxDist := math.Max(cfg.MaxDistanceFromHighPct, 1.0)
 	return distFromHighPct <= maxDist
-}
-
-func shouldBypassLeaderPullbackFilters(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64) bool {
-	if metrics.setupType != "hod_pullback" {
-		return false
-	}
-	if intradayReturnPct < 15 {
-		return false
-	}
-	if tick.RelativeVolume < 10 {
-		return false
-	}
-	if metrics.vwap <= 0 || tick.Price <= metrics.vwap {
-		return false
-	}
-	if metrics.oneMinuteReturn < 0 {
-		return false
-	}
-	if metrics.threeMinuteReturn < 0 {
-		return false
-	}
-	return true
 }
 
 func computeRossStockSelectionScore(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, referenceHigh float64) float64 {
@@ -1915,38 +1883,6 @@ func computeATR(bars []symbolBar, period int) float64 {
 	return sum / float64(count)
 }
 
-// aggregate5MinBars collapses 1-minute bars into aligned 5-minute OHLCV candles.
-func aggregate5MinBars(bars []symbolBar) []symbolBar {
-	if len(bars) == 0 {
-		return nil
-	}
-	out := make([]symbolBar, 0, len(bars)/5+1)
-	for _, bar := range bars {
-		bucket := fiveMinuteBucketStart(bar.timestamp)
-		if len(out) == 0 || !out[len(out)-1].timestamp.Equal(bucket) {
-			out = append(out, symbolBar{
-				timestamp: bucket,
-				open:      bar.open,
-				high:      bar.high,
-				low:       bar.low,
-				close:     bar.close,
-				volume:    max(bar.volume, 0),
-			})
-			continue
-		}
-		agg := &out[len(out)-1]
-		if bar.high > agg.high {
-			agg.high = bar.high
-		}
-		if bar.low < agg.low || agg.low == 0 {
-			agg.low = bar.low
-		}
-		agg.close = bar.close
-		agg.volume += max(bar.volume, 0)
-	}
-	return out
-}
-
 func fiveMinuteBucketStart(ts time.Time) time.Time {
 	et := ts.In(markethours.Location())
 	minute := et.Minute() - (et.Minute() % 5)
@@ -2024,47 +1960,6 @@ func computeEMAsAndMACDHistogram(
 	return ema9, regimeFast, regimeSlow, macdHistogram
 }
 
-// computeMACDHistogram returns the MACD histogram (MACD line - signal line).
-func computeMACDHistogram(bars []symbolBar, fastPeriod, slowPeriod, signalPeriod int) float64 {
-	n := len(bars)
-	if n == 0 || fastPeriod <= 0 || slowPeriod <= 0 || signalPeriod <= 0 {
-		return 0
-	}
-	// Compute running fast and slow EMAs, then MACD line at each bar
-	fastMult := 2.0 / float64(fastPeriod+1)
-	slowMult := 2.0 / float64(slowPeriod+1)
-	emaFast := bars[0].close
-	emaSlow := bars[0].close
-	macdValues := make([]float64, n)
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			emaFast = (bars[i].close-emaFast)*fastMult + emaFast
-			emaSlow = (bars[i].close-emaSlow)*slowMult + emaSlow
-		}
-		macdValues[i] = emaFast - emaSlow
-	}
-	// Signal line = EMA of MACD values
-	sigMult := 2.0 / float64(signalPeriod+1)
-	signal := macdValues[0]
-	for i := 1; i < n; i++ {
-		signal = (macdValues[i]-signal)*sigMult + signal
-	}
-	return macdValues[n-1] - signal
-}
-
-func computeEMA(bars []symbolBar, period int) float64 {
-	n := len(bars)
-	if n == 0 || period <= 0 {
-		return 0
-	}
-	multiplier := 2.0 / float64(period+1)
-	ema := bars[0].close
-	for i := 1; i < n; i++ {
-		ema = (bars[i].close-ema)*multiplier + ema
-	}
-	return ema
-}
-
 // computeRSI computes the 14-period Wilder RSI from a series of bars.
 func computeRSI(bars []symbolBar, period int) float64 {
 	if len(bars) < period+1 {
@@ -2101,34 +1996,6 @@ func computeRSI(bars []symbolBar, period int) float64 {
 	}
 	rs := avgGain / avgLoss
 	return 100.0 - (100.0 / (1.0 + rs))
-}
-
-// RankCandidates applies cross-sectional volume leader ranking to a batch of candidates.
-func RankCandidates(candidates []domain.Candidate) {
-	if len(candidates) == 0 {
-		return
-	}
-
-	type ranked struct {
-		idx       int
-		composite float64
-	}
-	rankings := make([]ranked, len(candidates))
-	for i, c := range candidates {
-		rankings[i] = ranked{idx: i, composite: c.RelativeVolume * math.Abs(c.GapPercent)}
-	}
-
-	sort.Slice(rankings, func(i, j int) bool {
-		return rankings[i].composite > rankings[j].composite
-	})
-
-	topComposite := rankings[0].composite
-	for i, r := range rankings {
-		candidates[r.idx].LeaderRank = i + 1
-		if topComposite > 0 {
-			candidates[r.idx].VolumeLeaderPct = (r.composite / topComposite) * 100
-		}
-	}
 }
 
 // computeBollingerBands computes upper, middle, and lower Bollinger Bands.

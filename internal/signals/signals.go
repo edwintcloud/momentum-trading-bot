@@ -102,22 +102,6 @@ func (a *Aggregator) OnBar(symbol string, bar Bar) []Signal {
 	return out
 }
 
-// Reset clears state for a symbol across all sources.
-func (a *Aggregator) Reset(symbol string) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for _, src := range a.sources {
-		src.Reset(symbol)
-	}
-}
-
-// Sources returns the list of enabled signal sources.
-func (a *Aggregator) Sources() []SignalSource {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return append([]SignalSource(nil), a.sources...)
-}
-
 // Now returns the current time in ET.
 func Now() time.Time {
 	return time.Now().In(markethours.Location())

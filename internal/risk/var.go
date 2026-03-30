@@ -16,25 +16,6 @@ type VaRCalculator struct {
 	method           string    // "parametric" or "historical"
 }
 
-// NewVaRCalculator creates a VaR calculator.
-func NewVaRCalculator(confidenceLevel float64, method string, maxReturns int) *VaRCalculator {
-	if confidenceLevel <= 0 || confidenceLevel >= 1 {
-		confidenceLevel = 0.95
-	}
-	if method != "historical" {
-		method = "parametric"
-	}
-	if maxReturns <= 0 {
-		maxReturns = 390 // one full trading day of minute bars
-	}
-	return &VaRCalculator{
-		portfolioReturns: make([]float64, 0, maxReturns),
-		maxReturns:       maxReturns,
-		confidenceLevel:  confidenceLevel,
-		method:           method,
-	}
-}
-
 // AddReturn records a portfolio return observation (e.g., 1-minute return).
 func (vc *VaRCalculator) AddReturn(ret float64) {
 	vc.mu.Lock()
@@ -122,17 +103,6 @@ func (vc *VaRCalculator) ExceedsDailyLimit(accountSize, dailyLimitPct float64) b
 	dailyVaRLimit := accountSize * dailyLimitPct
 	intradayVaR := vc.IntraDayVaR(60)
 	return intradayVaR > 0 && (intradayVaR*accountSize) > dailyVaRLimit
-}
-
-// CVaRPositionSize computes position size based on CVaR-based risk budgeting.
-// riskBudget is the dollar amount of risk to allocate.
-// cvarPerUnit is the CVaR per unit of the asset (e.g., CVaR * price).
-func CVaRPositionSize(riskBudget, cvarPerUnit float64) int64 {
-	if cvarPerUnit <= 0 || riskBudget <= 0 {
-		return 0
-	}
-	size := riskBudget / cvarPerUnit
-	return int64(math.Floor(size))
 }
 
 // parametricVaR computes VaR assuming normally distributed returns.
