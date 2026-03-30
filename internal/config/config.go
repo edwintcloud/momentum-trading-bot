@@ -1,6 +1,10 @@
 package config
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"log"
+	"os"
+)
 
 // ScannerConfig holds stock selection criteria (Ross Cameron momentum filters).
 type ScannerConfig struct {
@@ -307,5 +311,13 @@ type PlaybookExitsConfig struct {
 
 // DefaultTradingConfig returns the tuned baseline.
 func DefaultTradingConfig() TradingConfig {
-	return TuneTradingConfig(TradingConfig{StartingCapital: defaultStartingCapital}, defaultStartingCapital, 0)
+	profilePath := ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH"))
+	if profilePath != "" {
+		profile, err := LoadTradingProfile(profilePath)
+		if err == nil {
+			log.Printf("config: loaded trading profile %s version %s", profile.Name, profile.Version)
+			return profile.Config
+		}
+	}
+	return TradingConfig{}
 }

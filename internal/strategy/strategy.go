@@ -346,16 +346,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "macd-filter"
 	}
 
-	// VWAP: price must be above VWAP for longs, below for shorts
-	// if c.VWAP > 0 {
-	// 	if domain.IsLong(c.Direction) && c.Price < c.VWAP {
-	// 		return domain.TradeSignal{}, false, "vwap-filter"
-	// 	}
-	// 	if domain.IsShort(c.Direction) && c.Price > c.VWAP {
-	// 		return domain.TradeSignal{}, false, "vwap-filter"
-	// 	}
-	// }
-
 	// EMA9: price must be above EMA9 for longs, below for shorts
 	if domain.IsLong(c.Direction) && c.PriceVsEMA9Pct < 0 {
 		return domain.TradeSignal{}, false, "ema9-filter"

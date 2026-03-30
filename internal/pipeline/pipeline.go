@@ -971,6 +971,7 @@ func (p *Pipeline) processDeterministicOrder(
 	pendingEntries *[]deterministicPendingOrder,
 ) bool {
 	p.cfg.Portfolio.MarkPendingOrder(order)
+
 	orderID, err := p.cfg.Broker.SubmitOrder(ctx, order)
 	if err != nil {
 		p.cfg.Portfolio.ClearPendingOrder(order.Symbol)

@@ -98,16 +98,6 @@ func runLive() {
 
 	// Load trading config
 	tradingCfg := config.DefaultTradingConfig()
-	if appCfg.TradingProfilePath != "" {
-		profile, err := config.LoadTradingProfile(appCfg.TradingProfilePath)
-		if err != nil {
-			log.Fatalf("load trading profile: %v", err)
-		}
-		tradingCfg = profile.Config
-		tradingCfg.StrategyProfileName = string(profile.Name)
-		tradingCfg.StrategyProfileVersion = profile.Version
-		log.Printf("config: loaded trading profile %s version %s", profile.Name, profile.Version)
-	}
 
 	// Connect to storage
 	var eventRecorder domain.EventRecorder
@@ -128,7 +118,7 @@ func runLive() {
 	telegramNotifier := telemetry.NewTelegramNotifierFromEnv()
 
 	// Connect to Alpaca
-	alpacaClient := alpaca.NewClient(appCfg)
+	alpacaClient := alpaca.NewClient(appCfg, tradingCfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -138,7 +128,7 @@ func runLive() {
 		log.Fatalf("alpaca: %v", err)
 	}
 	log.Printf("alpaca: equity=%.2f buying_power=%.2f status=%s", acct.Equity, acct.BuyingPower, acct.Status)
-	tradingCfg = config.TuneTradingConfig(tradingCfg, acct.Equity, acct.DayPnL)
+	tradingCfg.StartingCapital = acct.Equity
 	runtimeState.SetDependencyStatus("alpaca", true)
 	runtimeState.SetDependencyStatus("storage", true)
 
@@ -592,7 +582,7 @@ func runOptimize(args []string) error {
 	if err != nil {
 		return err
 	}
-	client := alpaca.NewClient(alpacaCfg)
+	client := alpaca.NewClient(alpacaCfg, config.DefaultTradingConfig())
 
 	historicalRateLimit := 0
 	if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
@@ -743,7 +733,7 @@ func executeOptimization(ctx context.Context, asOf time.Time, outDir string, max
 	if err != nil {
 		return optimizer.Report{}, err
 	}
-	client := alpaca.NewClient(alpacaCfg)
+	client := alpaca.NewClient(alpacaCfg, config.DefaultTradingConfig())
 
 	historicalRateLimit := 0
 	if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {

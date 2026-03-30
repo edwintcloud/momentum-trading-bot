@@ -503,17 +503,6 @@ func runMLRegressionWindow(
 
 func buildRegressionBacktestConfig(start, end time.Time, profilePath string, debugSymbols []string) (backtest.RunConfig, config.TradingConfig, error) {
 	cfg := config.DefaultTradingConfig()
-	if profilePath != "" {
-		var label string
-		var err error
-		cfg, label, err = applyConfiguredTradingProfile(cfg, profilePath)
-		if err != nil {
-			return backtest.RunConfig{}, config.TradingConfig{}, err
-		}
-		if label != "" {
-			log.Printf("train-ml regression: loaded trading profile %s", label)
-		}
-	}
 
 	floatStore := alpaca.NewFloatStore()
 	if _, err := floatStore.LoadOrFetchFloatData(context.Background()); err != nil {
@@ -527,13 +516,12 @@ func buildRegressionBacktestConfig(start, end time.Time, profilePath string, deb
 	if err != nil {
 		return backtest.RunConfig{}, config.TradingConfig{}, err
 	}
-	client := alpaca.NewClient(alpacaCfg)
+	client := alpaca.NewClient(alpacaCfg, cfg)
 
 	historicalRateLimit := 0
 	if capabilities, capErr := client.DetectMarketDataCapabilities(setupCtx); capErr == nil {
 		historicalRateLimit = capabilities.HistoricalRateLimitPerMin
 	}
-	cfg = config.TuneTradingConfig(cfg, cfg.StartingCapital, float64(historicalRateLimit))
 
 	universe, err := resolveBacktestSymbols(setupCtx, client, end, configuredUniverseSymbols())
 	if err != nil {

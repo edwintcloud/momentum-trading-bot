@@ -171,11 +171,7 @@ func runAutoTrainML(args []string) error {
 		return err
 	}
 
-	profileCfg, profileLabel, err := loadMLAutoProfile(strings.TrimSpace(*profilePath))
-	if err != nil {
-		return err
-	}
-	log.Printf("auto-train-ml: loaded trading profile %s", profileLabel)
+	profileCfg := config.DefaultTradingConfig()
 
 	resolvedTargetModelDir := strings.TrimSpace(*targetModelDir)
 	if resolvedTargetModelDir == "" {
@@ -448,19 +444,6 @@ func executeMLAutoTrain(ctx context.Context, asOf time.Time, outDir string, guar
 
 	report.Validation = guardrails.Validate(report)
 	return report, writeJSONAtomic(filepath.Join(runDir, "run_report.json"), report)
-}
-
-func loadMLAutoProfile(profilePath string) (config.TradingConfig, string, error) {
-	cfg := config.DefaultTradingConfig()
-	label := "default"
-	if profilePath == "" {
-		return cfg, label, nil
-	}
-	applied, appliedLabel, err := applyConfiguredTradingProfile(cfg, profilePath)
-	if err != nil {
-		return config.TradingConfig{}, "", err
-	}
-	return applied, appliedLabel, nil
 }
 
 func resolveCurrentAnnualSummary(explicit string) string {

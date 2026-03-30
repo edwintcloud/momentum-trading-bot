@@ -403,7 +403,6 @@ The bot uses versioned JSON trading profiles stored in `profiles/`:
 | `baseline_breakout` | Default balanced profile |
 
 - Profile loaded from `TRADING_PROFILE_PATH` env var or bundled `profiles/default.json`
-- `TuneTradingConfig()` fills any missing fields with sensible defaults based on broker equity and plan limits
 - See `profiles/default.json` for the full config fields (~200 fields across Scanner, Strategy, Risk, Execution, Portfolio, Backtest, Alpha, ML, and Regime sections)
 
 ### Key Config Categories
