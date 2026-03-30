@@ -6,7 +6,6 @@ import (
 	"math"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
@@ -153,7 +152,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 	}
 
 	work := make(chan domain.Tick, 256)
-	prev := time.Now().UnixNano()
+	var prevTickMap sync.Map // symbol → time of last logged rejection
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
@@ -168,10 +167,12 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 						return
 					}
 				}
-				t := atomic.LoadInt64(&prev)
-				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" && candidate.Symbol != "" && time.Since(time.Unix(0, t)) >= 30*time.Second {
-					s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
-					atomic.StoreInt64(&prev, time.Now().UnixNano())
+				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" && tick.Symbol != "" {
+					prev, _ := prevTickMap.LoadOrStore(tick.Symbol, time.Now())
+					if time.Since(prev.(time.Time)) > 30*time.Second {
+						s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", tick.Symbol, reason))
+					}
+					prevTickMap.Store(tick.Symbol, time.Now())
 				}
 			}
 		}()
