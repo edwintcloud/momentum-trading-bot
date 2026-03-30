@@ -70,7 +70,6 @@ type Strategy struct {
 	portfolio           *portfolio.Manager
 	runtime             *runtime.State
 	riskEngine          *risk.Engine
-	volEstimator        *risk.VolatilityEstimator
 	lastEntryAt         map[string]time.Time
 	lastExitAt          map[string]time.Time
 	symbolStates        map[string]symbolTradeState
@@ -104,7 +103,7 @@ type tapePressureState struct {
 }
 
 // NewStrategy creates a strategy instance.
-// Optional variadic args: riskEngine *risk.Engine, volEstimator *risk.VolatilityEstimator
+// Optional variadic args: riskEngine *risk.Engine
 func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, runtimeState *runtime.State, opts ...interface{}) *Strategy {
 	s := &Strategy{
 		config:              cfg,
@@ -120,8 +119,6 @@ func NewStrategy(cfg config.TradingConfig, portfolioManager *portfolio.Manager, 
 		switch v := opt.(type) {
 		case *risk.Engine:
 			s.riskEngine = v
-		case *risk.VolatilityEstimator:
-			s.volEstimator = v
 		}
 	}
 	return s
@@ -221,11 +218,6 @@ func (s *Strategy) EvaluateCandidateDecision(candidate domain.Candidate) Candida
 		reason = "system-paused"
 	} else if _, exists := s.portfolio.GetPosition(candidate.Symbol); exists {
 		reason = "existing-position"
-	} else if cfg.RegimeGatingEnabled {
-		if (candidate.MarketRegime == domain.RegimeBearish && domain.IsLong(candidate.Direction)) ||
-			(candidate.MarketRegime == domain.RegimeBullish && domain.IsShort(candidate.Direction)) {
-			reason = "regime-gated"
-		}
 	}
 	if reason == "no-signal" {
 		// Check cooldown
@@ -294,11 +286,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 	// Day state
 	dayKey := markethours.TradingDay(now)
 	state := s.getSymbolState(c.Symbol, dayKey)
-
-	// Block re-entry on any ticker that had a losing trade today
-	if cfg.BlockLosingTickerReentry && s.portfolio.SymbolHadLossToday(c.Symbol) {
-		return domain.TradeSignal{}, false, "losing-ticker-blocked"
-	}
 
 	if s.portfolio.SymbolHitProfitLockToday(c.Symbol) {
 		return domain.TradeSignal{}, false, "ticker-profit-lock"
@@ -382,50 +369,10 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		return domain.TradeSignal{}, false, "low-volume"
 	}
 
-	// Use the aligned 5-minute candle return for long-side momentum confirmation.
-	// if domain.IsLong(c.Direction) && c.ThreeMinuteReturnPct > c.FiveMinuteReturnPct {
-	// 	return domain.TradeSignal{}, false, "no-confirmation"
-	// }
-
-	// Regime gating: hard reject on clear directional mismatch
-	if cfg.RegimeGatingEnabled {
-		switch c.MarketRegime {
-		case domain.RegimeBearish:
-			if domain.IsLong(c.Direction) {
-				return domain.TradeSignal{}, false, "regime-gated"
-			}
-		case domain.RegimeBullish:
-			if domain.IsShort(c.Direction) {
-				return domain.TradeSignal{}, false, "regime-gated"
-			}
-		}
-	}
-
 	// Compute position sizing
 	riskPerShare := s.computeRiskPerShare(c)
 	if riskPerShare <= 0 {
 		return domain.TradeSignal{}, false, "invalid-risk"
-	}
-
-	// Risk/Reward pre-check: reject trades where reward < MinRiskRewardRatio × risk
-	if cfg.MinRiskRewardRatio > 0 && riskPerShare > 0 {
-		var estimatedReward float64
-		if domain.IsLong(c.Direction) {
-			estimatedReward = c.HighOfDay - c.Price
-			if estimatedReward <= 0 || c.SetupType == "hod_breakout" || c.SetupType == "orb_breakout" {
-				estimatedReward = c.ATR * 2.0
-			}
-		} else {
-			// For shorts, use distance to setup low (breakdown target) or ATR fallback
-			estimatedReward = c.Price - c.SetupLow
-			if estimatedReward <= 0 {
-				estimatedReward = c.ATR * 2.0
-			}
-		}
-		rewardRiskRatio := estimatedReward / riskPerShare
-		if rewardRiskRatio < cfg.MinRiskRewardRatio {
-			return domain.TradeSignal{}, false, "poor-risk-reward"
-		}
 	}
 
 	currentEquity := s.portfolio.CurrentEquity()
@@ -433,23 +380,7 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		currentEquity = cfg.StartingCapital
 	}
 
-	// Phase 2 Change 5: Kelly Criterion sizing
-	riskPct := cfg.RiskPerTradePct
-	if cfg.KellySizingEnabled {
-		winRate, wlRatio, tradeCount := s.portfolio.RollingTradeStats(cfg.KellyWindowSize)
-		if tradeCount >= cfg.KellyMinTrades {
-			kellyF := KellyFraction(winRate, wlRatio)
-			fractionalKelly := kellyF * cfg.KellyFraction
-			if fractionalKelly > cfg.MaxKellyRiskPct {
-				fractionalKelly = cfg.MaxKellyRiskPct
-			}
-			if fractionalKelly > 0 {
-				riskPct = fractionalKelly
-			}
-		}
-	}
-
-	riskBudget := currentEquity * riskPct
+	riskBudget := currentEquity * cfg.RiskPerTradePct
 
 	// Graduated daily loss sizing factor
 	if s.riskEngine != nil {
@@ -484,19 +415,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 
 	// don't take a position larger than 80% of our cash equity
 	quantity = min(quantity, int64(math.Floor(0.8*currentEquity/c.Price)))
-
-	// Volatility-based position sizing cap
-	if cfg.VolTargetSizingEnabled && s.volEstimator != nil {
-		stockVol := s.volEstimator.GetVolatility(c.Symbol)
-		if stockVol > 0 {
-			targetDollarVol := currentEquity * cfg.TargetVolPerPosition
-			positionDollar := targetDollarVol / stockVol
-			volBasedQty := int64(positionDollar / c.Price)
-			if volBasedQty > 0 && volBasedQty < quantity {
-				quantity = volBasedQty
-			}
-		}
-	}
 
 	entryPrice := c.Price
 	if domain.IsLong(c.Direction) {
@@ -1080,37 +998,10 @@ func isMeanReversionSetup(setupType string) bool {
 	return false
 }
 
-// volRegimeTrailFactor returns a multiplier for trail distances based on volatility regime.
-func (s *Strategy) volRegimeTrailFactor(pos domain.Position) float64 {
-	cfg := s.getConfig()
-	if !cfg.AdaptiveTrailEnabled {
-		return 1.0
-	}
-	switch pos.MarketRegime {
-	case domain.RegimeBullish:
-		if domain.IsLong(pos.Side) {
-			return 1.2 // let winners run in favorable regime
-		}
-		return 0.8 // tighter stops for shorts in bullish
-	case domain.RegimeBearish:
-		if domain.IsShort(pos.Side) {
-			return 1.2
-		}
-		return 0.8
-	case domain.RegimeMixed:
-		return 0.9 // slightly tighter in mixed
-	default:
-		return 1.0
-	}
-}
-
 func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	cfg := s.getConfig()
 	r := s.currentR(pos, tick.Price)
 	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
-
-	// Phase 3 Change 5: Adaptive trailing stop multiplier
-	volFactor := s.volRegimeTrailFactor(pos)
 
 	var newStop float64
 	if domain.IsLong(pos.Side) {
@@ -1135,7 +1026,7 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 
 			// Trailing stop activation (playbook-specific, volatility-adjusted)
 			if r >= exitCfg.TrailActivationR {
-				trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier*volFactor
+				trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier
 				if trailStop > pos.StopPrice {
 					newStop = trailStop
 				}
@@ -1143,7 +1034,7 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 
 			// Tight trail (playbook-specific, volatility-adjusted)
 			if r >= exitCfg.TightTrailTriggerR {
-				tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier*volFactor
+				tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier
 				if tightStop > pos.StopPrice {
 					newStop = tightStop
 				}
@@ -1155,13 +1046,13 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 			newStop = pos.AvgPrice - pos.EntryATR*0.1
 		}
 		if r >= exitCfg.TrailActivationR {
-			trailStop := tick.Price + pos.EntryATR*exitCfg.TrailATRMultiplier*volFactor
+			trailStop := tick.Price + pos.EntryATR*exitCfg.TrailATRMultiplier
 			if trailStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = trailStop
 			}
 		}
 		if r >= exitCfg.TightTrailTriggerR {
-			tightStop := tick.Price + pos.EntryATR*exitCfg.TightTrailATRMultiplier*volFactor
+			tightStop := tick.Price + pos.EntryATR*exitCfg.TightTrailATRMultiplier
 			if tightStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = tightStop
 			}

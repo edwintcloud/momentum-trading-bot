@@ -33,7 +33,6 @@ type Config struct {
 	Scanner      *scanner.Scanner
 	Strategy     *strategy.Strategy
 	RiskEngine   *risk.Engine
-	VolEstimator *risk.VolatilityEstimator
 	Broker       execution.BrokerClient
 	Recorder     domain.EventRecorder // optional
 	Scorer       ml.Scorer            // optional shadow-mode scorer
@@ -245,7 +244,6 @@ func (p *Pipeline) Start(ctx context.Context) {
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
-			p.cfg.VolEstimator.UpdatePrice(tick.Symbol, tick.Price)
 			p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 			if p.cfg.OnTickFanOut != nil {
 				p.cfg.OnTickFanOut(tick)
@@ -874,7 +872,6 @@ func (p *Pipeline) processDeterministicBar(
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
-	p.cfg.VolEstimator.UpdatePrice(tick.Symbol, tick.Price)
 	p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 	if p.cfg.OnTickFanOut != nil {
 		p.cfg.OnTickFanOut(tick)

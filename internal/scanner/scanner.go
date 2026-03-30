@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -157,12 +158,16 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 		go func() {
 			defer wg.Done()
 			for tick := range work {
-				if candidate, ok, _ := s.evaluateDetailed(tick); ok {
+				candidate, shouldEmit, reason := s.evaluateDetailed(tick)
+				if shouldEmit {
 					select {
 					case out <- candidate:
 					case <-ctx.Done():
 						return
 					}
+				}
+				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" {
+					s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
 				}
 			}
 		}()
@@ -371,31 +376,8 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		}
 	}
 
-	// Path 5: Power Hour — last window of regular session, strong intraday stocks with momentum
-	powerHourQualified := false
-	if cfg.PowerHourEnabled && markethours.IsMarketOpen(tick.Timestamp) {
-		phWindow := cfg.PowerHourWindowMinutes
-		if phWindow <= 0 {
-			phWindow = 60
-		}
-		remaining := markethours.RemainingMinutes(tick.Timestamp)
-		minIntraday := cfg.PowerHourMinIntradayPct
-		if minIntraday <= 0 {
-			minIntraday = 3.0
-		}
-		if remaining > 0 && remaining <= phWindow && tick.Open > 0 {
-			phIntraday := (tick.Price - tick.Open) / tick.Open * 100
-			if phIntraday < 0 {
-				phIntraday = -phIntraday
-			}
-			if phIntraday >= minIntraday && tick.RelativeVolume >= cfg.MinRelativeVolume {
-				powerHourQualified = true
-			}
-		}
-	}
-
 	// Must qualify via at least one path
-	if !gapQualified && !hodMomoQualified && !meanRevQualified && !gapFadeQualified && !powerHourQualified {
+	if !gapQualified && !hodMomoQualified && !meanRevQualified && !gapFadeQualified {
 		return domain.Candidate{}, false, classifyTickRejection(tick, cfg)
 	}
 
@@ -519,24 +501,12 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		}
 	}
 
-	if powerHourQualified && (metrics.setupType == "early" || metrics.setupType == "pullback" || metrics.setupType == "breakout") {
-		phIntraday := (tick.Price - tick.Open) / tick.Open * 100
-		if phIntraday > 0 {
-			metrics.setupType = "power_hour_long"
-			direction = domain.DirectionLong
-		} else if phIntraday < 0 && cfg.EnableShorts {
-			metrics.setupType = "power_hour_short"
-			direction = domain.DirectionShort
-		}
-	}
-
 	if metrics.setupType == "early" {
 		return domain.Candidate{}, false, "setup-early"
 	}
 
 	distFromHighPct := safePct(referenceHigh-tick.Price, referenceHigh) * 100
 	breakoutBypass := direction == domain.DirectionLong && shouldBypassLongBreakoutFilters(cfg, metrics, distFromHighPct, referenceHigh)
-	pullbackBypass := direction == domain.DirectionLong && shouldBypassLeaderPullbackFilters(tick, metrics, intradayReturnPct)
 
 	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day.
 	// True breakout setups are allowed to print at the exact high instead of being rejected.
@@ -553,15 +523,6 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 	}
 	if direction == domain.DirectionShort && metrics.rsiMASlope > 0 {
 		return domain.Candidate{}, false, "rsi-slope"
-	}
-
-	if cfg.RSIFilterEnabled {
-		if direction == domain.DirectionLong && metrics.rsi > cfg.RSIOverboughtThreshold && !breakoutBypass && !pullbackBypass {
-			return domain.Candidate{}, false, "rsi-overbought"
-		}
-		if direction == domain.DirectionShort && metrics.rsi < cfg.RSIOversoldThreshold {
-			return domain.Candidate{}, false, "rsi-oversold"
-		}
 	}
 
 	// Compute intraday return for candidate

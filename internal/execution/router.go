@@ -34,54 +34,14 @@ func (m ExecutionMethod) String() string {
 // pre-computed schedule.
 type RoutingDecision struct {
 	Method       ExecutionMethod
-	VWAPSchedule *VWAPSchedule
-	TWAPSchedule *TWAPSchedule
-	AdaptiveLimit *AdaptiveLimitState
 }
 
 // RouteOrder decides how to execute an order based on its size relative to
 // ADV and the enabled execution algorithms.
-//
-// Routing priority:
-//  1. Large orders (>= VWAPMinOrderADVPct of ADV) → VWAP
-//  2. Medium orders (TWAP enabled but not large enough for VWAP) → TWAP
-//  3. Small orders → direct execution, optionally with adaptive limit pricing
 func RouteOrder(symbol, side string, qty int64, price, adv float64, now time.Time, cfg config.TradingConfig) RoutingDecision {
-	// Check VWAP first (large orders).
-	if ShouldUseVWAP(qty, adv, cfg) {
-		schedule := GenerateVWAPSchedule(symbol, side, qty, now, adv, cfg)
-		decision := RoutingDecision{
-			Method:       ExecVWAP,
-			VWAPSchedule: schedule,
-		}
-		if cfg.AdaptiveLimitEnabled {
-			decision.AdaptiveLimit = NewAdaptiveLimitState(symbol, side, price, now, cfg)
-		}
-		return decision
-	}
-
-	// Check TWAP (medium orders — TWAP doesn't have a size threshold,
-	// it's the fallback algo when enabled).
-	if ShouldUseTWAP(cfg) {
-		schedule := GenerateTWAPSchedule(symbol, side, qty, now, cfg)
-		decision := RoutingDecision{
-			Method:       ExecTWAP,
-			TWAPSchedule: schedule,
-		}
-		if cfg.AdaptiveLimitEnabled {
-			decision.AdaptiveLimit = NewAdaptiveLimitState(symbol, side, price, now, cfg)
-		}
-		return decision
-	}
-
-	// Direct execution with optional adaptive limit pricing.
-	decision := RoutingDecision{
+	return RoutingDecision{
 		Method: ExecDirect,
 	}
-	if cfg.AdaptiveLimitEnabled {
-		decision.AdaptiveLimit = NewAdaptiveLimitState(symbol, side, price, now, cfg)
-	}
-	return decision
 }
 
 // EstimateExecutionImpact uses the Almgren-Chriss model to estimate

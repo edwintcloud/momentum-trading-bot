@@ -100,7 +100,6 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 - Sector concentration limits (max positions + exposure per sector; stocks with unknown/empty GICS sector bypass sector limits)
 - Correlation-aware position approval
 - Kelly Criterion position sizing
-- Volatility-target position sizing (with configurable max vol estimate clamp via `MaxVolEstimate`)
 - Position size floor (`MinPositionNotionalPct`) — prevents vol-target from sizing momentum positions to near-zero
 - Defensive stops for broker-seeded positions — on restart, existing broker positions automatically get stop prices computed from the previous day's low (via Alpaca snapshots) or a configurable ATR fallback percentage (`EntryATRPercentFallback`), ensuring no position is ever unprotected
 - Drawdown-based risk reduction (linear scale to max acceptable drawdown)
@@ -413,15 +412,15 @@ The bot uses versioned JSON trading profiles stored in `profiles/`:
 
 **Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`, `MaxFloat`, `MinFloat`, `MinPrevDayVolume`, `FloatOverrideURL`
 
-**Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`, `EntryDeadlineMinutesAfterOpen`, `MinRiskRewardRatio`
+**Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`
 
-**Scanner Quality** — `MaxDistanceFromHighPct`, `VolumeOnPullbackEnabled`
+**Scanner Quality** — `MaxDistanceFromHighPct`
 
 **HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range), `HODMomoMinMinutesSinceOpen` (5 min)
 
-**Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor), `MaxVolEstimate` (5.0 = cap annualized vol at 500%)
+**Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor)
 
-**Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `KellySizingEnabled`, `VolTargetSizingEnabled`, `CorrelationCheckEnabled`, `FactorAnalysisEnabled`, `ImpactModelEnabled`, `HMMRegimeEnabled`
+**Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `CorrelationCheckEnabled`, `HMMRegimeEnabled`
 
 **Optimization** — `OptimizerSamples`, `OptimizerUseLHS`, `BayesianOptEnabled`, `WalkForwardEnabled`, `CPCVEnabled`
 

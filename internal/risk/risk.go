@@ -9,7 +9,6 @@ import (
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
-	"github.com/edwintcloud/momentum-trading-bot/internal/execution"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/portfolio"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
@@ -50,15 +49,6 @@ func NewEngine(cfg config.TradingConfig, portfolioManager *portfolio.Manager, ru
 		borrowable:         checker,
 		dayKey:             "",
 		CorrelationTracker: NewCorrelationTracker(cfg.CorrelationWindowSize),
-	}
-	if cfg.VaREnabled {
-		e.VaRCalc = NewVaRCalculator(cfg.VaRConfidenceLevel, cfg.VaRMethod, 390)
-	}
-	if cfg.GARCHEnabled {
-		e.GARCHForecaster = NewGARCHForecaster(cfg.GARCHAlpha, cfg.GARCHBeta, cfg.GARCHLongRunVar)
-	}
-	if cfg.DynamicRiskBudgetEnabled {
-		e.RiskBudget = NewRiskBudgetManager(cfg.TargetVolAnnualized, cfg.DailyRiskBudgetPct)
 	}
 	return e
 }
@@ -203,54 +193,6 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		return domain.OrderRequest{}, false, "daily-loss-limit"
 	}
 
-	// VaR limit check: halt new entries if intraday VaR exceeds daily budget
-	if cfg.VaREnabled && e.VaRCalc != nil {
-		if e.VaRCalc.ExceedsDailyLimit(currentEquity, cfg.VaRDailyLimitPct) {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: intraday VaR exceeds daily limit (%.2f%%)", signal.Symbol, cfg.VaRDailyLimitPct*100))
-			return domain.OrderRequest{}, false, "var-limit-exceeded"
-		}
-	}
-
-	// Phase 2 Change 1: Portfolio heat gate
-	if cfg.PortfolioHeatEnabled {
-		currentHeat := e.portfolio.PortfolioHeat()
-		proposedRisk := signal.RiskPerShare * float64(signal.Quantity)
-		proposedHeatPct := (currentHeat + proposedRisk) / currentEquity
-
-		if proposedHeatPct > cfg.MaxPortfolioHeatPct {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: portfolio heat would exceed maximum: %.1f%% > %.1f%%",
-				signal.Symbol, proposedHeatPct*100, cfg.MaxPortfolioHeatPct*100))
-			return domain.OrderRequest{}, false, "portfolio-heat-limit"
-		}
-
-		currentHeatPct := currentHeat / currentEquity
-		if currentHeatPct > cfg.PortfolioHeatAlertPct {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("portfolio heat elevated: %.1f%%", currentHeatPct*100))
-		}
-	}
-
-	// Phase 2 Change 3: Sector concentration gate
-	// Skip for unknown/empty sectors — small-cap momentum stocks are rarely in the
-	// hardcoded sector map, so they all resolve to "unknown" and would saturate the
-	// single "unknown" bucket, blocking all subsequent entries.
-	if cfg.SectorConcentrationEnabled && signal.Sector != "" && signal.Sector != "unknown" {
-		exposures := e.sectorExposures(positions)
-		existing := exposures[signal.Sector]
-
-		if existing.positionCount >= cfg.MaxPositionsPerSector {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: sector concentration: %s already has %d positions (max %d)",
-				signal.Symbol, signal.Sector, existing.positionCount, cfg.MaxPositionsPerSector))
-			return domain.OrderRequest{}, false, "sector-concentration"
-		}
-
-		proposedSectorPct := (existing.notionalValue + proposedValue) / currentEquity
-		if proposedSectorPct > cfg.MaxSectorExposurePct {
-			e.runtime.RecordLog("warn", "risk", fmt.Sprintf("blocked %s: sector exposure for %s would reach %.1f%% (max %.1f%%)",
-				signal.Symbol, signal.Sector, proposedSectorPct*100, cfg.MaxSectorExposurePct*100))
-			return domain.OrderRequest{}, false, "sector-exposure-limit"
-		}
-	}
-
 	// Phase 2 Change 4: Correlation-aware position approval
 	if cfg.CorrelationCheckEnabled && e.CorrelationTracker != nil {
 		existingSymbols := e.portfolio.OpenSymbols()
@@ -264,24 +206,6 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 		}
 	}
 
-	// Phase 5: Market impact model — cap position size based on estimated impact
-	if cfg.ImpactModelEnabled && signal.Price > 0 && signal.Quantity > 0 {
-		adv := signal.AvgDailyVolume
-		if adv <= 0 {
-			// Conservative fallback when ADV is unknown
-			adv = float64(signal.Quantity) * 100
-		}
-		impactParams := execution.DefaultImpactParams(adv, cfg.DefaultVolatility)
-		impact := execution.EstimateImpact(int(signal.Quantity), signal.Price, impactParams)
-		if impact > cfg.MaxAcceptableImpactPct {
-			maxQty := execution.FindMaxQtyWithinImpact(signal.Price, impactParams, cfg.MaxAcceptableImpactPct)
-			if maxQty <= 0 {
-				return domain.OrderRequest{}, false, "market-impact-limit"
-			}
-			signal.Quantity = int64(maxQty)
-		}
-	}
-
 	// Position size cap (re-derive proposedValue after impact model may have reduced quantity)
 	proposedValue = signal.Price * float64(signal.Quantity)
 	maxPositionValue := currentEquity * cfg.MaxExposurePct / float64(cfg.MaxOpenPositions)
@@ -291,18 +215,6 @@ func (e *Engine) Evaluate(signal domain.TradeSignal) (domain.OrderRequest, bool,
 			return domain.OrderRequest{}, false, "position-size-cap"
 		}
 		signal.Quantity = newQty
-	}
-
-	// Dynamic risk budget position cap
-	if cfg.DynamicRiskBudgetEnabled && e.RiskBudget != nil && signal.Price > 0 {
-		intradayVol := e.RiskBudget.IntradayRealizedVol(30)
-		if intradayVol > 0 {
-			remainingBars := markethours.RemainingMinutes(signal.Timestamp)
-			maxQty := e.RiskBudget.MaxPositionFromBudget(currentEquity, remainingBars, 390, intradayVol, signal.Price)
-			if maxQty > 0 && maxQty < signal.Quantity {
-				signal.Quantity = maxQty
-			}
-		}
 	}
 
 	e.approved++

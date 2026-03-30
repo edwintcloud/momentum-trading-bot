@@ -19,10 +19,6 @@ type ScannerConfig struct {
 	MinFiveMinuteVolume        int64
 	MinVolumeRate              float64
 	MaxDistanceFromHighPct     float64
-	VolumeOnPullbackEnabled    bool
-	RSIFilterEnabled           bool
-	RSIOverboughtThreshold     float64
-	RSIOversoldThreshold       float64
 	MACDFastPeriod             int
 	MACDSlowPeriod             int
 	MACDSignalPeriod           int
@@ -33,9 +29,6 @@ type ScannerConfig struct {
 	GapFadeEnabled             bool
 	GapFadeMinGapPct           float64
 	GapFadeMaxRelVol           float64
-	PowerHourEnabled           bool
-	PowerHourMinIntradayPct    float64
-	PowerHourWindowMinutes     int
 	HODMomoEnabled             bool
 	HODMomoMinIntradayPct      float64
 	HODMomoMinRelativeVolume   float64
@@ -70,12 +63,7 @@ type StrategyConfig struct {
 	FailedBreakoutCutR            float64
 	ShortPeakExtensionMinPct      float64
 	ShortVWAPBreakMinPct          float64
-	RegimeGatingEnabled           bool
-	RegimeMixedScoreBoost         float64
-	RegimeNeutralScoreBoost       float64
 	PlaybookExits                 PlaybookExitsConfig
-	ConfidenceSizingEnabled       bool
-	ConfidenceSizingFloor         float64
 	StagnationMinPeakR            float64
 	BreakoutFailureWindowMin      int
 	StagnationWindowMin           int
@@ -85,13 +73,9 @@ type StrategyConfig struct {
 	PartialTrigger2R              float64
 	PartialTrigger2Pct            float64
 	MoveStopAfterPartial          bool
-	AdaptiveTrailEnabled          bool
-	EntryDeadlineMinutesAfterOpen int
-	MinRiskRewardRatio            float64
 	MinPositionNotionalPct        float64
 	MaxEntriesPerMinute           int
 	MinATRBars                    int
-	BlockLosingTickerReentry      bool
 	DisableBearPressureLongBlock  bool
 	DailyProfitLockPct            float64
 }
@@ -102,40 +86,18 @@ type RiskConfig struct {
 	DailyLossModeratePct       float64
 	DailyLossSeverePct         float64
 	DailyLossHaltPct           float64
-	PortfolioHeatEnabled       bool
-	MaxPortfolioHeatPct        float64
-	PortfolioHeatAlertPct      float64
-	SectorConcentrationEnabled bool
-	MaxPositionsPerSector      int
-	MaxSectorExposurePct       float64
 	CorrelationCheckEnabled    bool
 	CorrelationWindowSize      int
 	MaxAvgCorrelation          float64
-	KellySizingEnabled         bool
-	KellyWindowSize            int
-	KellyMinTrades             int
-	KellyFraction              float64
-	MaxKellyRiskPct            float64
 	VolTargetSizingEnabled     bool
 	TargetVolPerPosition       float64
-	DefaultVolatility          float64
 	DrawdownRiskEnabled        bool
 	MaxAcceptableDrawdown      float64
 	SlippageLiquidBps          float64
 	SlippageMidBps             float64
 	SlippageIlliquidBps        float64
-	VaREnabled                 bool
-	VaRConfidenceLevel         float64
-	VaRDailyLimitPct           float64
-	VaRMethod                  string
-	GARCHEnabled               bool
-	GARCHAlpha                 float64
-	GARCHBeta                  float64
-	GARCHLongRunVar            float64
-	DynamicRiskBudgetEnabled   bool
 	TargetVolAnnualized        float64
 	DailyRiskBudgetPct         float64
-	MaxVolEstimate             float64
 }
 
 // ExecutionConfig holds order execution parameters.
@@ -144,53 +106,15 @@ type ExecutionConfig struct {
 	HydrationRequestsPerMin       int
 	HydrationRetrySec             int
 	HydrationQueueSize            int
-	VWAPExecutionEnabled          bool
-	VWAPMinOrderADVPct            float64
-	TWAPExecutionEnabled          bool
-	TWAPSlices                    int
-	TWAPWindowSeconds             int
-	AdaptiveLimitEnabled          bool
-	AdaptiveLimitToleranceBps     float64
-	AdaptiveLimitWidenStepBps     float64
-	AdaptiveLimitWidenIntervalSec int
-	AdaptiveLimitMaxSlippageBps   float64
-	ImpactModelEnabled            bool
-	MaxAcceptableImpactPct        float64
 	TransactionCostsEnabled       bool
 	CommissionPerShare            float64
 	DefaultSpreadBps              float64
-}
-
-// PortfolioConfig holds portfolio construction parameters.
-type PortfolioConfig struct {
-	MVOEnabled                   bool
-	MVORiskAversion              float64
-	MVOMaxPositionPct            float64
-	MVOMaxSectorPct              float64
-	LedoitWolfShrinkage          float64
-	RiskParityEnabled            bool
-	RiskParityEWMALambda         float64
-	RiskParityRebalanceMinutes   int
-	RiskParityDeviationThreshold float64
-	FactorNeutralEnabled         bool
-	FactorBetaWindow             int
-	MaxNetBeta                   float64
-	HHIEnabled                   bool
-	HHIMaxTarget                 float64
-	HHIAlertThreshold            float64
-	LongShortBalancingEnabled    bool
-	DollarNeutralTolerance       float64
-	BetaNeutralThreshold         float64
-	MaxGrossLeverage             float64
-	SectorNeutralTolerance       float64
 }
 
 // BacktestConfig holds backtesting and optimization parameters.
 type BacktestConfig struct {
 	MonteCarloEnabled     bool
 	MonteCarloSims        int
-	BootstrapEnabled      bool
-	BootstrapResamples    int
 	OptimizerSamples      int
 	OptimizerUseLHS       bool
 	OptimizerTimeSplit    bool
@@ -206,7 +130,6 @@ type BacktestConfig struct {
 	BayesianExploration   int
 	MHTCorrectionMethod   string
 	MHTAlpha              float64
-	FactorAnalysisEnabled bool
 }
 
 // AlphaConfig holds alpha signal source parameters.
@@ -220,20 +143,12 @@ type AlphaConfig struct {
 	VPINLookbackBuckets  int
 	VPINHighThreshold    float64
 	VPINLowThreshold     float64
-	OBVDivergenceEnabled bool
-	OBVLookbackBars      int
-	DollarBarsEnabled    bool
-	DollarBarThreshold   float64
-	VolumeBarsEnabled    bool
-	VolumeBarThreshold   int64
 	ORBEnabled           bool
 	ORBWindowMinutes     int
 	ORBBufferPct         float64
 	ORBVolumeMultiplier  float64
 	ORBMaxGapPct         float64
 	ORBTargetMultiplier  float64
-	NewsSentimentEnabled bool
-	UOAEnabled           bool
 }
 
 // MLConfig holds machine learning pipeline parameters.
@@ -300,7 +215,6 @@ type TradingConfig struct {
 	StrategyConfig
 	RiskConfig
 	ExecutionConfig
-	PortfolioConfig
 	BacktestConfig
 	AlphaConfig
 	MLConfig
@@ -316,7 +230,6 @@ type tradingConfigJSON struct {
 	Strategy               StrategyConfig  `json:"Strategy"`
 	Risk                   RiskConfig      `json:"Risk"`
 	Execution              ExecutionConfig `json:"Execution"`
-	Portfolio              PortfolioConfig `json:"Portfolio"`
 	Backtest               BacktestConfig  `json:"Backtest"`
 	Alpha                  AlphaConfig     `json:"Alpha"`
 	ML                     MLConfig        `json:"ML"`
@@ -333,7 +246,6 @@ func (tc TradingConfig) MarshalJSON() ([]byte, error) {
 		Strategy:               tc.StrategyConfig,
 		Risk:                   tc.RiskConfig,
 		Execution:              tc.ExecutionConfig,
-		Portfolio:              tc.PortfolioConfig,
 		Backtest:               tc.BacktestConfig,
 		Alpha:                  tc.AlphaConfig,
 		ML:                     tc.MLConfig,
@@ -353,7 +265,6 @@ func (tc *TradingConfig) UnmarshalJSON(data []byte) error {
 		tc.StrategyConfig = j.Strategy
 		tc.RiskConfig = j.Risk
 		tc.ExecutionConfig = j.Execution
-		tc.PortfolioConfig = j.Portfolio
 		tc.BacktestConfig = j.Backtest
 		tc.AlphaConfig = j.Alpha
 		tc.MLConfig = j.ML

@@ -652,18 +652,6 @@ func (m *Manager) HasPendingClose(symbol string) bool {
 	return ok && domain.IsClosingIntent(order.Intent)
 }
 
-// SymbolHadLossToday returns true if the symbol has any closed trade with negative PnL today.
-func (m *Manager) SymbolHadLossToday(symbol string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, t := range m.closedTrades {
-		if t.Symbol == symbol && t.PnL < 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *Manager) SymbolHitProfitLockToday(symbol string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

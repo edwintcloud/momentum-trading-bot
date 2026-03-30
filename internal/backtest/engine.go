@@ -283,10 +283,9 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	}
 	scan := scanner.NewScanner(cfg, runtimeState)
 	scan.SetBlockedSymbols(runCfg.BlockedSymbols)
-	volEstimator := risk.NewVolatilityEstimator(cfg.DefaultVolatility, cfg.MaxVolEstimate)
 	broker := execution.NewPaperBroker(runCfg.EasyToBorrow)
 	riskEngine := risk.NewEngine(cfg, book, runtimeState, broker)
-	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine, volEstimator)
+	strat := strategy.NewStrategy(cfg, book, runtimeState, riskEngine)
 	normalizer := market.NewNormalizer()
 	scorer, err := ml.ResolveScorer(cfg.MLScoringEnabled, cfg.MLModelPath)
 	if err != nil {
@@ -328,7 +327,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		Scanner:                   scan,
 		Strategy:                  strat,
 		RiskEngine:                riskEngine,
-		VolEstimator:              volEstimator,
 		Broker:                    broker,
 		Recorder:                  runCfg.Recorder,
 		Scorer:                    scorer,
@@ -777,29 +775,6 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 		mcResult := RunMonteCarlo(trades, cfg.StartingCapital, cfg.MonteCarloSims, tradingDays)
 		result.MonteCarlo = &mcResult
 	}
-
-	// Phase 4: Bootstrap significance testing
-	if cfg.BootstrapEnabled && len(closedTrades) >= 10 {
-		tradeReturns := make([]float64, len(closedTrades))
-		for i, ct := range closedTrades {
-			if cfg.StartingCapital > 0 {
-				tradeReturns[i] = ct.PnL / cfg.StartingCapital
-			}
-		}
-		pValue, ciLower, ciUpper := BootstrapSignificance(tradeReturns, cfg.BootstrapResamples)
-		result.Bootstrap = &BootstrapResult{
-			PValue:      pValue,
-			CI95Lower:   ciLower,
-			CI95Upper:   ciUpper,
-			Significant: pValue < 0.05,
-			Resamples:   cfg.BootstrapResamples,
-		}
-	}
-
-	// Phase 5: Factor decomposition
-	// Skipped: requires real benchmark/factor return series (e.g. SPY, Fama-French).
-	// Synthetic proxies (scalar multiples of strategy returns) produce algebraically
-	// predetermined results and misleading alpha/R² values.
 
 	return result, nil
 }
