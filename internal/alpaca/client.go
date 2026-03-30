@@ -23,6 +23,7 @@ type (
 	AlpacaPosition = alpaca.Position
 	AlpacaOrder    = alpaca.Order
 	Snapshot       = marketdata.Snapshot
+	EquityAsset    = alpaca.Asset
 )
 
 // Client wraps Alpaca REST and WebSocket interactions.
