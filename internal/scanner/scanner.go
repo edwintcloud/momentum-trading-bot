@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/config"
@@ -152,6 +153,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 	}
 
 	work := make(chan domain.Tick, 256)
+	prev := time.Now().UnixNano()
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
@@ -166,8 +168,10 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Tick, out chan<- d
 						return
 					}
 				}
-				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" {
+				t := atomic.LoadInt64(&prev)
+				if !shouldEmit && reason != "" && reason != "market-closed" && reason != "system-paused" && candidate.Symbol != "" && time.Since(time.Unix(0, t)) >= 30*time.Second {
 					s.runtime.RecordLog("debug", "scanner", fmt.Sprintf("candidate rejected: %s reason=%s", candidate.Symbol, reason))
+					atomic.StoreInt64(&prev, time.Now().UnixNano())
 				}
 			}
 		}()
