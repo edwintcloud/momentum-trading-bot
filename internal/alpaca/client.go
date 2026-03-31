@@ -121,7 +121,7 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 
 	// reject if spread is too wide to avoid bad fills in illiquid stocks
 	spread := quote.AskPrice - quote.BidPrice
-	if spread/quote.AskPrice > c.tradingCfg.MaxSpreadPct {
+	if !domain.IsClosingIntent(order.Intent) && spread/quote.AskPrice > c.tradingCfg.MaxSpreadPct {
 		return "", fmt.Errorf("spread too wide: %.2f%%", spread/quote.AskPrice*100)
 	}
 

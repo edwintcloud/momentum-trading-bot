@@ -307,7 +307,6 @@ type PlaybookExitsConfig struct {
 	Reversal      PlaybookExitConfig
 	MeanReversion PlaybookExitConfig
 	GapFade       PlaybookExitConfig
-	PowerHour     PlaybookExitConfig
 }
 
 // DefaultTradingConfig returns the tuned baseline.
