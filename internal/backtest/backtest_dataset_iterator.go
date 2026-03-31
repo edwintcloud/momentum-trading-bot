@@ -1,4 +1,4 @@
-package main
+package backtest
 
 import (
 	"container/heap"
@@ -11,40 +11,39 @@ import (
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
-	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 )
 
 type historicalDataset struct {
 	feed string
-	jobs []historicalFetchJob
+	Jobs []HistoricalFetchJob
 }
 
 type historicalDatasetIterator struct {
 	feed     string
-	dayJobs  [][]historicalFetchJob
+	dayJobs  [][]HistoricalFetchJob
 	dayIndex int
 	current  *historicalDayIterator
 }
 
 type historicalDayIterator struct {
-	streams []*historicalJobCacheReader
+	streams []*HistoricalJobCacheReader
 	heap    historicalBarHeap
 }
 
 type historicalBarItem struct {
-	bar       backtest.InputBar
+	bar       InputBar
 	streamIdx int
 }
 
 type historicalBarHeap []historicalBarItem
 
-func prepareHistoricalDataset(ctx context.Context, client *alpaca.Client, symbols []string, start, end time.Time, historicalRateLimit int) (historicalDataset, error) {
+func PrepareHistoricalDataset(ctx context.Context, client *alpaca.Client, symbols []string, start, end time.Time, historicalRateLimit int) (historicalDataset, error) {
 	if len(symbols) == 0 {
 		return historicalDataset{}, fmt.Errorf("no symbols available for historical fetch")
 	}
 
-	jobs := buildHistoricalFetchJobs(symbols, start, end)
+	jobs := BuildHistoricalFetchJobs(symbols, start, end)
 	if len(jobs) == 0 {
 		return historicalDataset{}, nil
 	}
@@ -58,7 +57,7 @@ func prepareHistoricalDataset(ctx context.Context, client *alpaca.Client, symbol
 	}
 	log.Printf("Historical fetch starting jobs=%d symbols=%d workers=%d window=%s..%s", len(jobs), len(symbols), workerCount, start.Format(time.RFC3339), end.Format(time.RFC3339))
 
-	jobCh := make(chan historicalFetchJob)
+	jobCh := make(chan HistoricalFetchJob)
 	resultCh := make(chan historicalFetchResult, len(jobs))
 	errCh := make(chan error, 1)
 
@@ -128,47 +127,47 @@ func prepareHistoricalDataset(ctx context.Context, client *alpaca.Client, symbol
 		case _, ok := <-resultCh:
 			if !ok {
 				log.Printf("Historical cache summary hits=%d misses=%d dir=%s", cacheHits.Load(), cacheMisses.Load(), historicalCacheRoot)
-				return historicalDataset{feed: feed, jobs: jobs}, nil
+				return historicalDataset{feed: feed, Jobs: jobs}, nil
 			}
 		}
 	}
 }
 
-func ensureHistoricalJobCache(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
-	if historicalJobCacheExists(job, feed) {
+func ensureHistoricalJobCache(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job HistoricalFetchJob, feed string) (historicalFetchResult, error) {
+	if HistoricalJobCacheExists(job, feed) {
 		return historicalFetchResult{cacheHit: true}, nil
 	}
 	return fetchHistoricalJobFromAPI(ctx, client, limiter, job, feed)
 }
 
-func newHistoricalDatasetIterator(dataset historicalDataset) *historicalDatasetIterator {
+func NewHistoricalDatasetIterator(dataset historicalDataset) *historicalDatasetIterator {
 	return &historicalDatasetIterator{
 		feed:    dataset.feed,
-		dayJobs: groupHistoricalJobsByDay(dataset.jobs),
+		dayJobs: groupHistoricalJobsByDay(dataset.Jobs),
 	}
 }
 
-func (it *historicalDatasetIterator) Next() (backtest.InputBar, bool, error) {
+func (it *historicalDatasetIterator) Next() (InputBar, bool, error) {
 	for {
 		if it.current == nil {
 			if it.dayIndex >= len(it.dayJobs) {
-				return backtest.InputBar{}, false, nil
+				return InputBar{}, false, nil
 			}
 			dayIter, err := openHistoricalDayIterator(it.dayJobs[it.dayIndex], it.feed)
 			if err != nil {
-				return backtest.InputBar{}, false, err
+				return InputBar{}, false, err
 			}
 			it.current = dayIter
 		}
 		bar, ok, err := it.current.Next()
 		if err != nil {
-			return backtest.InputBar{}, false, err
+			return InputBar{}, false, err
 		}
 		if ok {
 			return bar, true, nil
 		}
 		if err := it.current.Close(); err != nil {
-			return backtest.InputBar{}, false, err
+			return InputBar{}, false, err
 		}
 		it.current = nil
 		it.dayIndex++
@@ -182,13 +181,13 @@ func (it *historicalDatasetIterator) Close() error {
 	return nil
 }
 
-func openHistoricalDayIterator(jobs []historicalFetchJob, feed string) (*historicalDayIterator, error) {
+func openHistoricalDayIterator(jobs []HistoricalFetchJob, feed string) (*historicalDayIterator, error) {
 	iterator := &historicalDayIterator{
-		streams: make([]*historicalJobCacheReader, 0, len(jobs)),
+		streams: make([]*HistoricalJobCacheReader, 0, len(jobs)),
 		heap:    make(historicalBarHeap, 0, len(jobs)),
 	}
 	for _, job := range jobs {
-		stream, err := openHistoricalJobCacheReader(job, feed)
+		stream, err := OpenHistoricalJobCacheReader(job, feed)
 		if err != nil {
 			_ = iterator.Close()
 			return nil, err
@@ -209,15 +208,15 @@ func openHistoricalDayIterator(jobs []historicalFetchJob, feed string) (*histori
 	return iterator, nil
 }
 
-func (it *historicalDayIterator) Next() (backtest.InputBar, bool, error) {
+func (it *historicalDayIterator) Next() (InputBar, bool, error) {
 	if len(it.heap) == 0 {
-		return backtest.InputBar{}, false, nil
+		return InputBar{}, false, nil
 	}
 	item := heap.Pop(&it.heap).(historicalBarItem)
 	stream := it.streams[item.streamIdx]
 	nextBar, ok, err := stream.Next()
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	if ok {
 		heap.Push(&it.heap, historicalBarItem{
@@ -243,12 +242,12 @@ func (it *historicalDayIterator) Close() error {
 	return firstErr
 }
 
-func groupHistoricalJobsByDay(jobs []historicalFetchJob) [][]historicalFetchJob {
+func groupHistoricalJobsByDay(jobs []HistoricalFetchJob) [][]HistoricalFetchJob {
 	if len(jobs) == 0 {
 		return nil
 	}
-	grouped := make([][]historicalFetchJob, 0, len(jobs))
-	current := make([]historicalFetchJob, 0)
+	grouped := make([][]HistoricalFetchJob, 0, len(jobs))
+	current := make([]HistoricalFetchJob, 0)
 	currentDay := ""
 	for _, job := range jobs {
 		dayKey := job.start.In(markethours.Location()).Format("2006-01-02")
@@ -256,7 +255,7 @@ func groupHistoricalJobsByDay(jobs []historicalFetchJob) [][]historicalFetchJob 
 			if len(current) > 0 {
 				grouped = append(grouped, current)
 			}
-			current = make([]historicalFetchJob, 0, 8)
+			current = make([]HistoricalFetchJob, 0, 8)
 			currentDay = dayKey
 		}
 		current = append(current, job)
@@ -294,26 +293,26 @@ func (h *historicalBarHeap) Pop() any {
 	return item
 }
 
-// newDatasetIteratorFactory returns a function that creates time-bounded
+// NewDatasetIteratorFactory returns a function that creates time-bounded
 // streaming iterators from the dataset's on-disk gzip cache files.
 // Each call opens fresh file handles, so multiple iterators can be created
 // for different time ranges without loading the full dataset into RAM.
-func newDatasetIteratorFactory(dataset historicalDataset) func(start, end time.Time) (backtest.InputBarIterator, error) {
-	return func(start, end time.Time) (backtest.InputBarIterator, error) {
-		filtered := filterJobsByTimeRange(dataset.jobs, start, end)
+func NewDatasetIteratorFactory(dataset historicalDataset) func(start, end time.Time) (InputBarIterator, error) {
+	return func(start, end time.Time) (InputBarIterator, error) {
+		filtered := filterJobsByTimeRange(dataset.Jobs, start, end)
 		if len(filtered) == 0 {
 			return &emptyIterator{}, nil
 		}
-		return newHistoricalDatasetIterator(historicalDataset{
+		return NewHistoricalDatasetIterator(historicalDataset{
 			feed: dataset.feed,
-			jobs: filtered,
+			Jobs: filtered,
 		}), nil
 	}
 }
 
 // filterJobsByTimeRange returns jobs whose time range overlaps [start, end).
-func filterJobsByTimeRange(jobs []historicalFetchJob, start, end time.Time) []historicalFetchJob {
-	out := make([]historicalFetchJob, 0, len(jobs))
+func filterJobsByTimeRange(jobs []HistoricalFetchJob, start, end time.Time) []HistoricalFetchJob {
+	out := make([]HistoricalFetchJob, 0, len(jobs))
 	for _, job := range jobs {
 		if job.end.Before(start) || job.start.After(end) {
 			continue
@@ -326,7 +325,7 @@ func filterJobsByTimeRange(jobs []historicalFetchJob, start, end time.Time) []hi
 // emptyIterator is an InputBarIterator that returns no bars.
 type emptyIterator struct{}
 
-func (e *emptyIterator) Next() (backtest.InputBar, bool, error) {
-	return backtest.InputBar{}, false, nil
+func (e *emptyIterator) Next() (InputBar, bool, error) {
+	return InputBar{}, false, nil
 }
 func (e *emptyIterator) Close() error { return nil }
