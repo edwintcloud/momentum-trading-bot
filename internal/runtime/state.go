@@ -11,16 +11,17 @@ const maxLogs = 500
 
 // State manages the runtime state of the trading system.
 type State struct {
-	mu            sync.RWMutex
-	paused        bool
-	emergencyStop bool
-	ready         bool
-	candidates    []domain.Candidate
-	logs          []domain.LogEntry
-	marketRegime  domain.MarketRegimeSnapshot
-	eventRecorder domain.EventRecorder
-	depStatuses   map[string]bool
-	heartbeats    map[string]time.Time
+	mu              sync.RWMutex
+	paused          bool
+	emergencyStop   bool
+	ready           bool
+	candidates      []domain.Candidate
+	canidateIndexes map[string]int
+	logs            []domain.LogEntry
+	marketRegime    domain.MarketRegimeSnapshot
+	eventRecorder   domain.EventRecorder
+	depStatuses     map[string]bool
+	heartbeats      map[string]time.Time
 }
 
 // NewState creates a new runtime state.
@@ -31,11 +32,12 @@ func NewState(recorders ...domain.EventRecorder) *State {
 		recorder = recorders[0]
 	}
 	return &State{
-		candidates:    make([]domain.Candidate, 0),
-		logs:          make([]domain.LogEntry, 0, maxLogs),
-		depStatuses:   make(map[string]bool),
-		heartbeats:    make(map[string]time.Time),
-		eventRecorder: recorder,
+		candidates:      make([]domain.Candidate, 0),
+		canidateIndexes: make(map[string]int),
+		logs:            make([]domain.LogEntry, 0, maxLogs),
+		depStatuses:     make(map[string]bool),
+		heartbeats:      make(map[string]time.Time),
+		eventRecorder:   recorder,
 	}
 }
 
@@ -132,19 +134,23 @@ const maxCandidates = 50
 
 // AddCandidate appends a candidate, keeping only the most recent maxCandidates.
 func (s *State) AddCandidate(c domain.Candidate) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.candidates = append(s.candidates, c)
-	if len(s.candidates) > maxCandidates {
-		s.candidates = s.candidates[len(s.candidates)-maxCandidates:]
+	if c.Symbol == "" {
+		return
 	}
-}
-
-// SetCandidates replaces the current scanner candidate list.
-func (s *State) SetCandidates(candidates []domain.Candidate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.candidates = candidates
+
+	if idx, exists := s.canidateIndexes[c.Symbol]; exists {
+		s.candidates[idx] = c
+		return
+	}
+
+	if len(s.candidates) >= maxCandidates {
+		// Remove the oldest candidate to maintain the size limit
+		oldest := s.candidates[0]
+		delete(s.canidateIndexes, oldest.Symbol)
+		s.candidates = s.candidates[1:]
+	}
 }
 
 // Candidates returns the current scanner candidates.
@@ -152,6 +158,7 @@ func (s *State) Candidates() []domain.Candidate {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]domain.Candidate, len(s.candidates))
+
 	copy(out, s.candidates)
 	return out
 }

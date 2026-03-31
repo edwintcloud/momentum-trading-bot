@@ -87,15 +87,16 @@ func (s *streamStats) snapshot() (bars, updated, daily, trades, subs, dropped in
 
 // Stream manages a real-time WebSocket connection to Alpaca market data.
 type Stream struct {
-	config       StreamConfig
-	mu           sync.Mutex
-	barSymbols   map[string]bool
-	tradeSymbols map[string]bool
-	bars         chan stream.Bar
-	trades       chan stream.Trade
-	dailyBars    chan stream.Bar
-	stats        streamStats
-	streamClient *stream.StocksClient
+	config             StreamConfig
+	mu                 sync.Mutex
+	barSymbols         map[string]bool
+	tradeSymbols       map[string]bool
+	bars               chan stream.Bar
+	trades             chan stream.Trade
+	dailyBars          chan stream.Bar
+	stats              streamStats
+	streamClient       *stream.StocksClient
+	lastTradePerSymbol *sync.Map // symbol -> int64 (UnixNano)
 }
 
 // NewStream creates a new Alpaca market data stream.
@@ -104,12 +105,13 @@ func NewStream(cfg StreamConfig, bufSize int) *Stream {
 		bufSize = 4096
 	}
 	return &Stream{
-		config:       cfg,
-		barSymbols:   make(map[string]bool),
-		tradeSymbols: make(map[string]bool),
-		bars:         make(chan stream.Bar, bufSize),
-		trades:       make(chan stream.Trade, 2048),
-		dailyBars:    make(chan stream.Bar, 1024),
+		config:             cfg,
+		barSymbols:         make(map[string]bool),
+		tradeSymbols:       make(map[string]bool),
+		bars:               make(chan stream.Bar, bufSize),
+		trades:             make(chan stream.Trade, 2048),
+		dailyBars:          make(chan stream.Bar, 1024),
+		lastTradePerSymbol: &sync.Map{},
 		streamClient: stream.NewStocksClient(dataFeed,
 			stream.WithCredentials(cfg.APIKey, cfg.APISecret),
 		),
@@ -243,6 +245,18 @@ func (s *Stream) onDailyBar(bar stream.Bar) {
 }
 
 func (s *Stream) onTrade(trade stream.Trade) {
+	// Rate limit to once per second per ticker
+	now := time.Now().UnixNano()
+	sym := trade.Symbol
+
+	lastVal, _ := s.lastTradePerSymbol.LoadOrStore(sym, int64(0))
+	lastSent := lastVal.(int64)
+	if now-lastSent < time.Second.Nanoseconds() {
+		s.stats.recordTrade()
+		return
+	}
+	s.lastTradePerSymbol.Store(sym, now)
+
 	select {
 	case s.trades <- trade:
 	default:
