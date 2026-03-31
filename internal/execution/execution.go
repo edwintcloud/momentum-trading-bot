@@ -234,14 +234,8 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 					continue
 				}
 				e.runtime.RecordLog("warn", "execution",
-					fmt.Sprintf("order partially filled %s %s orderID=%s filled_qty=%d/%d — cancelling remainder",
+					fmt.Sprintf("order partially filled %s %s orderID=%s filled_qty=%d/%d — retrying remainder",
 						order.Symbol, order.Side, orderID, filledQty, order.Quantity))
-				cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
-				if cancelErr := e.broker.CancelOrder(cancelCtx, orderID); cancelErr != nil {
-					e.runtime.RecordLog("warn", "execution",
-						fmt.Sprintf("partial-fill cancel failed %s %s orderID=%s: %v", order.Symbol, order.Side, orderID, cancelErr))
-				}
-				cancelFn()
 				report := buildExecutionReport(order, orderID, status, fillPrice, filledQty, e.nowFunc())
 				if e.recorder != nil {
 					e.recorder.RecordExecution(report)
@@ -250,7 +244,8 @@ func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, f
 				case fills <- report:
 				case <-ctx.Done():
 				}
-				return true
+				order.Quantity -= filledQty
+				return e.submitAndPoll(ctx, order, fills, attempt+1)
 
 			case "rejected", "canceled", "expired":
 				if filledQty > 0 {

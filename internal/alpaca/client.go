@@ -126,10 +126,10 @@ func (c *Client) SubmitOrder(ctx context.Context, order domain.OrderRequest) (st
 	}
 
 	// base limit price on current quote
-	if order.Side == domain.SideBuy {
-		limitPrice = quote.AskPrice * (1 + c.tradingCfg.LimitOrderSlippageDollars)
+	if domain.IsClosingIntent(order.Intent) {
+		limitPrice = quote.BidPrice - c.tradingCfg.LimitOrderSlippageDollars
 	} else {
-		limitPrice = quote.BidPrice * (1 - c.tradingCfg.LimitOrderSlippageDollars)
+		limitPrice = quote.AskPrice + c.tradingCfg.LimitOrderSlippageDollars
 	}
 
 	adjSide := alpaca.Side(order.Side)
