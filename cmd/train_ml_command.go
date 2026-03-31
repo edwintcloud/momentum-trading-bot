@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
 )
 
-func runTrainML(args []string) error {
+func RunTrainML(args []string) error {
 	flags := flag.NewFlagSet("train-ml", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 
@@ -529,11 +529,11 @@ func buildRegressionBacktestConfig(start, end time.Time, profilePath string, deb
 	}
 
 	prevDayStart := start.AddDate(0, 0, -3)
-	fetchTimeout := estimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
+	fetchTimeout := backtest.EstimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
 	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer fetchCancel()
 
-	dataset, err := prepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
+	dataset, err := backtest.PrepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
 	if err != nil {
 		return backtest.RunConfig{}, config.TradingConfig{}, err
 	}
@@ -541,7 +541,7 @@ func buildRegressionBacktestConfig(start, end time.Time, profilePath string, deb
 	runCfg := backtest.RunConfig{
 		Start:          start,
 		End:            end,
-		Iterator:       newHistoricalDatasetIterator(dataset),
+		Iterator:       backtest.NewHistoricalDatasetIterator(dataset),
 		DebugSymbols:   append([]string(nil), debugSymbols...),
 		FloatStore:     floatStore,
 		BlockedSymbols: universe.BlockedSymbols,

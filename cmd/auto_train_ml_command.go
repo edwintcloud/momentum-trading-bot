@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"context"
@@ -126,7 +126,7 @@ type mlTrainingRunConfig struct {
 	CalibrationBins int
 }
 
-func runAutoTrainML(args []string) error {
+func RunAutoTrainML(args []string) error {
 	fs := flag.NewFlagSet("auto-train-ml", flag.ContinueOnError)
 	profilePath := fs.String("profile", config.ResolveTradingProfilePath(os.Getenv("TRADING_PROFILE_PATH")), "path to the active trading profile")
 	targetModelDir := fs.String("target-model-dir", "", "target model directory to promote into; defaults to MLModelPath from the profile")

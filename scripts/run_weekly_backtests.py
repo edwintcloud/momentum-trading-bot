@@ -9,7 +9,6 @@ SUMMARY_PATTERN = re.compile(
     r"PnL\s+(?:roi=([+-]?\d+(?:\.\d+)?)%?\s+)?net=([+-]?\d+(?:\.\d+)?)\s+realized=([+-]?\d+(?:\.\d+)?)\s+"
     r"unrealized=([+-]?\d+(?:\.\d+)?)\s+ending_equity=([+-]?\d+(?:\.\d+)?)"
 )
-GO_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "go-build")
 
 
 def extract_backtest_metrics(output):
@@ -24,10 +23,8 @@ def extract_backtest_metrics(output):
 
 def run_backtest(start_date, end_date):
     print(f"Running backtest from {start_date} to {end_date}...", flush=True)
-    report_path = f".cache/backtest/weekly/{start_date}_{end_date}.json"
-    cmd = ["go", "run", ".", "backtest", "-start", start_date, "-end", end_date, "-report-out", report_path]
+    cmd = ["go", "run", ".", "backtest", "-start", start_date, "-end", end_date]
     env = os.environ.copy()
-    env.setdefault("GOCACHE", GO_CACHE_DIR)
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     output = result.stderr + result.stdout

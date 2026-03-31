@@ -1,10 +1,8 @@
-package main
+package alpaca
 
 import (
 	"sort"
 	"strings"
-
-	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
 )
 
 var scannerETFKeywords = []string{
@@ -51,8 +49,8 @@ var scannerDerivativeKeywords = []string{
 	" VOLATILITY ",
 }
 
-func filterScannerUniverseAssets(assets []alpaca.EquityAsset, configured []string) ([]string, map[string]string) {
-	assetBySymbol := make(map[string]alpaca.EquityAsset, len(assets))
+func FilterScannerUniverseAssets(assets []EquityAsset, configured []string) ([]string, map[string]string) {
+	assetBySymbol := make(map[string]EquityAsset, len(assets))
 	blocked := make(map[string]string)
 	allowed := make([]string, 0, len(assets))
 	for _, asset := range assets {

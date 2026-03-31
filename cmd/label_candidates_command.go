@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bufio"
@@ -46,7 +46,7 @@ type candidateLabelSummary struct {
 	End                     time.Time      `json:"end"`
 }
 
-func runLabelCandidates(args []string) error {
+func RunLabelCandidates(args []string) error {
 	flags := flag.NewFlagSet("label-candidates", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 
@@ -265,11 +265,11 @@ func loadLabelBars(dataPath string, symbols []string, start, end time.Time) (map
 	} else {
 		log.Printf("Label candidates capability detection warning: %v", capErr)
 	}
-	dataset, err := prepareHistoricalDataset(fetchCtx, client, symbols, start, end, historicalRateLimit)
+	dataset, err := backtest.PrepareHistoricalDataset(fetchCtx, client, symbols, start, end, historicalRateLimit)
 	if err != nil {
 		return nil, err
 	}
-	iter := newHistoricalDatasetIterator(dataset)
+	iter := backtest.NewHistoricalDatasetIterator(dataset)
 	defer iter.Close()
 
 	bars := make([]backtest.InputBar, 0, 4096)
@@ -297,7 +297,7 @@ func loadLabelBarsFromHistoricalCache(symbols []string, start, end time.Time) (m
 		requested[strings.ToUpper(strings.TrimSpace(symbol))] = struct{}{}
 	}
 
-	jobs := buildHistoricalFetchJobs(allSymbols, start, end)
+	jobs := backtest.BuildHistoricalFetchJobs(allSymbols, start, end)
 	inputBars := make([]backtest.InputBar, 0, 4096)
 	foundSymbols := make(map[string]struct{})
 	for _, job := range jobs {
@@ -338,18 +338,18 @@ func loadLabelBarsFromHistoricalCache(symbols []string, start, end time.Time) (m
 	return buildMLBarsBySymbol(inputBars), true, nil
 }
 
-func openHistoricalCacheReaderForKnownFeeds(job historicalFetchJob) (*historicalJobCacheReader, error) {
+func openHistoricalCacheReaderForKnownFeeds(job backtest.HistoricalFetchJob) (*backtest.HistoricalJobCacheReader, error) {
 	for _, feed := range []string{"sip", "iex"} {
-		if !historicalJobCacheExists(job, feed) {
+		if !backtest.HistoricalJobCacheExists(job, feed) {
 			continue
 		}
-		return openHistoricalJobCacheReader(job, feed)
+		return backtest.OpenHistoricalJobCacheReader(job, feed)
 	}
 	return nil, nil
 }
 
-func jobContainsRequestedSymbol(job historicalFetchJob, requested map[string]struct{}) bool {
-	for _, symbol := range job.symbols {
+func jobContainsRequestedSymbol(job backtest.HistoricalFetchJob, requested map[string]struct{}) bool {
+	for _, symbol := range job.Symbols {
 		if _, ok := requested[strings.ToUpper(strings.TrimSpace(symbol))]; ok {
 			return true
 		}

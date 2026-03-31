@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"context"
@@ -38,7 +38,7 @@ type mlDatasetManifestEntry struct {
 	LabelSummary     candidateLabelSummary `json:"labelSummary"`
 }
 
-func runPrepareMLDataset(args []string) error {
+func RunPrepareMLDataset(args []string) error {
 	flags := flag.NewFlagSet("prepare-ml-dataset", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 

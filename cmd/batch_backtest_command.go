@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"context"
@@ -59,7 +59,7 @@ type batchBacktestTotalsSummary struct {
 	WorstWindowNetPnL float64 `json:"worstWindowNetPnL,omitempty"`
 }
 
-func runBatchBacktest(args []string) error {
+func RunBatchBacktest(args []string) error {
 	flags := flag.NewFlagSet("batch-backtest", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 

@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"context"
@@ -24,7 +24,7 @@ import (
 
 var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-func runBacktest(args []string) error {
+func RunBacktest(args []string) error {
 	flags := flag.NewFlagSet("backtest", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 
@@ -144,19 +144,19 @@ func runBacktest(args []string) error {
 		// prior trading day even when the backtest starts on Monday (−1 only
 		// reaches Sunday, which the weekend filter skips).
 		prevDayStart := start.AddDate(0, 0, -3)
-		fetchTimeout := estimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
+		fetchTimeout := backtest.EstimateHistoricalFetchTimeout(len(universe.Symbols), prevDayStart, end, historicalRateLimit)
 		log.Printf("Historical fetch timeout set to %s", fetchTimeout)
 		log.Printf("Historical fetch coverage start=%s end=%s", formatLogTime(prevDayStart), formatLogTime(end))
 		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer fetchCancel()
-		dataset, err := prepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
+		dataset, err := backtest.PrepareHistoricalDataset(fetchCtx, client, universe.Symbols, prevDayStart, end, historicalRateLimit)
 		if err != nil {
 			return err
 		}
-		runCfg.Iterator = newHistoricalDatasetIterator(dataset)
+		runCfg.Iterator = backtest.NewHistoricalDatasetIterator(dataset)
 		log.Printf(
 			"Historical dataset ready shards=%d symbols=%d easy_to_borrow=%d",
-			len(dataset.jobs),
+			len(dataset.Jobs),
 			len(universe.Symbols),
 			len(universe.EasyToBorrow),
 		)
@@ -290,8 +290,8 @@ func resolveBacktestSymbols(ctx context.Context, client *alpaca.Client, backtest
 	if err != nil {
 		return backtestUniverse{}, err
 	}
-	allSymbols, allBlockedSymbols := filterScannerUniverseAssets(assets, nil)
-	symbols, blockedSymbols := filterScannerUniverseAssets(assets, configured)
+	allSymbols, allBlockedSymbols := alpaca.FilterScannerUniverseAssets(assets, nil)
+	symbols, blockedSymbols := alpaca.FilterScannerUniverseAssets(assets, configured)
 	easyToBorrow := easyToBorrowSymbolSet(assets)
 
 	// Write cache.

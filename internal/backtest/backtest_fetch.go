@@ -1,4 +1,4 @@
-package main
+package backtest
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/edwintcloud/momentum-trading-bot/internal/alpaca"
-	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 )
 
@@ -27,15 +26,15 @@ const (
 
 var historicalCacheRoot = filepath.Join(".cache", "backtest", "historical-bars")
 
-type historicalFetchJob struct {
+type HistoricalFetchJob struct {
 	index   int
 	start   time.Time
 	end     time.Time
-	symbols []string
+	Symbols []string
 }
 
 type historicalFetchResult struct {
-	bars     []backtest.InputBar
+	bars     []InputBar
 	pageHits int
 	cacheHit bool
 }
@@ -105,10 +104,10 @@ func (l *requestLimiter) Stop() {
 	l.stopOnce.Do(func() { close(l.stopCh) })
 }
 
-func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, feed string) (historicalFetchResult, error) {
+func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job HistoricalFetchJob, feed string) (historicalFetchResult, error) {
 	pageToken := ""
 	result := historicalFetchResult{
-		bars: make([]backtest.InputBar, 0, 1024),
+		bars: make([]InputBar, 0, 1024),
 	}
 	for {
 		page, err := fetchHistoricalPageWithRetry(ctx, client, limiter, job, pageToken)
@@ -118,7 +117,7 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 		result.pageHits++
 		for symbol, bars := range page.Bars {
 			for _, item := range bars {
-				result.bars = append(result.bars, backtest.InputBar{
+				result.bars = append(result.bars, InputBar{
 					Timestamp: item.Timestamp,
 					Symbol:    strings.ToUpper(symbol),
 					Open:      item.Open,
@@ -133,7 +132,7 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 		if page.NextPageToken == "" {
 			sortHistoricalBars(result.bars)
 			if err := saveHistoricalJobCache(job, feed, result); err != nil {
-				log.Printf("Historical cache write failed job=%d symbols=%d err=%v", job.index, len(job.symbols), err)
+				log.Printf("Historical cache write failed job=%d symbols=%d err=%v", job.index, len(job.Symbols), err)
 			}
 			return result, nil
 		}
@@ -141,14 +140,14 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 	}
 }
 
-func fetchHistoricalPageWithRetry(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job historicalFetchJob, pageToken string) (alpaca.HistoricalBarsPage, error) {
+func fetchHistoricalPageWithRetry(ctx context.Context, client *alpaca.Client, limiter *requestLimiter, job HistoricalFetchJob, pageToken string) (alpaca.HistoricalBarsPage, error) {
 	var lastErr error
 	var lastPage alpaca.HistoricalBarsPage
 	for attempt := 1; attempt <= historicalMaxRetries; attempt++ {
 		if err := limiter.Wait(ctx); err != nil {
 			return alpaca.HistoricalBarsPage{}, err
 		}
-		page, err := client.GetHistoricalBarsPage(ctx, job.symbols, job.start, job.end, "1Min", pageToken)
+		page, err := client.GetHistoricalBarsPage(ctx, job.Symbols, job.start, job.end, "1Min", pageToken)
 		if err == nil {
 			return page, nil
 		}
@@ -156,13 +155,13 @@ func fetchHistoricalPageWithRetry(ctx context.Context, client *alpaca.Client, li
 		lastErr = err
 		lastPage = page
 		if !isRetryableHistoricalError(err) || attempt == historicalMaxRetries {
-			log.Printf("Historical fetch failed job=%d symbols=%d page_token=%t attempt=%d err=%v", job.index, len(job.symbols), pageToken != "", attempt, err)
+			log.Printf("Historical fetch failed job=%d symbols=%d page_token=%t attempt=%d err=%v", job.index, len(job.Symbols), pageToken != "", attempt, err)
 			return alpaca.HistoricalBarsPage{}, fmt.Errorf("historical fetch job %d failed after %d attempts: %w", job.index, attempt, err)
 		}
 
 		delay := retryDelay(page.Headers, attempt, err)
 		limiter.DelayUntil(time.Now().Add(delay))
-		log.Printf("Historical fetch retry job=%d symbols=%d page_token=%t attempt=%d delay=%s err=%v", job.index, len(job.symbols), pageToken != "", attempt, delay, err)
+		log.Printf("Historical fetch retry job=%d symbols=%d page_token=%t attempt=%d delay=%s err=%v", job.index, len(job.Symbols), pageToken != "", attempt, delay, err)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -174,13 +173,13 @@ func fetchHistoricalPageWithRetry(ctx context.Context, client *alpaca.Client, li
 	return lastPage, lastErr
 }
 
-func buildHistoricalFetchJobs(symbols []string, start, end time.Time) []historicalFetchJob {
+func BuildHistoricalFetchJobs(symbols []string, start, end time.Time) []HistoricalFetchJob {
 	if len(symbols) == 0 || end.Before(start) {
 		return nil
 	}
 
 	days := tradingDayWindows(start, end, markethours.Location())
-	jobs := make([]historicalFetchJob, 0, len(days)*(len(symbols)/historicalBatchSize+1))
+	jobs := make([]HistoricalFetchJob, 0, len(days)*(len(symbols)/historicalBatchSize+1))
 	index := 0
 	for _, day := range days {
 		for batchStart := 0; batchStart < len(symbols); batchStart += historicalBatchSize {
@@ -189,11 +188,11 @@ func buildHistoricalFetchJobs(symbols []string, start, end time.Time) []historic
 				batchEnd = len(symbols)
 			}
 			index++
-			jobs = append(jobs, historicalFetchJob{
+			jobs = append(jobs, HistoricalFetchJob{
 				index:   index,
 				start:   day.start,
 				end:     day.end,
-				symbols: symbols[batchStart:batchEnd],
+				Symbols: symbols[batchStart:batchEnd],
 			})
 		}
 	}
@@ -321,7 +320,7 @@ func rateResetTime(headers http.Header) time.Time {
 	return time.Time{}
 }
 
-func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, requestsPerMinute int) time.Duration {
+func EstimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, requestsPerMinute int) time.Duration {
 	if requestsPerMinute <= 0 {
 		requestsPerMinute = 200
 	}
@@ -349,7 +348,7 @@ func estimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 	return timeout
 }
 
-func sortHistoricalBars(bars []backtest.InputBar) {
+func sortHistoricalBars(bars []InputBar) {
 	sort.Slice(bars, func(i, j int) bool {
 		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
 			return bars[i].Symbol < bars[j].Symbol

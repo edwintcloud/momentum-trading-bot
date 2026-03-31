@@ -1,4 +1,4 @@
-package main
+package backtest
 
 import (
 	"bufio"
@@ -14,8 +14,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/edwintcloud/momentum-trading-bot/internal/backtest"
 )
 
 const (
@@ -24,7 +22,7 @@ const (
 	historicalCacheBufferSize = 1 << 20
 )
 
-type historicalJobCacheReader struct {
+type HistoricalJobCacheReader struct {
 	file      *os.File
 	gzip      *gzip.Reader
 	reader    *bufio.Reader
@@ -33,7 +31,7 @@ type historicalJobCacheReader struct {
 	remaining uint64
 }
 
-func historicalCachePath(job historicalFetchJob, feed string) string {
+func historicalCachePath(job HistoricalFetchJob, feed string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(historicalCacheVersion))
 	hasher.Write([]byte("|"))
@@ -42,7 +40,7 @@ func historicalCachePath(job historicalFetchJob, feed string) string {
 	hasher.Write([]byte(job.start.Format(time.RFC3339Nano)))
 	hasher.Write([]byte("|"))
 	hasher.Write([]byte(job.end.Format(time.RFC3339Nano)))
-	for _, symbol := range job.symbols {
+	for _, symbol := range job.Symbols {
 		hasher.Write([]byte("|"))
 		hasher.Write([]byte(strings.ToUpper(strings.TrimSpace(symbol))))
 	}
@@ -50,12 +48,12 @@ func historicalCachePath(job historicalFetchJob, feed string) string {
 	return filepath.Join(historicalCacheRoot, historicalCacheVersion, key[:2], key+".bars.gz")
 }
 
-func historicalJobCacheExists(job historicalFetchJob, feed string) bool {
+func HistoricalJobCacheExists(job HistoricalFetchJob, feed string) bool {
 	_, err := os.Stat(historicalCachePath(job, feed))
 	return err == nil
 }
 
-func openHistoricalJobCacheReader(job historicalFetchJob, feed string) (*historicalJobCacheReader, error) {
+func OpenHistoricalJobCacheReader(job HistoricalFetchJob, feed string) (*HistoricalJobCacheReader, error) {
 	path := historicalCachePath(job, feed)
 	file, err := os.Open(path)
 	if err != nil {
@@ -67,7 +65,7 @@ func openHistoricalJobCacheReader(job historicalFetchJob, feed string) (*histori
 		_ = file.Close()
 		return nil, err
 	}
-	reader := &historicalJobCacheReader{
+	reader := &HistoricalJobCacheReader{
 		file:   file,
 		gzip:   gzipReader,
 		reader: bufio.NewReaderSize(gzipReader, historicalCacheBufferSize),
@@ -79,7 +77,7 @@ func openHistoricalJobCacheReader(job historicalFetchJob, feed string) (*histori
 	return reader, nil
 }
 
-func (r *historicalJobCacheReader) Close() error {
+func (r *HistoricalJobCacheReader) Close() error {
 	var closeErr error
 	if r.gzip != nil {
 		closeErr = r.gzip.Close()
@@ -92,49 +90,49 @@ func (r *historicalJobCacheReader) Close() error {
 	return closeErr
 }
 
-func (r *historicalJobCacheReader) Next() (backtest.InputBar, bool, error) {
+func (r *HistoricalJobCacheReader) Next() (InputBar, bool, error) {
 	if r.remaining == 0 {
-		return backtest.InputBar{}, false, nil
+		return InputBar{}, false, nil
 	}
 	offsetSeconds, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	symbolIndex, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	if symbolIndex >= uint64(len(r.symbols)) {
-		return backtest.InputBar{}, false, fmt.Errorf("historical cache symbol index %d out of range", symbolIndex)
+		return InputBar{}, false, fmt.Errorf("historical cache symbol index %d out of range", symbolIndex)
 	}
 
 	openPrice, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	highPrice, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	lowPrice, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	closePrice, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	prevClose, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 	volume, err := readUvarint(r.reader)
 	if err != nil {
-		return backtest.InputBar{}, false, err
+		return InputBar{}, false, err
 	}
 
 	r.remaining--
-	return backtest.InputBar{
+	return InputBar{
 		Timestamp: time.Unix(r.startUnix+int64(offsetSeconds), 0),
 		Symbol:    r.symbols[symbolIndex],
 		Open:      decodeHistoricalPrice(openPrice),
@@ -146,7 +144,7 @@ func (r *historicalJobCacheReader) Next() (backtest.InputBar, bool, error) {
 	}, true, nil
 }
 
-func (r *historicalJobCacheReader) readHeader() error {
+func (r *HistoricalJobCacheReader) readHeader() error {
 	magic := make([]byte, len(historicalCacheMagic))
 	if _, err := io.ReadFull(r.reader, magic); err != nil {
 		return err
@@ -184,13 +182,13 @@ func (r *historicalJobCacheReader) readHeader() error {
 	return nil
 }
 
-func saveHistoricalJobCache(job historicalFetchJob, feed string, result historicalFetchResult) error {
+func saveHistoricalJobCache(job HistoricalFetchJob, feed string, result historicalFetchResult) error {
 	path := historicalCachePath(job, feed)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
-	bars := append([]backtest.InputBar(nil), result.bars...)
+	bars := append([]InputBar(nil), result.bars...)
 	sort.Slice(bars, func(i, j int) bool {
 		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
 			return bars[i].Symbol < bars[j].Symbol
@@ -233,11 +231,11 @@ func saveHistoricalJobCache(job historicalFetchJob, feed string, result historic
 		_ = gzipWriter.Close()
 		return err
 	}
-	if err := writeUvarint(buffered, uint64(len(job.symbols))); err != nil {
+	if err := writeUvarint(buffered, uint64(len(job.Symbols))); err != nil {
 		_ = gzipWriter.Close()
 		return err
 	}
-	for _, symbol := range job.symbols {
+	for _, symbol := range job.Symbols {
 		if err := writeString(buffered, strings.ToUpper(strings.TrimSpace(symbol))); err != nil {
 			_ = gzipWriter.Close()
 			return err
@@ -248,8 +246,8 @@ func saveHistoricalJobCache(job historicalFetchJob, feed string, result historic
 		return err
 	}
 
-	symbolIndex := make(map[string]uint64, len(job.symbols))
-	for index, symbol := range job.symbols {
+	symbolIndex := make(map[string]uint64, len(job.Symbols))
+	for index, symbol := range job.Symbols {
 		symbolIndex[strings.ToUpper(strings.TrimSpace(symbol))] = uint64(index)
 	}
 	jobStartUnix := job.start.Unix()
