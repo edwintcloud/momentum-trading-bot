@@ -241,8 +241,6 @@ func (p *Pipeline) Start(ctx context.Context) {
 				p.lastDayKey = dayKey
 				p.cfg.Portfolio.RefreshDayIfNeeded()
 			}
-			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
-			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
 			p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 			if p.cfg.OnTickFanOut != nil {
@@ -869,8 +867,6 @@ func (p *Pipeline) processDeterministicBar(
 		p.lastDayKey = dayKey
 		p.cfg.Portfolio.RefreshDayIfNeeded()
 	}
-	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarHigh, tick.Timestamp)
-	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.BarLow, tick.Timestamp)
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
 	p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 	if p.cfg.OnTickFanOut != nil {
