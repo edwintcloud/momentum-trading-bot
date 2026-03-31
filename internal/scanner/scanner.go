@@ -1540,8 +1540,6 @@ func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string
 		return "mean_reversion"
 	case "gap_fade_long", "gap_fade_short":
 		return "gap_fade"
-	case "power_hour_long", "power_hour_short":
-		return "power_hour"
 	}
 	if direction == domain.DirectionLong {
 		return "continuation"

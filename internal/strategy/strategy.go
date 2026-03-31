@@ -624,8 +624,6 @@ func (s *Strategy) getPlaybookExitConfig(playbook string) config.PlaybookExitCon
 		return cfg.PlaybookExits.MeanReversion
 	case "gap_fade":
 		return cfg.PlaybookExits.GapFade
-	case "power_hour":
-		return cfg.PlaybookExits.PowerHour
 	default:
 		return cfg.PlaybookExits.Breakout
 	}
@@ -1030,7 +1028,16 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 		}
 	}
 
-	if newStop > 0 {
+	// Ensure stop only moves in the correct direction
+	if domain.IsLong(pos.Side) {
+		newStop = max(newStop, pos.StopPrice)
+	}
+	if domain.IsShort(pos.Side) {
+		newStop = min(newStop, pos.StopPrice)
+	}
+
+	// Update the stop price if it has changed and is valid
+	if newStop > 0 && newStop != pos.StopPrice {
 		s.portfolio.UpdateStopPrice(pos.Symbol, newStop)
 	}
 }
