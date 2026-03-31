@@ -17,6 +17,7 @@ const (
 	paperBaseURL = "https://paper-api.alpaca.markets"
 	liveBaseURL  = "https://api.alpaca.markets"
 	dataBaseURL  = "https://data.alpaca.markets"
+	dataFeed     = "sip"
 )
 
 type (
@@ -69,7 +70,7 @@ func NewClient(cfg config.AppConfig, tradingCfg config.TradingConfig) *Client {
 
 // DataFeed returns the data feed name based on the account type.
 func (c *Client) DataFeed() string {
-	return "sip"
+	return dataFeed
 }
 
 // GetAccount fetches the trading account information.

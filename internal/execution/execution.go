@@ -136,10 +136,9 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// Widen slippage on each retry attempt
 		if attempt > 1 && isExit {
-			order.SlippageMultiplier = slippageForAttempt(attempt)
 			e.runtime.RecordLog("warn", "execution",
-				fmt.Sprintf("retrying %s %s exit with %.0fx slippage (attempt %d/%d)",
-					order.Symbol, order.Side, order.SlippageMultiplier, attempt, maxAttempts))
+				fmt.Sprintf("retrying %s %s exit (attempt %d/%d)",
+					order.Symbol, order.Side, attempt, maxAttempts))
 		}
 
 		filled := e.submitAndPoll(ctx, order, fills, attempt)
@@ -163,30 +162,10 @@ func (e *Engine) executeOrder(ctx context.Context, order domain.OrderRequest, fi
 	return false
 }
 
-func slippageForAttempt(attempt int) float64 {
-	switch attempt {
-	case 2:
-		return 3.0
-	case 3:
-		return 5.0
-	case 4:
-		return 8.0
-	case 5:
-		return 12.0
-	default:
-		return float64(attempt) * 3.0
-	}
-}
-
 func (e *Engine) submitAndPoll(ctx context.Context, order domain.OrderRequest, fills chan<- domain.ExecutionReport, attempt int) bool {
-	slippageLabel := ""
-	if order.SlippageMultiplier > 1 {
-		slippageLabel = fmt.Sprintf(" slippage=%.0fx", order.SlippageMultiplier)
-	}
 	e.runtime.RecordLog("info", "execution",
-		fmt.Sprintf("submitting %s %s %s qty=%d price=%.2f type=limit%s (attempt %d)",
-			order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price,
-			slippageLabel, attempt))
+		fmt.Sprintf("submitting %s %s %s qty=%d price=%.2f type=limit (attempt %d)",
+			order.Intent, order.PositionSide, order.Symbol, order.Quantity, order.Price, attempt))
 
 	orderID, err := e.broker.SubmitOrder(ctx, order)
 	if err != nil {

@@ -218,7 +218,6 @@ func RunLiveTrading() {
 	streamCfg := alpaca.StreamConfig{
 		APIKey:    appCfg.AlpacaAPIKey,
 		APISecret: appCfg.AlpacaAPISecret,
-		Feed:      "sip",
 	}
 	stream := alpaca.NewStream(streamCfg, 4096)
 
@@ -226,7 +225,6 @@ func RunLiveTrading() {
 	if err != nil {
 		log.Fatalf("stream: %v", err)
 	}
-	defer stream.Close()
 
 	// Resolve symbols and subscribe
 	symbols, blockedSymbols, err := resolveStreamSymbols(ctx, alpacaClient, appCfg)

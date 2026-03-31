@@ -205,30 +205,29 @@ type TradeSignal struct {
 
 // OrderRequest is an execution-ready order approved by risk checks.
 type OrderRequest struct {
-	Symbol             string    `json:"symbol"`
-	Side               string    `json:"side"`
-	Intent             string    `json:"intent"`
-	PositionSide       string    `json:"positionSide"`
-	Price              float64   `json:"price"`
-	Quantity           int64     `json:"quantity"`
-	StopPrice          float64   `json:"stopPrice"`
-	RiskPerShare       float64   `json:"riskPerShare"`
-	EntryATR           float64   `json:"entryAtr"`
-	SetupType          string    `json:"setupType"`
-	Reason             string    `json:"reason"`
-	OrderType          string    `json:"orderType"`          // "limit" (default) or "market"
-	SlippageMultiplier float64   `json:"slippageMultiplier"` // multiplier for limit price slippage (1.0 = normal, 2.0 = 2x wider, etc.)
-	MarketRegime       string    `json:"marketRegime"`
-	RegimeConfidence   float64   `json:"regimeConfidence"`
-	Playbook           string    `json:"playbook"`
-	Sector             string    `json:"sector"`
-	AvgDailyVolume     float64   `json:"avgDailyVolume"`
-	LeaderRank         int       `json:"leaderRank"`
-	VolumeLeaderPct    float64   `json:"volumeLeaderPct"`
-	StockSelectScore   float64   `json:"stockSelectionScore"`
-	PriceVsVWAPPct     float64   `json:"priceVsVwapPct"`
-	DistanceHighPct    float64   `json:"distanceFromHighPct"`
-	Timestamp          time.Time `json:"timestamp"`
+	Symbol           string    `json:"symbol"`
+	Side             string    `json:"side"`
+	Intent           string    `json:"intent"`
+	PositionSide     string    `json:"positionSide"`
+	Price            float64   `json:"price"`
+	Quantity         int64     `json:"quantity"`
+	StopPrice        float64   `json:"stopPrice"`
+	RiskPerShare     float64   `json:"riskPerShare"`
+	EntryATR         float64   `json:"entryAtr"`
+	SetupType        string    `json:"setupType"`
+	Reason           string    `json:"reason"`
+	OrderType        string    `json:"orderType"` // "limit" (default) or "market"
+	MarketRegime     string    `json:"marketRegime"`
+	RegimeConfidence float64   `json:"regimeConfidence"`
+	Playbook         string    `json:"playbook"`
+	Sector           string    `json:"sector"`
+	AvgDailyVolume   float64   `json:"avgDailyVolume"`
+	LeaderRank       int       `json:"leaderRank"`
+	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
+	StockSelectScore float64   `json:"stockSelectionScore"`
+	PriceVsVWAPPct   float64   `json:"priceVsVwapPct"`
+	DistanceHighPct  float64   `json:"distanceFromHighPct"`
+	Timestamp        time.Time `json:"timestamp"`
 }
 
 // ExecutionReport represents a broker-confirmed fill.
