@@ -1055,7 +1055,6 @@ func (p *Pipeline) pollDeterministicOrder(
 		Reason:           order.Reason,
 		MarketRegime:     order.MarketRegime,
 		RegimeConfidence: order.RegimeConfidence,
-		Playbook:         order.Playbook,
 		Sector:           order.Sector,
 		LeaderRank:       order.LeaderRank,
 		VolumeLeaderPct:  order.VolumeLeaderPct,

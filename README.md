@@ -86,10 +86,8 @@ Under no circumstances will the authors, contributors, or copyright holders be h
   - Both paths share price, float, and HOD proximity filters
   - New `hod_breakout` setup type when price is within 1% of session high with strong intraday move
   - New `hod_pullback` setup type when price is between `HODMomoMaxDistFromHigh` and `HODMomoPullbackMaxDist` of HOD — catches pullback entries on momentum runners (e.g., ANNA 7.3% below HOD)
-  - HOD momo qualified stocks bypass the general `MaxDistanceFromHighPct` filter
 - **Scanner Filters** — price, float (`MaxFloat`/`MinFloat`), minimum daily volume (`MinPrevDayVolume`), HOD proximity, RSI overbought/oversold
 - **Dual-Direction Strategy** — long breakouts/pullbacks, short breakdowns
-- **Four Playbook Types** — Breakout, Pullback, Continuation, Reversal — each with its own exit parameters
 - **Market Regime Detection** — threshold-based (default) and HMM regime detector
 - **Confidence-Based Entry Scoring** — with regime gating and ML score integration
 - **Improved Diagnostics** — candidate rejection reasons include `market-closed`, `regime-gated`, `past-entry-deadline`, `cooldown`, `existing-position`, `loss-cooldown` (replaces generic `no-signal`)
@@ -409,13 +407,11 @@ The bot uses versioned JSON trading profiles stored in `profiles/`:
 
 **Core Risk** — `RiskPerTradePct`, `DailyLossLimitPct`, `MaxTradesPerDay`, `MaxOpenPositions`, `MaxExposurePct`, `MaxEntriesPerMinute`
 
-**Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`, `MaxFloat`, `MinFloat`, `MinPrevDayVolume`, `FloatOverrideURL`
+**Scanner** — `MinPrice`, `MaxPrice`, `MinGapPercent`, `MinRelativeVolume`, `MinPremarketVolume`, `MinATRBars`, `MaxFloat`, `MinFloat`, `MinPrevDayVolume`
 
 **Trade Management** — `TrailActivationR`, `ProfitTargetR`, `PartialExitsEnabled`, `EntryStopATRMultiplier`, `TrailATRMultiplier`, `TightTrailTriggerR`
 
-**Scanner Quality** — `MaxDistanceFromHighPct`
-
-**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range), `HODMomoMinMinutesSinceOpen` (5 min)
+**HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range)
 
 **Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor)
 

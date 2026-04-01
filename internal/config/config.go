@@ -8,38 +8,35 @@ import (
 
 // ScannerConfig holds stock selection criteria (Ross Cameron momentum filters).
 type ScannerConfig struct {
-	MinPrice                   float64
-	MaxPrice                   float64
-	MinGapPercent              float64
-	MinRelativeVolume          float64
-	MinPremarketVolume         uint64
-	FloatOverrideURL           string
-	MaxFloat                   int64
-	MinFloat                   int64
-	MinPrevDayVolume           uint64
-	ScannerWorkers             int
-	MinOneMinuteReturnPct      float64
-	MinThreeMinuteReturnPct    float64
-	MinFiveMinuteVolume        uint64
-	MinVolumeRate              float64
-	MaxDistanceFromHighPct     float64
-	MACDFastPeriod             int
-	MACDSlowPeriod             int
-	MACDSignalPeriod           int
-	MeanReversionEnabled       bool
-	MeanReversionMaxADX        float64
-	BollingerPeriod            int
-	BollingerK                 float64
-	GapFadeEnabled             bool
-	GapFadeMinGapPct           float64
-	GapFadeMaxRelVol           float64
-	HODMomoEnabled             bool
-	HODMomoMinIntradayPct      float64
-	HODMomoMinRelativeVolume   float64
-	HODMomoMaxDistFromHigh     float64
-	HODMomoPullbackMaxDist     float64
-	HODMomoMinMinutesSinceOpen float64
-	MaxVolumeLeaders           int // only consider the top N symbols by dollar volume (0 = disabled)
+	MinPrice                 float64
+	MaxPrice                 float64
+	MinGapPercent            float64
+	MinRelativeVolume        float64
+	MinPremarketVolume       uint64
+	MaxFloat                 int64
+	MinFloat                 int64
+	MinPrevDayVolume         uint64
+	ScannerWorkers           int
+	MinOneMinuteReturnPct    float64
+	MinThreeMinuteReturnPct  float64
+	MinFiveMinuteVolume      uint64
+	MinVolumeRate            float64
+	MACDFastPeriod           int
+	MACDSlowPeriod           int
+	MACDSignalPeriod         int
+	MeanReversionEnabled     bool
+	MeanReversionMaxADX      float64
+	BollingerPeriod          int
+	BollingerK               float64
+	GapFadeEnabled           bool
+	GapFadeMinGapPct         float64
+	GapFadeMaxRelVol         float64
+	HODMomoEnabled           bool
+	HODMomoMinIntradayPct    float64
+	HODMomoMinRelativeVolume float64
+	HODMomoMaxDistFromHigh   float64
+	HODMomoPullbackMaxDist   float64
+	MaxVolumeLeaders         int // only consider the top N symbols by dollar volume (0 = disabled)
 }
 
 // StrategyConfig holds entry/exit rules and position management parameters.
@@ -67,7 +64,6 @@ type StrategyConfig struct {
 	FailedBreakoutCutR           float64
 	ShortPeakExtensionMinPct     float64
 	ShortVWAPBreakMinPct         float64
-	PlaybookExits                PlaybookExitsConfig
 	StagnationMinPeakR           float64
 	BreakoutFailureWindowMin     int
 	StagnationWindowMin          int
@@ -284,29 +280,6 @@ func (tc *TradingConfig) UnmarshalJSON(data []byte) error {
 	}
 	*tc = TradingConfig(f)
 	return nil
-}
-
-// PlaybookExitConfig holds exit parameters for a single playbook.
-type PlaybookExitConfig struct {
-	ProfitTargetR            float64
-	FailedBreakoutCutR       float64
-	BreakoutFailureWindowMin int
-	StagnationWindowMin      int
-	StagnationMinPeakR       float64
-	TrailActivationR         float64
-	TrailATRMultiplier       float64
-	TightTrailTriggerR       float64
-	TightTrailATRMultiplier  float64
-}
-
-// PlaybookExitsConfig holds exit configs for all playbooks.
-type PlaybookExitsConfig struct {
-	Breakout      PlaybookExitConfig
-	Pullback      PlaybookExitConfig
-	Continuation  PlaybookExitConfig
-	Reversal      PlaybookExitConfig
-	MeanReversion PlaybookExitConfig
-	GapFade       PlaybookExitConfig
 }
 
 // DefaultTradingConfig returns the tuned baseline.

@@ -222,24 +222,6 @@ func MinutesSinceOpen(t time.Time) float64 {
 	return t.Sub(open).Minutes()
 }
 
-// RemainingMinutes returns the number of regular-session minutes remaining
-// from time t until market close (4:00 PM ET). Returns 0 if market is closed.
-func RemainingMinutes(t time.Time) int {
-	close := MarketClose(t)
-	if !t.Before(close) {
-		return 0
-	}
-	open := MarketOpen(t)
-	if t.Before(open) {
-		return 390 // full session
-	}
-	remaining := int(close.Sub(t).Minutes())
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
 // TradingDay returns the date string (YYYY-MM-DD) for the trading day.
 func TradingDay(t time.Time) string {
 	return t.In(nyLoc).Format("2006-01-02")
