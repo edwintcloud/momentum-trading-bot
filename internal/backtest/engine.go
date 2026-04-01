@@ -274,10 +274,10 @@ func Run(ctx context.Context, cfg config.TradingConfig, runCfg RunConfig) (Resul
 	book.SetNowFunc(func() time.Time {
 		return time.Unix(0, simTimeNano.Load())
 	})
-	var regimeTracker *regime.Tracker
-	if cfg.EnableMarketRegime {
-		regimeTracker = regime.NewTracker(cfg, runtimeState)
-	}
+	// Always create the regime tracker to match live trading, which
+	// initialises it unconditionally.  When EnableMarketRegime is false
+	// the tracker is a no-op (IsBenchmark returns false for all symbols).
+	regimeTracker := regime.NewTracker(cfg, runtimeState)
 	scan := scanner.NewScanner(cfg, runtimeState)
 	scan.SetBlockedSymbols(runCfg.BlockedSymbols)
 	broker := execution.NewPaperBroker(runCfg.EasyToBorrow)

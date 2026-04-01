@@ -73,7 +73,6 @@ type StrategyConfig struct {
 	PartialTrigger2R             float64
 	PartialTrigger2Pct           float64
 	MoveStopAfterPartial         bool
-	MinPositionNotionalPct       float64
 	MaxEntriesPerMinute          int
 	MinATRBars                   int
 	DisableBearPressureLongBlock bool
