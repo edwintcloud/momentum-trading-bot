@@ -163,7 +163,6 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 		SetupType:        report.SetupType,
 		MarketRegime:     report.MarketRegime,
 		RegimeConfidence: report.RegimeConfidence,
-		Sector:           report.Sector,
 		LeaderRank:       report.LeaderRank,
 		VolumeLeaderPct:  report.VolumeLeaderPct,
 		StockSelectScore: report.StockSelectScore,
@@ -246,7 +245,6 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 		ExitReason:       report.Reason,
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
-		Sector:           pos.Sector,
 		LeaderRank:       pos.LeaderRank,
 		VolumeLeaderPct:  pos.VolumeLeaderPct,
 		StockSelectScore: pos.StockSelectScore,
@@ -265,6 +263,26 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 	if m.recorder != nil {
 		m.recorder.RecordClosedTrade(trade)
 	}
+}
+
+// TrackBarExtremes updates a position's HighestPrice and LowestPrice using the
+// bar's high and low. In live trading, trade ticks between bars achieve the same
+// effect via MarkPriceAt; this method gives backtests equivalent extreme tracking
+// so that trailing stops, peakR, and momentum-fade exits behave identically.
+func (m *Manager) TrackBarExtremes(symbol string, barHigh, barLow float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pos, ok := m.positions[symbol]
+	if !ok {
+		return
+	}
+	if barHigh > pos.HighestPrice {
+		pos.HighestPrice = barHigh
+	}
+	if barLow > 0 && (barLow < pos.LowestPrice || pos.LowestPrice == 0) {
+		pos.LowestPrice = barLow
+	}
+	m.positions[symbol] = pos
 }
 
 // UpdatePrice updates the last known price for a position.
@@ -577,7 +595,6 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 		ExitReason:       report.Reason,
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
-		Sector:           pos.Sector,
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)
@@ -706,7 +723,6 @@ func (m *Manager) RemoveStalePosition(symbol string) {
 		ExitReason:       "reconcile-stale",
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
-		Sector:           pos.Sector,
 	}
 
 	m.closedTrades = append(m.closedTrades, trade)

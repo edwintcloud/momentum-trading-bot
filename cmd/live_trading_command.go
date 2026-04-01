@@ -284,7 +284,9 @@ func RunLiveTrading() {
 	// Improve seeded position stops using snapshot data (if available)
 	computeSeededPositionStops(portfolioMgr, tradingCfg, snapshots)
 
-	// Feed streaming bars into the pipeline
+	// Feed streaming bars into the pipeline.
+	// Use a blocking send so bars are never silently dropped;
+	// the backtest always delivers every bar, and live should too.
 	go func() {
 		for sbar := range barCh {
 			select {
@@ -297,7 +299,8 @@ func RunLiveTrading() {
 				Close:     sbar.Close,
 				Volume:    sbar.Volume,
 			}:
-			default:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()

@@ -242,6 +242,7 @@ func (p *Pipeline) Start(ctx context.Context) {
 				p.cfg.Portfolio.RefreshDayIfNeeded()
 			}
 			p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
+			p.cfg.Portfolio.TrackBarExtremes(tick.Symbol, tick.BarHigh, tick.BarLow)
 			p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 			if p.cfg.OnTickFanOut != nil {
 				p.cfg.OnTickFanOut(tick)
@@ -868,6 +869,7 @@ func (p *Pipeline) processDeterministicBar(
 		p.cfg.Portfolio.RefreshDayIfNeeded()
 	}
 	p.cfg.Portfolio.MarkPriceAt(tick.Symbol, tick.Price, tick.Timestamp)
+	p.cfg.Portfolio.TrackBarExtremes(tick.Symbol, tick.BarHigh, tick.BarLow)
 	p.cfg.RiskEngine.CorrelationTracker.UpdatePrice(tick.Symbol, tick.Price)
 	if p.cfg.OnTickFanOut != nil {
 		p.cfg.OnTickFanOut(tick)
@@ -1055,7 +1057,6 @@ func (p *Pipeline) pollDeterministicOrder(
 		Reason:           order.Reason,
 		MarketRegime:     order.MarketRegime,
 		RegimeConfidence: order.RegimeConfidence,
-		Sector:           order.Sector,
 		LeaderRank:       order.LeaderRank,
 		VolumeLeaderPct:  order.VolumeLeaderPct,
 		StockSelectScore: order.StockSelectScore,

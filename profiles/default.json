@@ -71,7 +71,6 @@
       "PartialTrigger2R": 100,
       "PartialTrigger2Pct": 0.5,
       "MoveStopAfterPartial": true,
-      "MinPositionNotionalPct": 0.1,
       "MaxEntriesPerMinute": 3,
       "MinATRBars": 5,
       "DailyProfitLockPct": 5

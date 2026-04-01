@@ -117,7 +117,6 @@ type Candidate struct {
 	RegimeConfidence      float64   `json:"regimeConfidence"`
 	Float                 int64     `json:"float"`
 	PrevDayVolume         uint64    `json:"prevDayVolume"`
-	Sector                string    `json:"sector"`
 	Catalyst              string    `json:"catalyst"`
 	CatalystURL           string    `json:"catalystUrl"`
 	OFIDirection          int       `json:"ofiDirection"`  // -1 short, 0 neutral, 1 long
@@ -191,7 +190,6 @@ type TradeSignal struct {
 	OrderType        string    `json:"orderType"` // "market" or "" (default=limit)
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
-	Sector           string    `json:"sector"`
 	AvgDailyVolume   float64   `json:"avgDailyVolume"`
 	LeaderRank       int       `json:"leaderRank"`
 	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
@@ -217,7 +215,6 @@ type OrderRequest struct {
 	OrderType        string    `json:"orderType"` // "limit" (default) or "market"
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
-	Sector           string    `json:"sector"`
 	AvgDailyVolume   float64   `json:"avgDailyVolume"`
 	LeaderRank       int       `json:"leaderRank"`
 	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
@@ -242,7 +239,6 @@ type ExecutionReport struct {
 	Reason           string    `json:"reason"`
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
-	Sector           string    `json:"sector"`
 	LeaderRank       int       `json:"leaderRank"`
 	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
 	StockSelectScore float64   `json:"stockSelectionScore"`
@@ -268,7 +264,6 @@ type Position struct {
 	SetupType        string    `json:"setupType"`
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
-	Sector           string    `json:"sector"`
 	LeaderRank       int       `json:"leaderRank"`
 	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
 	StockSelectScore float64   `json:"stockSelectionScore"`
@@ -301,7 +296,6 @@ type ClosedTrade struct {
 	ExitReason       string    `json:"exitReason"`
 	MarketRegime     string    `json:"marketRegime"`
 	RegimeConfidence float64   `json:"regimeConfidence"`
-	Sector           string    `json:"sector"`
 	LeaderRank       int       `json:"leaderRank"`
 	VolumeLeaderPct  float64   `json:"volumeLeaderPct"`
 	StockSelectScore float64   `json:"stockSelectionScore"`
