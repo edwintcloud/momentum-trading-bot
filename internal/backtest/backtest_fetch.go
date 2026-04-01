@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -130,7 +129,6 @@ func fetchHistoricalJobFromAPI(ctx context.Context, client *alpaca.Client, limit
 		}
 		applyRateLimitHeaders(limiter, page.Headers)
 		if page.NextPageToken == "" {
-			sortHistoricalBars(result.bars)
 			if err := saveHistoricalJobCache(job, feed, result); err != nil {
 				log.Printf("Historical cache write failed job=%d symbols=%d err=%v", job.index, len(job.Symbols), err)
 			}
@@ -346,13 +344,4 @@ func EstimateHistoricalFetchTimeout(symbolCount int, start, end time.Time, reque
 		timeout = 2 * time.Hour
 	}
 	return timeout
-}
-
-func sortHistoricalBars(bars []InputBar) {
-	sort.Slice(bars, func(i, j int) bool {
-		if bars[i].Timestamp.Equal(bars[j].Timestamp) {
-			return bars[i].Symbol < bars[j].Symbol
-		}
-		return bars[i].Timestamp.Before(bars[j].Timestamp)
-	})
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/domain"
 	"github.com/edwintcloud/momentum-trading-bot/internal/markethours"
 	"github.com/edwintcloud/momentum-trading-bot/internal/ml"
+	"github.com/edwintcloud/momentum-trading-bot/internal/telemetry"
 )
 
 // Manager tracks positions, exposure, and PnL.
@@ -30,6 +31,7 @@ type Manager struct {
 	highWaterMark float64
 	maxDrawdown   float64
 	nowFunc       func() time.Time
+	telegram      *telemetry.TelegramNotifier
 }
 
 // NewManager creates a portfolio manager.
@@ -49,6 +51,7 @@ func NewManager(cfg config.TradingConfig, recorders ...domain.EventRecorder) *Ma
 		recorder:      recorder,
 		highWaterMark: cfg.StartingCapital,
 		nowFunc:       time.Now,
+		telegram:      telemetry.NewTelegramNotifierFromEnv(),
 	}
 }
 
@@ -160,7 +163,6 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 		SetupType:        report.SetupType,
 		MarketRegime:     report.MarketRegime,
 		RegimeConfidence: report.RegimeConfidence,
-		Playbook:         report.Playbook,
 		Sector:           report.Sector,
 		LeaderRank:       report.LeaderRank,
 		VolumeLeaderPct:  report.VolumeLeaderPct,
@@ -193,6 +195,7 @@ func (m *Manager) OpenPosition(report domain.ExecutionReport) {
 	m.positions[report.Symbol] = pos
 	m.entriesToday++
 	m.tradesToday++
+	m.telegram.NotifyTradeOpened(report)
 }
 
 // ClosePosition closes a position and records the trade.
@@ -207,6 +210,8 @@ func (m *Manager) ClosePosition(report domain.ExecutionReport) {
 	}
 
 	m.closePositionLocked(pos, report)
+	m.telegram.NotifyTradeClosed(report)
+
 }
 
 // closePositionLocked performs the actual close. Caller must hold m.mu.
@@ -241,7 +246,6 @@ func (m *Manager) closePositionLocked(pos domain.Position, report domain.Executi
 		ExitReason:       report.Reason,
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
-		Playbook:         pos.Playbook,
 		Sector:           pos.Sector,
 		LeaderRank:       pos.LeaderRank,
 		VolumeLeaderPct:  pos.VolumeLeaderPct,
@@ -316,7 +320,7 @@ func (m *Manager) SeedBrokerPosition(pos domain.Position) {
 }
 
 // UpdateSeededPositionRisk sets stop price, risk per share, original quantity,
-// entry ATR, and playbook for a broker-seeded position that was missing these values.
+// entry ATR for a broker-seeded position that was missing these values.
 // Only zero-valued fields are updated; non-zero values are preserved.
 func (m *Manager) UpdateSeededPositionRisk(symbol string, stopPrice, riskPerShare float64, originalQty int64) {
 	m.mu.Lock()
@@ -337,9 +341,6 @@ func (m *Manager) UpdateSeededPositionRisk(symbol string, stopPrice, riskPerShar
 	}
 	if pos.EntryATR == 0 {
 		pos.EntryATR = riskPerShare // Use risk per share as ATR proxy
-	}
-	if pos.Playbook == "" {
-		pos.Playbook = "breakout" // Safe default
 	}
 	pos.UpdatedAt = time.Now()
 	m.positions[symbol] = pos
@@ -576,7 +577,6 @@ func (m *Manager) ReducePosition(report domain.ExecutionReport) {
 		ExitReason:       report.Reason,
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
-		Playbook:         pos.Playbook,
 		Sector:           pos.Sector,
 	}
 
@@ -706,7 +706,6 @@ func (m *Manager) RemoveStalePosition(symbol string) {
 		ExitReason:       "reconcile-stale",
 		MarketRegime:     pos.MarketRegime,
 		RegimeConfidence: pos.RegimeConfidence,
-		Playbook:         pos.Playbook,
 		Sector:           pos.Sector,
 	}
 

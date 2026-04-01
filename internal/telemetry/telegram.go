@@ -40,7 +40,7 @@ func (n *TelegramNotifier) NotifyTradeOpened(report domain.ExecutionReport) {
 	text := fmt.Sprintf(
 		"🚀 Trade Opened\n\nSymbol: %s\nSide: %s\nQty: %d\nPrice: $%.2f\nStop: $%.2f",
 		report.Symbol,
-		domain.NormalizeDirection(report.PositionSide),
+		domain.NormalizeDirection(report.Side),
 		report.Quantity,
 		report.Price,
 		report.StopPrice,
@@ -49,16 +49,16 @@ func (n *TelegramNotifier) NotifyTradeOpened(report domain.ExecutionReport) {
 }
 
 // NotifyTradeClosed sends a message when a position is fully closed.
-func (n *TelegramNotifier) NotifyTradeClosed(trade domain.ClosedTrade) {
+func (n *TelegramNotifier) NotifyTradeClosed(report domain.ExecutionReport) {
 	if !n.enabled() {
 		return
 	}
 	text := fmt.Sprintf(
 		"🏁 Trade Closed\n\nSymbol: %s\nSide: %s\nExit Price: $%.2f\nReason: %s",
-		trade.Symbol,
-		domain.NormalizeDirection(trade.Side),
-		trade.ExitPrice,
-		trade.ExitReason,
+		report.Symbol,
+		domain.NormalizeDirection(report.Side),
+		report.Price,
+		report.Reason,
 	)
 	n.send(text)
 }

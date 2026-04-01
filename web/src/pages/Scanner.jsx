@@ -18,7 +18,6 @@ const sortKeys = {
   'PM Vol':  (c) => c.premarketVolume,
   'VWAP %':  (c) => c.priceVsVwapPct,
   Regime:    (c) => c.marketRegime,
-  Playbook:  (c) => c.playbook,
   Time:      (c) => c.timestamp ? new Date(c.timestamp).getTime() : 0,
 };
 
@@ -32,7 +31,7 @@ export function Scanner({ candidates }) {
 
       <div className="panel">
         <DataTable
-          columns={['Symbol', 'Direction', 'Score', 'Price', 'Gap %', 'Rel Vol', 'PM Vol', 'VWAP %', 'Regime', 'Playbook', 'Time']}
+          columns={['Symbol', 'Direction', 'Score', 'Price', 'Gap %', 'Rel Vol', 'PM Vol', 'VWAP %', 'Regime', 'Time']}
           sortKeys={sortKeys}
           defaultSort={{ col: 'Time', asc: false }}
           rows={candidates}
@@ -58,7 +57,6 @@ export function Scanner({ candidates }) {
               <td>{compactVolume(c.premarketVolume)}</td>
               <td>{c.priceVsVwapPct?.toFixed(2)}%</td>
               <td><span className="badge-info">{c.marketRegime || 'n/a'}</span></td>
-              <td className="text-gray-300">{c.playbook || 'n/a'}</td>
               <td className="text-muted font-mono text-xs">{c.timestamp ? timeFormat.format(new Date(c.timestamp)) : '—'}</td>
             </tr>
           )}
@@ -77,7 +75,6 @@ export function Scanner({ candidates }) {
                 <div className="text-muted">Rel Vol</div><div className="text-right font-mono text-white">{c.relativeVolume?.toFixed(2)}x</div>
                 <div className="text-muted">VWAP %</div><div className="text-right font-mono text-white">{c.priceVsVwapPct?.toFixed(2)}%</div>
                 <div className="text-muted">Regime</div><div className="text-right"><span className="badge-info">{c.marketRegime || 'n/a'}</span></div>
-                <div className="text-muted">Playbook</div><div className="text-right text-gray-300">{c.playbook || 'n/a'}</div>
               </div>
             </div>
           )}

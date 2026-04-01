@@ -470,8 +470,6 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		}
 	}
 
-	// New playbook setup type overrides — only apply when qualified via their
-	// specific path and existing classifiers haven't already assigned a structured type.
 	if meanRevQualified && (metrics.setupType == "early" || metrics.setupType == "pullback" || metrics.setupType == "breakdown") {
 		if tick.Price <= metrics.bbLower {
 			metrics.setupType = "mean_reversion_long"
@@ -501,15 +499,6 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 	}
 
 	distFromHighPct := safePct(referenceHigh-tick.Price, referenceHigh) * 100
-	breakoutBypass := direction == domain.DirectionLong && shouldBypassLongBreakoutFilters(cfg, metrics, distFromHighPct, referenceHigh)
-
-	// HOD proximity filter: longs must be within MaxDistanceFromHighPct of high of day.
-	// True breakout setups are allowed to print at the exact high instead of being rejected.
-	if cfg.MaxDistanceFromHighPct > 0 && direction == domain.DirectionLong && !hodMomoQualified && !breakoutBypass {
-		if distFromHighPct > cfg.MaxDistanceFromHighPct {
-			return domain.Candidate{}, false, "distance-from-high"
-		}
-	}
 
 	// RSI momentum slope: longs require positive RSI SMA slope, shorts require negative.
 	// When insufficient bars exist to compute the slope it defaults to 0 and is rejected.
@@ -605,7 +594,6 @@ func (s *Scanner) evaluateDetailed(tick domain.Tick) (domain.Candidate, bool, st
 		Score:                 score,
 		MarketRegime:          regime.Regime,
 		RegimeConfidence:      regime.Confidence,
-		Playbook:              s.selectPlaybookFromSetupType(direction, setupType),
 		Float:                 tick.Float,
 		PrevDayVolume:         tick.PrevDayVolume,
 		Catalyst:              tick.Catalyst,
@@ -647,25 +635,6 @@ func effectiveReferenceHigh(state *symbolState, tick domain.Tick) float64 {
 		referenceHigh = regularHigh
 	}
 	return referenceHigh
-}
-
-func shouldBypassLongBreakoutFilters(cfg config.TradingConfig, metrics scanMetrics, distFromHighPct, referenceHigh float64) bool {
-	if referenceHigh <= 0 {
-		return false
-	}
-	switch metrics.setupType {
-	case "breakout", "hod_breakout", "orb_breakout", "orb_reclaim":
-	default:
-		return false
-	}
-	if metrics.oneMinuteReturn <= 0 {
-		return false
-	}
-	if metrics.fiveMinuteReturn < math.Max(cfg.MinThreeMinuteReturnPct, 0.5) {
-		return false
-	}
-	maxDist := math.Max(cfg.MaxDistanceFromHighPct, 1.0)
-	return distFromHighPct <= maxDist
 }
 
 func computeRossStockSelectionScore(tick domain.Tick, metrics scanMetrics, intradayReturnPct float64, leaderRank int, leaderStrengthPct float64, distFromHighPct float64, referenceHigh float64) float64 {
@@ -1524,27 +1493,6 @@ func (s *Scanner) computeMetrics(state *symbolState, tick domain.Tick) scanMetri
 	}
 
 	return m
-}
-
-func (s *Scanner) selectPlaybookFromSetupType(direction string, setupType string) string {
-	switch setupType {
-	case "orb_breakout", "hod_breakout", "breakout", "breakdown":
-		return "breakout"
-	case "orb_reclaim":
-		return "continuation"
-	case "hod_pullback", "pullback":
-		return "pullback"
-	case "parabolic-failed-reclaim-short":
-		return "reversal"
-	case "mean_reversion_long", "mean_reversion_short":
-		return "mean_reversion"
-	case "gap_fade_long", "gap_fade_short":
-		return "gap_fade"
-	}
-	if direction == domain.DirectionLong {
-		return "continuation"
-	}
-	return "reversal"
 }
 
 func (s *Scanner) classifyStructuredLongSetup(state *symbolState, tick domain.Tick, metrics scanMetrics, cfg config.TradingConfig) (structuredSetup, bool) {

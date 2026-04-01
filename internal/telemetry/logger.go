@@ -8,15 +8,13 @@ import (
 
 // Logger is a composite event recorder that logs and optionally forwards to storage.
 type Logger struct {
-	storage  domain.EventRecorder
-	telegram *TelegramNotifier
+	storage domain.EventRecorder
 }
 
 // NewLogger creates a telemetry logger. If storage is nil, events are only logged to stdout.
 func NewLogger(storage domain.EventRecorder) *Logger {
 	return &Logger{
-		storage:  storage,
-		telegram: NewTelegramNotifierFromEnv(),
+		storage: storage,
 	}
 }
 
@@ -45,9 +43,6 @@ func (l *Logger) RecordExecution(report domain.ExecutionReport) {
 	log.Printf("[execution] %s %s %s qty=%d price=%.2f broker=%s status=%s",
 		report.Intent, report.PositionSide, report.Symbol, report.Quantity,
 		report.Price, report.BrokerOrderID, report.BrokerStatus)
-	if l.telegram != nil {
-		l.telegram.NotifyTradeOpened(report)
-	}
 	if l.storage != nil {
 		l.storage.RecordExecution(report)
 	}
@@ -56,9 +51,6 @@ func (l *Logger) RecordExecution(report domain.ExecutionReport) {
 func (l *Logger) RecordClosedTrade(trade domain.ClosedTrade) {
 	log.Printf("[portfolio] closed %s %s pnl=%.2f R=%.2f reason=%s",
 		trade.Side, trade.Symbol, trade.PnL, trade.RMultiple, trade.ExitReason)
-	if l.telegram != nil {
-		l.telegram.NotifyTradeClosed(trade)
-	}
 	if l.storage != nil {
 		l.storage.RecordClosedTrade(trade)
 	}

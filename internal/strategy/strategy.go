@@ -425,18 +425,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		}
 	}
 
-	playbook := c.Playbook
-	if domain.IsLong(c.Direction) {
-		switch {
-		case isExceptionalSqueezeBreakout(c), isExceptionalSqueezePullback(c):
-			playbook = "continuation"
-		case c.SetupType == "hod_breakout" && isExplosiveLeaderReExpansionBreakout(c):
-			playbook = "pullback"
-		case c.SetupType == "pullback" && isLeaderOpenDrivePullback(c):
-			playbook = "continuation"
-		}
-	}
-
 	signal := domain.TradeSignal{
 		Symbol:           c.Symbol,
 		Side:             domain.OpenBrokerSide(c.Direction),
@@ -452,7 +440,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		Confidence:       math.Min(1.0, c.Score/5.0),
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
-		Playbook:         playbook,
 		Sector:           candidateSector,
 		AvgDailyVolume:   float64(c.PrevDayVolume),
 		LeaderRank:       c.LeaderRank,
@@ -607,26 +594,6 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 	}
 
 	return signal, true
-}
-
-func (s *Strategy) getPlaybookExitConfig(playbook string) config.PlaybookExitConfig {
-	cfg := s.getConfig()
-	switch playbook {
-	case "breakout":
-		return cfg.PlaybookExits.Breakout
-	case "pullback":
-		return cfg.PlaybookExits.Pullback
-	case "continuation":
-		return cfg.PlaybookExits.Continuation
-	case "reversal":
-		return cfg.PlaybookExits.Reversal
-	case "mean_reversion":
-		return cfg.PlaybookExits.MeanReversion
-	case "gap_fade":
-		return cfg.PlaybookExits.GapFade
-	default:
-		return cfg.PlaybookExits.Breakout
-	}
 }
 
 func (s *Strategy) peekTapePressure(now time.Time) tapePressureState {
@@ -821,7 +788,6 @@ func isBearPressureORBReclaimException(c domain.Candidate) bool {
 func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (string, bool) {
 	cfg := s.getConfig()
 	r := s.currentR(pos, tick.Price)
-	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
 	// Safety: if stop price is zero (shouldn't happen but defensive), compute one
 	if pos.StopPrice == 0 {
@@ -850,11 +816,6 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		return "stop-loss", true
 	}
 
-	// Power Hour forced exit: close 5 minutes before market close
-	if pos.Playbook == "power_hour" && markethours.RemainingMinutes(tick.Timestamp) <= 5 {
-		return "power-hour-eod-exit", true
-	}
-
 	// Phase 3 Change 4: Partial exit framework
 	if cfg.PartialExitsEnabled && pos.OriginalQuantity > 0 && pos.Quantity > 0 {
 		partialReason, partialExit := s.checkPartialExit(pos, r)
@@ -879,16 +840,16 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		}
 	}
 
-	// Profit target (playbook-specific)
-	profitTargetR := exitCfg.ProfitTargetR
+	// Profit target
+	profitTargetR := cfg.ProfitTargetR
 	if r >= profitTargetR {
 		return "profit-target", true
 	}
 
-	// Failed breakout cut (playbook-specific)
-	if r <= exitCfg.FailedBreakoutCutR {
+	// Failed breakout cut
+	if r <= cfg.FailedBreakoutCutR {
 		holdMinutes := tick.Timestamp.Sub(pos.OpenedAt).Minutes()
-		if holdMinutes < float64(exitCfg.BreakoutFailureWindowMin) {
+		if holdMinutes < float64(cfg.BreakoutFailureWindowMin) {
 			return "failed-breakout", true
 		}
 	}
@@ -914,7 +875,7 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 	// Stagnation check (Change 8 fix: use peakR directly, not pct/100)
 	holdMinutes := tick.Timestamp.Sub(pos.OpenedAt).Minutes()
 	peakR := s.peakR(pos)
-	if holdMinutes > float64(exitCfg.StagnationWindowMin) && peakR < exitCfg.StagnationMinPeakR {
+	if holdMinutes > float64(cfg.StagnationWindowMin) && peakR < cfg.StagnationMinPeakR {
 		return "stagnation", true
 	}
 
@@ -960,43 +921,27 @@ func isMeanReversionSetup(setupType string) bool {
 func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 	cfg := s.getConfig()
 	r := s.currentR(pos, tick.Price)
-	exitCfg := s.getPlaybookExitConfig(pos.Playbook)
 
 	var newStop float64
 	if domain.IsLong(pos.Side) {
-		if isExceptionalSqueezePosition(pos) {
-			if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
-				newStop = pos.AvgPrice + pos.EntryATR*0.1
-			}
-			if pos.EntryATR > 0 && pos.HighestPrice > 0 {
-				peakR := s.peakR(pos)
-				if peakR >= 2.0 {
-					squeezeStop := exceptionalSqueezePeakStop(pos.HighestPrice, pos.EntryATR, peakR)
-					if squeezeStop > pos.StopPrice && squeezeStop > newStop {
-						newStop = squeezeStop
-					}
-				}
-			}
-		} else {
-			// Break-even stop
-			if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
-				newStop = pos.AvgPrice + pos.EntryATR*0.1
-			}
+		// Break-even stop
+		if r >= cfg.BreakEvenMinR && pos.StopPrice < pos.AvgPrice {
+			newStop = pos.AvgPrice + pos.EntryATR*0.1
+		}
 
-			// Trailing stop activation (playbook-specific, volatility-adjusted)
-			if r >= exitCfg.TrailActivationR {
-				trailStop := tick.Price - pos.EntryATR*exitCfg.TrailATRMultiplier
-				if trailStop > pos.StopPrice {
-					newStop = trailStop
-				}
+		// Trailing stop activation
+		if r >= cfg.TrailActivationR {
+			trailStop := tick.Price - pos.EntryATR*cfg.TrailATRMultiplier
+			if trailStop > pos.StopPrice {
+				newStop = trailStop
 			}
+		}
 
-			// Tight trail (playbook-specific, volatility-adjusted)
-			if r >= exitCfg.TightTrailTriggerR {
-				tightStop := tick.Price - pos.EntryATR*exitCfg.TightTrailATRMultiplier
-				if tightStop > pos.StopPrice {
-					newStop = tightStop
-				}
+		// Tight trail
+		if r >= cfg.TightTrailTriggerR {
+			tightStop := tick.Price - pos.EntryATR*cfg.TightTrailATRMultiplier
+			if tightStop > pos.StopPrice {
+				newStop = tightStop
 			}
 		}
 	} else {
@@ -1004,14 +949,14 @@ func (s *Strategy) updateTrailingStop(pos domain.Position, tick domain.Tick) {
 		if r >= cfg.BreakEvenMinR && pos.StopPrice > pos.AvgPrice {
 			newStop = pos.AvgPrice - pos.EntryATR*0.1
 		}
-		if r >= exitCfg.TrailActivationR {
-			trailStop := tick.Price + pos.EntryATR*exitCfg.TrailATRMultiplier
+		if r >= cfg.TrailActivationR {
+			trailStop := tick.Price + pos.EntryATR*cfg.TrailATRMultiplier
 			if trailStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = trailStop
 			}
 		}
-		if r >= exitCfg.TightTrailTriggerR {
-			tightStop := tick.Price + pos.EntryATR*exitCfg.TightTrailATRMultiplier
+		if r >= cfg.TightTrailTriggerR {
+			tightStop := tick.Price + pos.EntryATR*cfg.TightTrailATRMultiplier
 			if tightStop < pos.StopPrice || pos.StopPrice == 0 {
 				newStop = tightStop
 			}
@@ -1328,37 +1273,6 @@ func reachedDailyProfitLock(pm *portfolio.Manager, cfg config.TradingConfig) boo
 	dayNetPnL := pm.DayPnL() + pm.UnrealizedPnL()
 	dayROIPct := (dayNetPnL / cfg.StartingCapital) * 100.0
 	return dayROIPct >= cfg.DailyProfitLockPct
-}
-
-func isExceptionalSqueezePosition(pos domain.Position) bool {
-	return domain.IsLong(pos.Side) &&
-		(pos.SetupType == "hod_breakout" || pos.SetupType == "hod_pullback") &&
-		pos.Playbook == "continuation"
-}
-
-func exceptionalSqueezeTrailATRMultiplier(peakR float64) float64 {
-	switch {
-	case peakR >= 12.0:
-		return 8.0
-	case peakR >= 4.0:
-		return 6.0
-	default:
-		return 5.0
-	}
-}
-
-func exceptionalSqueezePeakStop(highestPrice, entryATR, peakR float64) float64 {
-	if highestPrice <= 0 || entryATR <= 0 {
-		return 0
-	}
-	stop := highestPrice - entryATR*exceptionalSqueezeTrailATRMultiplier(peakR)
-	if peakR >= 12.0 {
-		percentStop := highestPrice * 0.775
-		if percentStop < stop {
-			stop = percentStop
-		}
-	}
-	return stop
 }
 
 func isLeaderOpenDrivePullback(c domain.Candidate) bool {
