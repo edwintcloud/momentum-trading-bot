@@ -290,7 +290,6 @@ func buildExecutionReport(order domain.OrderRequest, orderID, status string, fil
 		Reason:           order.Reason,
 		MarketRegime:     order.MarketRegime,
 		RegimeConfidence: order.RegimeConfidence,
-		Sector:           order.Sector,
 		LeaderRank:       order.LeaderRank,
 		VolumeLeaderPct:  order.VolumeLeaderPct,
 		StockSelectScore: order.StockSelectScore,

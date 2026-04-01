@@ -95,10 +95,7 @@ Under no circumstances will the authors, contributors, or copyright holders be h
 ### Risk Management
 - Portfolio heat tracking with alert thresholds
 - Graduated daily loss response (moderate / severe / halt tiers)
-- Sector concentration limits (max positions + exposure per sector; stocks with unknown/empty GICS sector bypass sector limits)
 - Correlation-aware position approval
-- Kelly Criterion position sizing
-- Position size floor (`MinPositionNotionalPct`) — prevents vol-target from sizing momentum positions to near-zero
 - Defensive stops for broker-seeded positions — on restart, existing broker positions automatically get stop prices computed from the previous day's low (via Alpaca snapshots) or a configurable ATR fallback percentage (`EntryATRPercentFallback`), ensuring no position is ever unprotected
 - Drawdown-based risk reduction (linear scale to max acceptable drawdown)
 - Per-minute entry throttle (`MaxEntriesPerMinute`)
@@ -413,8 +410,6 @@ The bot uses versioned JSON trading profiles stored in `profiles/`:
 
 **HOD Momo Scanner** — `HODMomoEnabled` (default: false), `HODMomoMinIntradayPct` (10%), `HODMomoMinRelativeVolume` (5x), `HODMomoMaxDistFromHigh` (5% — breakout range), `HODMomoPullbackMaxDist` (10% — pullback range)
 
-**Position Sizing** — `MinPositionNotionalPct` (0 = disabled, 0.02 = 2% of equity floor)
-
 **Quant Features** — enable/disable flags for each feature: `EnableMarketRegime`, `CorrelationCheckEnabled`, `HMMRegimeEnabled`
 
 **Optimization** — `OptimizerSamples`, `OptimizerUseLHS`, `BayesianOptEnabled`, `WalkForwardEnabled`, `CPCVEnabled`
@@ -509,7 +504,6 @@ See `profiles/default.json` for the complete field reference.
 │   │   └── riskbudget.go            # Dynamic risk budgeting
 │   ├── runtime/state.go             # Runtime state management
 │   ├── scanner/scanner.go           # Momentum scanner
-│   ├── sector/lookup.go             # Sector classification
 │   ├── signals/                     # Intraday alpha signals
 │   │   ├── signals.go               # Signal aggregator
 │   │   ├── ofi.go                   # Order Flow Imbalance

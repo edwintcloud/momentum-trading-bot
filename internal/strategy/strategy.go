@@ -14,7 +14,6 @@ import (
 	"github.com/edwintcloud/momentum-trading-bot/internal/risk"
 	"github.com/edwintcloud/momentum-trading-bot/internal/runtime"
 	"github.com/edwintcloud/momentum-trading-bot/internal/scanner"
-	"github.com/edwintcloud/momentum-trading-bot/internal/sector"
 )
 
 // TimeWindow classifies the current market session period.
@@ -379,27 +378,9 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 
 	entryPrice := c.Price
 	if domain.IsLong(c.Direction) {
-		if isExceptionalSqueezeBreakout(c) {
-			entryPrice = exceptionalSqueezeEntryLimit(c.Price, c.ATR)
-		} else if isExceptionalSqueezePullback(c) {
-			entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.006, 0.20)
-		} else {
-			switch c.SetupType {
-			case "orb_reclaim":
-				entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.003, 0.15)
-			case "orb_breakout":
-				entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.002, 0.10)
-			case "hod_breakout":
-				if c.Score >= 9.0 &&
-					c.OneMinuteReturnPct >= 2.0 &&
-					c.ThreeMinuteReturnPct >= 5.0 &&
-					c.RelativeVolume >= 12.0 &&
-					c.PriceVsVWAPPct <= 10.0 &&
-					c.DistanceFromHighPct <= 0.6 {
-					entryPrice = aggressiveEntryLimit(c.Price, c.ATR, 0.006, 0.25)
-				}
-			}
-		}
+		entryPrice += cfg.LimitOrderSlippageDollars
+	} else {
+		entryPrice -= cfg.LimitOrderSlippageDollars
 	}
 
 	var stopPrice float64
@@ -407,22 +388,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		stopPrice = entryPrice - riskPerShare
 	} else {
 		stopPrice = entryPrice + riskPerShare
-	}
-
-	// Resolve sector for the candidate
-	candidateSector := c.Sector
-	if candidateSector == "" {
-		candidateSector = sector.SectorForSymbol(c.Symbol)
-	}
-
-	// Position size floor: enforce minimum notional position
-	if cfg.MinPositionNotionalPct > 0 && quantity > 0 && c.Price > 0 {
-		minNotional := currentEquity * cfg.MinPositionNotionalPct
-		minQty := int64(math.Floor(minNotional / c.Price))
-		minQty = max(minQty, 0)
-		if quantity < minQty {
-			quantity = minQty
-		}
 	}
 
 	signal := domain.TradeSignal{
@@ -440,7 +405,6 @@ func (s *Strategy) evaluateCandidate(c domain.Candidate) (domain.TradeSignal, bo
 		Confidence:       math.Min(1.0, c.Score/5.0),
 		MarketRegime:     c.MarketRegime,
 		RegimeConfidence: c.RegimeConfidence,
-		Sector:           candidateSector,
 		AvgDailyVolume:   float64(c.PrevDayVolume),
 		LeaderRank:       c.LeaderRank,
 		VolumeLeaderPct:  c.VolumeLeaderPct,
@@ -548,11 +512,18 @@ func (s *Strategy) evaluateExit(tick domain.Tick) (domain.TradeSignal, bool) {
 		}
 	}
 
-	// Use actual market price for exit orders. In live trading, the order must be
-	// priced at or through the current market to fill — clamping to the stop price
-	// produces a limit order on the wrong side of the market when price gaps through,
-	// causing the order to sit unfilled while losses grow.
+	// Use actual market price for exit orders.  When the stop was hit intra-bar
+	// (bar extreme crossed the stop but close did not), price the exit at the
+	// stop level — in live trading a stop order fills at the stop, not at the
+	// bar close that happens to be above it.
 	exitPrice := tick.Price
+	if reason == "stop-loss" || reason == "stop-loss-fallback" {
+		if domain.IsLong(pos.Side) && tick.Price > pos.StopPrice && pos.StopPrice > 0 {
+			exitPrice = pos.StopPrice
+		} else if domain.IsShort(pos.Side) && tick.Price < pos.StopPrice && pos.StopPrice > 0 {
+			exitPrice = pos.StopPrice
+		}
+	}
 
 	signal := domain.TradeSignal{
 		Symbol:       tick.Symbol,
@@ -808,12 +779,19 @@ func (s *Strategy) checkExitConditions(pos domain.Position, tick domain.Tick) (s
 		}
 	}
 
-	// Hard stop
-	if domain.IsLong(pos.Side) && tick.Price <= pos.StopPrice {
-		return "stop-loss", true
+	// Hard stop — check both the bar close (tick.Price) and the bar
+	// extreme (BarLow for longs, BarHigh for shorts).  In live trading a
+	// real broker stop-order would trigger at the intra-bar touch; checking
+	// only the close misses stops that fire and recover within the bar.
+	if domain.IsLong(pos.Side) && pos.StopPrice > 0 {
+		if tick.Price <= pos.StopPrice || (tick.BarLow > 0 && tick.BarLow <= pos.StopPrice) {
+			return "stop-loss", true
+		}
 	}
-	if domain.IsShort(pos.Side) && tick.Price >= pos.StopPrice {
-		return "stop-loss", true
+	if domain.IsShort(pos.Side) && pos.StopPrice > 0 {
+		if tick.Price >= pos.StopPrice || (tick.BarHigh > 0 && tick.BarHigh >= pos.StopPrice) {
+			return "stop-loss", true
+		}
 	}
 
 	// Phase 3 Change 4: Partial exit framework

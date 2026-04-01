@@ -279,13 +279,11 @@ func (s *PostgresStore) LoadClosedTradesByDate(date time.Time) ([]domain.ClosedT
 				SetupType        string  `json:"setupType"`
 				MarketRegime     string  `json:"marketRegime"`
 				RegimeConfidence float64 `json:"regimeConfidence"`
-				Sector           string  `json:"sector"`
 			}
 			if json.Unmarshal(dataJSON, &extra) == nil {
 				t.SetupType = extra.SetupType
 				t.MarketRegime = extra.MarketRegime
 				t.RegimeConfidence = extra.RegimeConfidence
-				t.Sector = extra.Sector
 			}
 		}
 

@@ -232,7 +232,7 @@ func (s *Server) handleTradeExport(w http.ResponseWriter, r *http.Request) {
 	csvWriter := csv.NewWriter(w)
 	csvWriter.Write([]string{
 		"Symbol", "Side", "Quantity", "Entry Price", "Exit Price", "PnL", "R-Multiple",
-		"Setup Type", "Exit Reason", "Market Regime", "Sector",
+		"Setup Type", "Exit Reason", "Market Regime",
 		"Opened At", "Closed At", "Duration",
 	})
 
@@ -245,7 +245,7 @@ func (s *Server) handleTradeExport(w http.ResponseWriter, r *http.Request) {
 			t.Symbol, t.Side, fmt.Sprintf("%d", t.Quantity),
 			fmt.Sprintf("%.2f", t.EntryPrice), fmt.Sprintf("%.2f", t.ExitPrice),
 			fmt.Sprintf("%.2f", t.PnL), fmt.Sprintf("%.4f", t.RMultiple),
-			t.SetupType, t.ExitReason, t.MarketRegime, t.Sector,
+			t.SetupType, t.ExitReason, t.MarketRegime,
 			t.OpenedAt.In(loc).Format("2006-01-02 15:04:05"),
 			t.ClosedAt.In(loc).Format("2006-01-02 15:04:05"),
 			dur,
